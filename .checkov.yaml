@@ -1,0 +1,25 @@
+# Checkov Configuration for G1-Warrant
+# Federal DevSecOps IaC Security & DISA STIG / NIST SP 800-53 CM-2 Compliance
+
+directory:
+  - k8s
+
+framework:
+  - kubernetes
+  - dockerfile
+
+output:
+  - cli
+  - sarif
+  - json
+
+output-file-path: reports/
+
+soft-fail: false
+compact: true
+download-external-modules: false
+
+skip-path:
+  - reports/
+  - web/node_modules/
+  - benchmarks/

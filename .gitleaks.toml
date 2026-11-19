@@ -1,0 +1,34 @@
+# Gitleaks Configuration for G1-Warrant
+# Federal DevSecOps Secret Detection (NIST SP 800-53 IA-5, DISA STIG Application Security)
+
+title = "G1-Warrant Gitleaks Secret Detection Policy"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Global allowlist for synthetic test smartcard personas, NIST OSCAL catalog constants, and compliance reports"
+paths = [
+  '''(?i).*_test\.go$''',
+  '''(?i)internal/crypto/principals\.go$''',
+  '''(?i)scripts/run_govready_assessment\.py$''',
+  '''(?i)benchmarks/.*''',
+  '''(?i)reports/.*''',
+  '''(?i)web/dist/.*''',
+  '''(?i)web/node_modules/.*''',
+  '''(?i)\.git/.*'''
+]
+regexes = [
+  '''[a-f0-9]{64}''',
+  '''g1aud_[a-zA-Z0-9_\-]{16,}''',
+  '''slot1Key\.PrincipalID'''
+]
+stopwords = [
+  "warrant_dev_only",
+  "test-secret",
+  "mock_key",
+  "synthetic_token",
+  "SAMPLE_KEY",
+  "slot2Key",
+  "oscal_catalog_key"
+]

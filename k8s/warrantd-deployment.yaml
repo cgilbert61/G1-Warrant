@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: g1-warrantd
+  namespace: g1-warrant-system
+  labels:
+    app.kubernetes.io/name: g1-warrantd
+    app.kubernetes.io/part-of: g1-warrant
+    tier: deterministic-control-plane
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: g1-warrantd
+  template:
+    metadata:
+      labels:
+        app: g1-warrantd
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: warrantd
+          image: ghcr.io/cgilbert61/g1-warrent/warrantd@sha256:6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b
+          imagePullPolicy: Always
+          env:
+            - name: WARRANT_LISTEN_ADDR
+              value: ":8080"
+            - name: WARRANT_EXTRACTOR_URL
+              value: "http://g1-warrant-extractor.g1-warrant-system.svc.cluster.local:8090"
+            - name: WARRANT_FEED_MODE
+              value: "offline"
+            - name: WARRANT_ENABLE_TEST_SMARTCARDS
+              value: "false"
+            - name: DATABASE_URL_FILE
+              value: "/var/run/secrets/g1-warrant/database-dsn"
+          volumeMounts:
+            - name: warrant-db-secret
+              mountPath: /var/run/secrets/g1-warrant
+              readOnly: true
+          ports:
+            - name: http-console
+              containerPort: 8080
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "1Gi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+      volumes:
+        - name: warrant-db-secret
+          secret:
+            secretName: g1-warrant-secrets
+            defaultMode: 256
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: g1-warrantd
+  namespace: g1-warrant-system
+  labels:
+    app.kubernetes.io/name: g1-warrantd
+    app.kubernetes.io/part-of: g1-warrant
+spec:
+  type: ClusterIP
+  selector:
+    app: g1-warrantd
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP

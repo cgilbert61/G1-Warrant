@@ -1,0 +1,13 @@
+# Containerized Verification Suite (OPA Policy Tests + Go Race-Enabled 6-Invariant Integration Suite)
+FROM openpolicyagent/opa:latest-static AS opa-bin
+
+FROM golang:1.26-bookworm
+ENV GOTOOLCHAIN=auto
+COPY --from=opa-bin /opa /usr/local/bin/opa
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN mkdir -p web/dist && test -f web/dist/index.html || printf '<!doctype html><html><body></body></html>\n' > web/dist/index.html
+ENV REQUIRE_DB_TESTS=true
+CMD ["sh", "-c", "echo '=== [1/2] Running OPA Rego Policy Unit Tests ===' && opa test ./policies -v && echo '=== [2/2] Running Go Race-Enabled 6-Invariant Suite ===' && CGO_ENABLED=1 go test -v -race -count=1 ./..."]

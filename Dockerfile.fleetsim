@@ -1,0 +1,14 @@
+# Multi-stage static Pure-Go build for Target Fleet Simulator (fleet-sim)
+FROM golang:1.26-alpine AS builder
+ENV GOTOOLCHAIN=auto
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/fleet-sim ./cmd/fleet-sim
+
+FROM gcr.io/distroless/static:nonroot
+COPY --from=builder /out/fleet-sim /fleet-sim
+USER nonroot:nonroot
+EXPOSE 8095
+ENTRYPOINT ["/fleet-sim"]

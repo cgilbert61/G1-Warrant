@@ -1,0 +1,47 @@
+# Semgrep SAST Configuration for G1-Warrant
+# Federal DevSecOps Profile: OWASP Top 10, DISA STIG Application Security, CWE Detection
+rules:
+  - id: g1-warrant-no-exec-command-in-kernel
+    pattern-either:
+      - pattern: exec.Command(...)
+      - pattern: exec.CommandContext(...)
+    message: "Shell/OS command execution detected in Go kernel (CWE-78). Remediation adapters must use typed HTTP/Kubernetes APIs only."
+    languages: [go]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-78: Improper Neutralization of Special Elements used in an OS Command"
+      owasp: "A03:2021 - Injection"
+
+  - id: g1-warrant-insecure-hash-md5-sha1
+    pattern-either:
+      - pattern: md5.New()
+      - pattern: md5.Sum(...)
+      - pattern: sha1.New()
+      - pattern: sha1.Sum(...)
+    message: "MD5/SHA1 are broken hash algorithms prohibited under NIST SP 800-131A (CWE-328). Use SHA-256 or Ed25519."
+    languages: [go]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-328: Use of Weak Hash"
+      owasp: "A02:2021 - Cryptographic Failures"
+
+  - id: g1-warrant-no-eval-in-console
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: new Function(...)
+    message: "Dynamic JS evaluation via eval/Function detected in Console (CWE-95). Prohibited under federal DevSecOps standards."
+    languages: [typescript, javascript]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-95: Improper Neutralization of Directives in Dynamically Evaluated Code"
+      owasp: "A03:2021 - Injection"
+
+  - id: g1-warrant-no-llm-api-in-kernel
+    pattern-either:
+      - pattern: '"https://api.openai.com/..."'
+      - pattern: '"https://api.anthropic.com/..."'
+    message: "Direct LLM API endpoint detected inside G1-Warrant kernel or Console. Violates Architectural Invariant #1 (Zero-LLM Safety Kernel)."
+    languages: [go, typescript]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-693: Protection Mechanism Failure"

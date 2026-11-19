@@ -1,0 +1,471 @@
+openapi: 3.1.0
+info:
+  title: G1-Warrant Control Plane API
+  version: 1.0.0
+  summary: Deterministic Autonomous Remediation, Containment & Attestation Control Plane
+  description: |
+    G1163RT Security Labs, Inc. — Production REST + SSE OpenAPI 3.1 specification for `warrantd`.
+    Zero LLM inference in N1–N5. All mutations execute under dual-signed DSSE Standing Warrants (NIST SP 800-53 AC-5).
+  contact:
+    name: G1163RT Security Labs, Inc.
+    email: architecture@g1163rt.sec
+servers:
+  - url: http://localhost:8080
+    description: Localhost WebAuthn-compatible Control Plane binding
+
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      summary: Liveness and freeze posture probe
+      responses:
+        '200':
+          description: Kernel healthy
+
+  /api/v1/events/stream:
+    get:
+      operationId: streamEvents
+      summary: Server-Sent Events (SSE) real-time control plane stream
+      responses:
+        '200':
+          description: SSE text/event-stream
+
+  /api/v1/bootstrap:
+    get:
+      operationId: getBootstrapSnapshot
+      summary: Consolidated 5-view state snapshot
+      responses:
+        '200':
+          description: Complete console bootstrap payload
+
+  /api/v1/scoreboard:
+    get:
+      operationId: getScoreboard
+      summary: Persistent Global Command Bar KPIs (30d Median TTVR, Active Bridges, Eligibility %, Inbox)
+      responses:
+        '200':
+          description: Scoreboard metrics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GlobalScoreboard'
+
+  /api/v1/principals:
+    get:
+      operationId: listPrincipals
+      summary: List registered PIV/WebAuthn principals and live revocation status
+      responses:
+        '200':
+          description: Array of Principal records
+
+  /api/v1/principals/webauthn/register:
+    post:
+      operationId: registerWebAuthnPrincipal
+      summary: Enroll a W3C WebAuthn hardware authenticator (ES256 P-256 or EdDSA)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [display_name, email, role, credential_id]
+              properties:
+                display_name: { type: string }
+                email: { type: string, format: email }
+                role: { type: string, enum: [SERVICE_OWNER, AUTHORIZING_OFFICIAL] }
+                credential_id: { type: string }
+                attestation_object: { type: string }
+                public_key_spki: { type: string }
+      responses:
+        '201':
+          description: Principal enrolled
+
+  /api/v1/principals/revoke:
+    post:
+      operationId: revokePrincipal
+      summary: Revoke a Service Owner or Authorizing Official key in principal_revocations (instant fail-closed)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [principal_id, key_fingerprint]
+              properties:
+                principal_id: { type: string }
+                key_fingerprint: { type: string }
+                reason_code: { type: string }
+                revoked_by: { type: string }
+      responses:
+        '201':
+          description: Revocation recorded
+
+  /api/v1/warrants:
+    get:
+      operationId: listWarrants
+      summary: List append-only hash-chained Standing Warrants
+      responses:
+        '200':
+          description: Array of WarrantRecord
+    post:
+      operationId: submitStandingWarrant
+      summary: Submit a 2-of-2 DSSE Standing Warrant Envelope (NIST SP 800-53 AC-5 enforced)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DSSEEnvelope'
+      responses:
+        '201':
+          description: Standing Warrant verified and appended to warrant_envelopes
+        '422':
+          description: AC-5 separation-of-duties or signature verification failure
+
+  /api/v1/warrants/{id}/verify:
+    post:
+      operationId: verifyWarrantLive
+      summary: Execution-time cryptographic + OPA AC-5 + revocation re-verification
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Warrant valid
+        '422':
+          description: Warrant revoked or expired
+
+  /api/v1/freeze:
+    post:
+      operationId: triggerEmergencyFreeze
+      summary: Activate Asymmetric Fleet-Wide Emergency Freeze (FREEZE_HOLD or FREEZE_ROLLBACK)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode, actor]
+              properties:
+                mode: { type: string, enum: [FREEZE_HOLD, FREEZE_ROLLBACK] }
+                actor: { type: string }
+                reason_code: { type: string }
+      responses:
+        '200':
+          description: Freeze posture updated via memory + PostgreSQL LISTEN/NOTIFY
+
+  /api/v1/freeze/thaw:
+    post:
+      operationId: thawEmergencyFreeze
+      summary: Restore OPERATIONAL posture via live 2-of-2 Dual-Key DSSE Ceremony
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DSSEEnvelope'
+      responses:
+        '200':
+          description: Fleet thawed
+        '422':
+          description: Missing or invalid 2-of-2 signatures
+
+  /api/v1/feeds/status:
+    get:
+      operationId: getLiveFeedStatus
+      summary: Retrieve live threat & scanner feed configuration, CISA KEV count, OSV advisories, and sync history
+      responses:
+        '200':
+          description: LiveFeedStatus snapshot
+
+  /api/v1/feeds/config:
+    post:
+      operationId: updateLiveFeedConfig
+      summary: Toggle offline enclave mode vs. live public threat feeds (CISA KEV, Google OSV.dev, Trivy)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode]
+              properties:
+                mode: { type: string, enum: [offline, live] }
+                cisa_kev_url: { type: string, format: uri }
+                kev_poll_interval: { type: string }
+                osv_api_url: { type: string, format: uri }
+                trivy_enabled: { type: boolean }
+      responses:
+        '200':
+          description: Updated FeedRuntimeConfig
+
+  /api/v1/feeds/sync/kev:
+    post:
+      operationId: syncCISAKEVCatalog
+      summary: Pull live US Government CISA KEV catalog via warrant-extractor and update active exploitation flags
+      responses:
+        '200':
+          description: FeedSyncRun summary
+
+  /api/v1/feeds/sync/osv:
+    post:
+      operationId: syncGoogleOSVAdvisories
+      summary: Query Google OSV.dev against fleet SBOM package PURLs via warrant-extractor
+      responses:
+        '200':
+          description: OSV sync summary and sanitized advisories
+
+  /api/v1/feeds/osv/ingest:
+    post:
+      operationId: ingestOSVAdvisory
+      summary: Route a sanitized OSV.dev SBOM advisory into the 5-stage Race Pipeline
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [osv_id]
+              properties:
+                osv_id: { type: string }
+                service_id: { type: string }
+      responses:
+        '201':
+          description: Remediation items created
+
+  /api/v1/pipeline:
+    get:
+      operationId: listPipelineRemediations
+      summary: List all 5-stage Race Pipeline remediation items
+      responses:
+        '200':
+          description: Array of RemediationItem
+
+  /api/v1/pipeline/{id}/traces:
+    get:
+      operationId: listRemediationTraces
+      summary: Retrieve millisecond-timestamped deterministic ledger trace events
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Chronological TraceEvent list
+
+  /api/v1/intake/sarif:
+    post:
+      operationId: ingestSARIF
+      summary: Ingest untrusted SARIF 2.1.0 report via isolated warrant-extractor and execute 5-stage pipeline
+      parameters:
+        - name: profile
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [STATELESS_CLEAN, BAD_SYSCALL_EXECVE, STATEFUL_DDL, UPSTREAM_VENDOR_PENDING]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '201':
+          description: Extracted findings processed
+
+  /api/v1/simulate/{scenario}:
+    post:
+      operationId: triggerSimulationScenario
+      summary: Trigger deterministic fleet drill (inject-kev, bad-syscall, stateful-ddl, runtime-drift)
+      parameters:
+        - name: scenario
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [inject-kev, bad-syscall, stateful-ddl, runtime-drift]
+      responses:
+        '200':
+          description: Simulation executed
+
+  /api/v1/exceptions:
+    get:
+      operationId: listExceptions
+      summary: List Four-Eyes Ceiling Exceptions
+      responses:
+        '200':
+          description: Array of CeilingException
+
+  /api/v1/exceptions/{id}/resolve:
+    post:
+      operationId: resolveException
+      summary: Approve or reject a Four-Eyes Ceiling Exception with a 2-of-2 DSSE Envelope
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision, dsse_envelope]
+              properties:
+                decision: { type: string, enum: [APPROVED, REJECTED] }
+                dsse_envelope: { $ref: '#/components/schemas/DSSEEnvelope' }
+      responses:
+        '200':
+          description: Exception resolved
+
+  /api/v1/estate:
+    get:
+      operationId: listEstateServices
+      summary: List registered services and N2 Estate Readiness grades
+      responses:
+        '200':
+          description: Array of EstateService
+
+  /api/v1/shadow/runs:
+    get:
+      operationId: listShadowRuns
+      summary: List N2 Differential Shadow comparison reports
+      responses:
+        '200':
+          description: Array of ShadowComparisonReport
+
+  /api/v1/bridges:
+    get:
+      operationId: listContainmentBridges
+      summary: List CiliumNetworkPolicy, NetworkPolicy, and Envoy mTLS containment bridges
+      responses:
+        '200':
+          description: Array of ContainmentBridge
+
+  /api/v1/lockouts:
+    get:
+      operationId: listAdmissionLockouts
+      summary: List permanent ValidatingAdmissionPolicy + Gatekeeper banned SHA-256 digests
+      responses:
+        '200':
+          description: Array of AdmissionLockout
+
+  /api/v1/drift:
+    get:
+      operationId: listDriftIncidents
+      summary: List runtime digest drift incidents and sub-second bridge re-arm metrics
+      responses:
+        '200':
+          description: Array of DriftIncident
+
+  /api/v1/attestations:
+    get:
+      operationId: listAttestations
+      summary: List DSSE-signed NIST OSCAL 1.1.2 POA&M closure records
+      responses:
+        '200':
+          description: Array of AttestationRecord
+
+  /api/v1/attestations/{id}/oscal:
+    get:
+      operationId: downloadOSCALBundle
+      summary: Download signed NIST OSCAL 1.1.2 POA&M JSON bundle
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Signed OSCAL JSON file attachment
+
+  /api/v1/auditor-tokens:
+    post:
+      operationId: createAuditorShareToken
+      summary: Mint a scoped, time-bounded read-only bearer link for external 3PAO/FedRAMP auditors
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label: { type: string }
+                scoped_attestation_ids:
+                  type: array
+                  items: { type: string }
+                ttl_hours: { type: integer }
+      responses:
+        '201':
+          description: Scoped auditor bearer link minted
+
+  /api/v1/ledger/actions:
+    get:
+      operationId: listGovernedAgentActions
+      summary: List hash-chained N4 governed extractor and adapter actions
+      responses:
+        '200':
+          description: Array of AgentLedgerEntry
+
+  /api/v1/ledger/verify:
+    post:
+      operationId: verifyAllLedgerHashChains
+      summary: Recompute and verify SHA-256 hash chains across all 3 append-only PostgreSQL tables
+      responses:
+        '200':
+          description: Cryptographic chain audit report
+
+  /api/v1/auditor/vault:
+    get:
+      operationId: getScopedAuditorVault
+      summary: Read-only external auditor endpoint (strictly isolated via Bearer g1aud_... token)
+      security:
+        - AuditorBearerAuth: []
+      responses:
+        '200':
+          description: Scoped OSCAL POA&Ms, DSSE envelopes, and hash-chain verification report
+        '403':
+          description: Invalid, expired, or out-of-scope token
+
+components:
+  securitySchemes:
+    AuditorBearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: g1aud_hex
+  schemas:
+    DSSEEnvelope:
+      type: object
+      required: [payloadType, payload, signatures]
+      properties:
+        payloadType: { type: string }
+        payload: { type: string, description: Base64-encoded RFC 8785 JCS JSON payload }
+        signatures:
+          type: array
+          items:
+            type: object
+            required: [keyid, alg, sig]
+            properties:
+              slot: { type: integer }
+              keyid: { type: string }
+              alg: { type: string }
+              role: { type: string }
+              principal_id: { type: string }
+              principal_email: { type: string }
+              key_fingerprint: { type: string }
+              sig: { type: string }
+              signed_at: { type: string, format: date-time }
+    GlobalScoreboard:
+      type: object
+      properties:
+        active_warrants_count: { type: integer }
+        fleet_median_ttvr_seconds: { type: integer }
+        active_bridges_armed: { type: integer }
+        median_bridge_age_seconds: { type: integer }
+        autonomous_eligibility_pct: { type: number }
+        awaiting_dual_key_inbox_count: { type: integer }

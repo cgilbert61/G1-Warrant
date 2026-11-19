@@ -1,0 +1,124 @@
+{
+  "platform": "GovReady-Q v0.9.1",
+  "system": "G1-Warrant Deterministic Autonomous Remediation, Containment & Attestation Control Plane",
+  "fisma_id": "G1-WARRANT-001",
+  "timestamp": "2026-11-19T20:43:01.918572+00:00",
+  "total_controls": 14,
+  "passed": 14,
+  "failed": 0,
+  "status": "PASS",
+  "controls": [
+    {
+      "control_id": "AC-3",
+      "title": "Access Enforcement",
+      "family": "Access Control",
+      "status": "Implemented",
+      "mechanism": "internal/warrant/engine.go + internal/server/api.go Scoped Auditor Bearer Isolation",
+      "narrative": "Every autonomous rollout, Cilium containment bridge, and exception resolution is gated by cryptographic Standing Warrant verification (fail-closed on missing, expired, or out-of-scope warrants). External auditor bearer tokens (g1aud_*) are strictly isolated to /api/v1/auditor/* and return HTTP 403 on all operational endpoints."
+    },
+    {
+      "control_id": "AC-4",
+      "title": "Information Flow Enforcement",
+      "family": "Access Control",
+      "status": "Implemented",
+      "mechanism": "cmd/warrant-extractor + k8s/network-policy.yaml (Zero-Egress Content vs. Artifact Separation)",
+      "narrative": "Untrusted external prose (SARIF 2.1.0, CISA KEV feeds, Google OSV.dev advisories, CycloneDX VEX) is routed exclusively through the zero-privilege warrant-extractor service deployed on an isolated zero-egress network segment, emitting only regex-validated typed records."
+    },
+    {
+      "control_id": "AC-5",
+      "title": "Separation of Duties",
+      "family": "Access Control",
+      "status": "Implemented",
+      "mechanism": "policies/warrant_ac5.rego + internal/crypto/dsse.go (2-of-2 Dual-Key Separation of Duties)",
+      "narrative": "Standing Warrants and Ceiling Exceptions require 2-of-2 cryptographic signatures over RFC 8785 JCS canonicalized DSSEv1 PAE bytes from two distinct human principals holding disjoint institutional roles: Slot 1 SERVICE_OWNER and Slot 2 AUTHORIZING_OFFICIAL. Self-co-signing and role collisions are deterministically rejected."
+    },
+    {
+      "control_id": "AU-2",
+      "title": "Audit Events",
+      "family": "Audit and Accountability",
+      "status": "Implemented",
+      "mechanism": "internal/agentcp/controlplane.go + internal/ledger/engine.go",
+      "narrative": "All Standing Warrant issuances, short-lived Task Warrant delegations (TTL <= 300s), extractor sanitizations, progressive canary transitions, containment bridges, and POA&M closures generate structured, timestamped cryptographic audit records with SHA-256 input/output lineage."
+    },
+    {
+      "control_id": "AU-9",
+      "title": "Protection of Audit Information",
+      "family": "Audit and Accountability",
+      "status": "Implemented",
+      "mechanism": "db/migrations/001_initial_schema.sql PostgreSQL WORM Triggers + SHA-256 Hash Chains",
+      "narrative": "PostgreSQL BEFORE UPDATE OR DELETE triggers enforce strict append-only immutability on standing_warrants, agent_action_ledger, and oscal_attestations, raising IMMUTABLE_LEDGER_VIOLATION on any mutation attempt while chaining prev_hash -> entry_hash across all rows."
+    },
+    {
+      "control_id": "AU-10",
+      "title": "Non-repudiation",
+      "family": "Audit and Accountability",
+      "status": "Implemented",
+      "mechanism": "internal/crypto/{jcs,dsse,webauthn}.go + Client-Side Browser DSSE Verifier",
+      "narrative": "Warrants, ceiling exceptions, and NIST OSCAL 1.1.2 closure attestations are sealed inside DSSEv1 envelopes signed via Ed25519 or W3C WebAuthn hardware authenticators over RFC 8785 JCS payloads, enabling offline and in-browser non-repudiation verification."
+    },
+    {
+      "control_id": "CA-7",
+      "title": "Continuous Monitoring",
+      "family": "Assessment, Authorization, and Monitoring",
+      "status": "Implemented",
+      "mechanism": "internal/server/orchestrator.go Continuous Drift Sweeper + Live CISA KEV / OSV Poller",
+      "narrative": "Background control-plane reconciliation continuously polls running workload image digests and Cilium NetworkPolicy attachment states against attested closures, raising DRIFT_REOPENED alerts upon tampering and optionally syncing live CISA KEV and OSV.dev threat catalogs."
+    },
+    {
+      "control_id": "CM-2",
+      "title": "Baseline Configuration",
+      "family": "Configuration Management",
+      "status": "Implemented",
+      "mechanism": "policies/gate_eligibility.rego + N2 Estate Autonomous Eligibility Scorecard",
+      "narrative": "Workloads must satisfy baseline readiness gates (>= 80% automated test coverage, OpenTelemetry probes, read-only shadow replica binding, and verified < 60s rollback automation) before qualifying for autonomous progressive rollout."
+    },
+    {
+      "control_id": "CM-3",
+      "title": "Configuration Change Control",
+      "family": "Configuration Management",
+      "status": "Implemented",
+      "mechanism": "internal/gate/engine.go Progressive Canary (5% -> 25% -> 100%) & Instant Rollback",
+      "narrative": "Enforces stateless patch checks (zero DDL or ORM mutations) and compares baseline vs. canary JCS-normalized schemas, p50/p95/p99 latency ceilings, and Linux syscall capability sets, triggering instant rollback to baseline digest on any regression."
+    },
+    {
+      "control_id": "IA-2",
+      "title": "Identification and Authentication (organizational Users)",
+      "family": "Identification and Authentication",
+      "status": "Implemented",
+      "mechanism": "internal/crypto/webauthn.go Native W3C WebAuthn PIV/FIDO2 Verification",
+      "narrative": "Authenticates organizational authorizing officials and service owners via native W3C WebAuthn hardware authenticators (RPID hash check, User Present & User Verified flags, ECDSA P-256 / Ed25519 verification) and live principal revocation checks."
+    },
+    {
+      "control_id": "IA-8",
+      "title": "Identification and Authentication (non-organizational Users)",
+      "family": "Identification and Authentication",
+      "status": "Implemented",
+      "mechanism": "internal/agentcp/controlplane.go Minute-Scoped Ephemeral Task Warrants",
+      "narrative": "External scanner and remediation workers operate solely as governed delegates under Ed25519-signed ephemeral Task Warrants (max TTL 300s) bound to an active human-co-signed Standing Warrant and explicit target asset scope."
+    },
+    {
+      "control_id": "RA-5",
+      "title": "Vulnerability Scanning",
+      "family": "Risk Assessment",
+      "status": "Implemented",
+      "mechanism": "internal/feeds/manager.go + internal/verify/engine.go Adversary-Twin Replay",
+      "narrative": "Ingests SARIF 2.1.0, CycloneDX/VEX, CISA KEV, and Google OSV.dev advisories for race-triage prioritization, and requires deterministic HTTP exploit-replay rejection plus full pod digest verification before closing any vulnerability."
+    },
+    {
+      "control_id": "SC-8",
+      "title": "Transmission Confidentiality and Integrity",
+      "family": "System and Communications Protection",
+      "status": "Implemented",
+      "mechanism": "internal/adapters/cilium_shield.go OpenC2 / Cilium eBPF Containment & Runtime Lockout",
+      "narrative": "Deploys immediate virtual containment shields within SLA windows for unpatched or above-ceiling vulnerabilities and enforces permanent post-patch runtime network/process lockout policies verified by active canary probes."
+    },
+    {
+      "control_id": "SI-7",
+      "title": "Software, Firmware, and Information Integrity",
+      "family": "System and Information Integrity",
+      "status": "Implemented",
+      "mechanism": "policies/verify_closure.rego + internal/ledger/engine.go SHA-256 Digest & Chain Verification",
+      "narrative": "Verifies container image SHA-256 digests across every replica in the target fleet and validates unbroken genesis-to-head cryptographic hash chains across all three PostgreSQL WORM ledgers."
+    }
+  ]
+}

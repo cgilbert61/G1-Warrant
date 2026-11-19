@@ -1,0 +1,12 @@
+# Optional Real Open-Source Vulnerability Scanner Sidecar (aquasec/trivy)
+FROM aquasec/trivy:0.58.1 AS trivy-bin
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates curl && \
+    mkdir -p /var/cache/trivy && chown -R 65532:65532 /var/cache/trivy /tmp
+COPY --from=trivy-bin /usr/local/bin/trivy /usr/local/bin/trivy
+COPY scripts/trivy-feed-loop.sh /usr/local/bin/trivy-feed-loop.sh
+RUN sed -i 's/\r$//' /usr/local/bin/trivy-feed-loop.sh && chmod +x /usr/local/bin/trivy-feed-loop.sh
+ENV TRIVY_CACHE_DIR=/var/cache/trivy
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/trivy-feed-loop.sh"]

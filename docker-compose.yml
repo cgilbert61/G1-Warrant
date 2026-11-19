@@ -1,0 +1,146 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: warrant
+      POSTGRES_PASSWORD: warrant
+      POSTGRES_DB: warrant
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - control_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U warrant -d warrant"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  warrant-extractor:
+    build:
+      context: .
+      dockerfile: Dockerfile.extractor
+    environment:
+      EXTRACTOR_LISTEN_ADDR: ":8090"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - extractor_net
+    restart: unless-stopped
+
+  fleet-sim:
+    build:
+      context: .
+      dockerfile: Dockerfile.fleetsim
+    environment:
+      FLEET_SIM_LISTEN_ADDR: ":8095"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - fleet_net
+    restart: unless-stopped
+
+  warrantd:
+    build:
+      context: .
+      dockerfile: Dockerfile.warrantd
+    environment:
+      WARRANTD_LISTEN_ADDR: ":8080"
+      DATABASE_URL: "postgres://warrant:warrant@postgres:5432/warrant?sslmode=disable"
+      EXTRACTOR_URL: "http://warrant-extractor:8090"
+      FLEET_SIM_URL: "http://fleet-sim:8095"
+      WEBAUTHN_RP_ID: "localhost"
+      WEBAUTHN_RP_ORIGIN: "http://localhost:8080"
+      WARRANT_FEED_MODE: "${WARRANT_FEED_MODE:-offline}"
+      WARRANT_CISA_KEV_URL: "${WARRANT_CISA_KEV_URL:-https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json}"
+      WARRANT_KEV_POLL_INTERVAL: "${WARRANT_KEV_POLL_INTERVAL:-1h}"
+      WARRANT_OSV_API_URL: "${WARRANT_OSV_API_URL:-https://api.osv.dev/v1/querybatch}"
+      WARRANT_TRIVY_ENABLED: "${WARRANT_TRIVY_ENABLED:-false}"
+    ports:
+      - "127.0.0.1:8080:8080"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      warrant-extractor:
+        condition: service_started
+      fleet-sim:
+        condition: service_started
+    networks:
+      - host_edge_net
+      - control_net
+      - extractor_net
+      - fleet_net
+    restart: unless-stopped
+
+  trivy-scanner:
+    profiles:
+      - live-feeds
+    build:
+      context: .
+      dockerfile: Dockerfile.trivy
+    environment:
+      WARRANT_API_URL: "http://warrantd:8080"
+      WARRANT_TRIVY_ENABLED: "${WARRANT_TRIVY_ENABLED:-true}"
+      WARRANT_TRIVY_TARGETS: "${WARRANT_TRIVY_TARGETS:-curlimages/curl:8.3.0=fulfillment-worker,nginx:1.24.0-alpine=checkout-cart-svc}"
+      WARRANT_TRIVY_MAX_FINDINGS: "${WARRANT_TRIVY_MAX_FINDINGS:-2}"
+      WARRANT_TRIVY_SCAN_INTERVAL_SEC: "${WARRANT_TRIVY_SCAN_INTERVAL_SEC:-3600}"
+    volumes:
+      - trivy_cache:/var/cache/trivy
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      - warrantd
+    networks:
+      - host_edge_net
+    restart: unless-stopped
+
+  verifier:
+    profiles:
+      - test
+    build:
+      context: .
+      dockerfile: Dockerfile.verifier
+    environment:
+      REQUIRE_DB_TESTS: "true"
+      WARRANT_FEED_MODE: "offline"
+      TEST_DATABASE_URL: "postgres://warrant:warrant@postgres:5432/postgres?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - control_net
+      - extractor_net
+      - fleet_net
+
+networks:
+  host_edge_net:
+    driver: bridge
+  control_net:
+    driver: bridge
+    internal: true
+  extractor_net:
+    driver: bridge
+    internal: true
+  fleet_net:
+    driver: bridge
+    internal: true
+
+volumes:
+  pgdata:
+  trivy_cache:

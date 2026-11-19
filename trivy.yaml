@@ -1,0 +1,13 @@
+# Trivy Configuration for G1-Warrant (DISA STIG & NIST SP 800-53 SI-2 / RA-5)
+severity:
+  - HIGH
+  - CRITICAL
+scan:
+  skip-dirs:
+    - reports
+    - web/node_modules
+    - .git
+vulnerability:
+  type:
+    - os
+    - library

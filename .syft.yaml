@@ -1,0 +1,5 @@
+# Syft SBOM Configuration for G1-Warrant (Executive Order 14028 / NIST SP 800-161)
+exclude:
+  - ./reports/**
+  - ./web/node_modules/**
+  - ./.git/**

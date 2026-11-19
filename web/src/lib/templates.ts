@@ -1,0 +1,132 @@
+import type { CeilingException, ContainmentBridge, EligibilityCheckItem, TraceEvent } from '../types';
+
+export function formatDurationSeconds(sec: number): string {
+  const s = Math.max(0, Math.floor(sec));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const remS = s % 60;
+  if (m < 60) return `${m}m ${remS.toString().padStart(2, '0')}s`;
+  const h = Math.floor(m / 60);
+  const remM = m % 60;
+  return `${h}h ${remM.toString().padStart(2, '0')}m`;
+}
+
+export function shortHash(h?: string, len = 14): string {
+  if (!h) return '—';
+  if (h.startsWith('sha256:')) {
+    return 'sha256:' + h.slice(7, 7 + len);
+  }
+  return h.slice(0, len);
+}
+
+/**
+ * Deterministic Ripening SLA Color Engine (Section 5 Color Rules):
+ * Dynamically shifts active Shield bridge styling from Amber -> Deep Orange -> Ripening Crimson
+ * based on bridge uptime relative to SLA minutes.
+ */
+export function computeRipeningBridgeStyle(armedAtISO: string, slaMinutes: number, nowMs: number, status?: string): {
+  ratio: number;
+  uptimeSec: number;
+  badgeClass: string;
+  barClass: string;
+  label: string;
+} {
+  if (status === 'RETIRED') {
+    return {
+      ratio: 0,
+      uptimeSec: 0,
+      badgeClass: 'bg-emerald-50 border-emerald-300 text-emerald-900',
+      barClass: 'bg-emerald-600',
+      label: 'RETIRED AFTER LOCKOUT',
+    };
+  }
+  const armedMs = new Date(armedAtISO).getTime();
+  const uptimeSec = Math.max(0, Math.floor((nowMs - armedMs) / 1000));
+  const slaSec = Math.max(60, slaMinutes * 60);
+  const ratio = uptimeSec / slaSec;
+
+  if (status === 'REARMED_DRIFT' || ratio >= 0.95) {
+    return {
+      ratio,
+      uptimeSec,
+      badgeClass: 'bg-red-100 border-red-500 text-red-950 font-semibold',
+      barClass: 'bg-red-600',
+      label: status === 'REARMED_DRIFT' ? 'RE-ARMED ON DRIFT' : 'SLA BREACH IMMINENT',
+    };
+  }
+  if (ratio >= 0.7) {
+    return {
+      ratio,
+      uptimeSec,
+      badgeClass: 'bg-rose-100 border-rose-400 text-rose-950',
+      barClass: 'bg-rose-600',
+      label: 'RIPENING CRIMSON',
+    };
+  }
+  if (ratio >= 0.4) {
+    return {
+      ratio,
+      uptimeSec,
+      badgeClass: 'bg-orange-100 border-orange-400 text-orange-950',
+      barClass: 'bg-orange-500',
+      label: 'AGING CONTAINMENT',
+    };
+  }
+  return {
+    ratio,
+    uptimeSec,
+    badgeClass: 'bg-amber-50 border-amber-300 text-amber-900',
+    barClass: 'bg-amber-500',
+    label: 'SHIELD ARMED',
+  };
+}
+
+/**
+ * Deterministic Ceiling Exception Impact String Template (View 2 Cockpit - Zero LLM Prose).
+ */
+export function formatExceptionImpactTemplate(ex: CeilingException): string {
+  const compat = ex.api_backward_compatible ? 'WIRE_COMPATIBLE' : 'WIRE_BREAKING';
+  const syscalls = ex.syscall_diff_summary || 'NONE';
+  return `Target=${ex.service_id} (${ex.cve_id}) | Trigger=${ex.trigger_code} | DDL=${ex.ddl_count}, ORM=${ex.orm_mutations}, SerBreak=${ex.serialization_breaks} (${compat}) | Shadow=${ex.shadow_replay_status} | SyscallDelta=${syscalls} | ActiveBridge=${ex.active_bridge_id || 'NONE'}`;
+}
+
+export function formatBlockerTemplate(code?: string): string {
+  if (!code) return 'AUTONOMOUS_PROGRESSION_NOMINAL';
+  const map: Record<string, string> = {
+    AWAITING_UPSTREAM_VENDOR_PATCH: 'Bridge Armed — Holding Containment Pending Upstream Signed Patch Artifact',
+    NO_ACTIVE_WARRANT_FAIL_CLOSED: 'Fail-Closed — No Active Standing Warrant Covers Target Service/CVSS',
+    N1_WARRANT_REVERIFY_FAILED: 'Fail-Closed — Warrant Signer Key/Role Revoked in N1 Registry',
+    FREEZE_HOLD: 'Asymmetric Emergency Freeze (HOLD) — Canaries Paused; Shield Bridges Active',
+    FREEZE_ROLLBACK: 'Asymmetric Emergency Freeze (ROLLBACK) — Canaries Rolled Back; Shield Bridges Active',
+  };
+  return map[code] || `Gate Policy Trigger: ${code}`;
+}
+
+export function formatActionTemplate(item: EligibilityCheckItem): string {
+  const actions: Record<string, string> = {
+    NONE: 'Meets N2 autonomous bar',
+    INCREASE_INTEGRATION_TEST_COVERAGE_TO_80_PCT: 'Raise deterministic integration test line coverage >= 80.0%',
+    WIRE_OTEL_GRPC_HTTP_SLI_PROBES: 'Export OpenTelemetry HTTP/gRPC p99 & 5xx health probes to N2',
+    PROVISION_READONLY_SHADOW_DB_REPLICA_AND_SINK: 'Bind read-only DB shadow replica + outbound HTTP mutation sink',
+    VERIFY_DETERMINISTIC_SUB_10S_ROLLBACK_HOOK: 'Pass automated <10s Kubernetes image rollback drill',
+  };
+  return actions[item.action_code] || item.action_code;
+}
+
+export function formatTraceStepSummary(t: TraceEvent): string {
+  const kv = Object.entries(t.fields || {})
+    .map(([k, v]) => `${k}=${v}`)
+    .join(' · ');
+  return kv ? `[${t.engine}] ${t.step_code} -> ${t.outcome} (${kv})` : `[${t.engine}] ${t.step_code} -> ${t.outcome}`;
+}
+
+export function formatBridgeBlockerReason(b: ContainmentBridge): string {
+  const map: Record<string, string> = {
+    AWAITING_UPSTREAM_VENDOR_PATCH: 'Awaiting Upstream Vendor Patch (KEV Contained at L7)',
+    AUTONOMOUS_CANARY_IN_PROGRESS: 'Active Containment During Differential Canary Rollout',
+    PATCH_ATTESTED_AND_LOCKED_OUT: 'Retired Following Twin Replay + ValidatingAdmissionPolicy Lockout',
+    RUNTIME_DRIFT_BANNED_DIGEST_REARMED: 'Auto Re-Armed by N3 Watcher Due to Runtime Digest Drift',
+    NO_VALID_STANDING_WARRANT_FAIL_CLOSED: 'Fail-Closed Containment — Awaiting Co-Signed Standing Warrant',
+  };
+  return map[b.blocker_reason_code] || b.blocker_reason_code;
+}
