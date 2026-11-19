@@ -1,0 +1,331 @@
+"""Typed Synchronous Python Client for the G1-Warrant Control Plane (warrantd)."""
+
+from __future__ import annotations
+
+import http.client
+import json
+import os
+import urllib.parse
+from pathlib import Path
+from typing import Any
+
+from .crypto import SignerKeyBundle
+
+
+class WarrantAPIError(RuntimeError):
+    """Raised when warrantd returns a non-2xx HTTP response."""
+
+    def __init__(self, status_code: int, method: str, endpoint: str, message: str):
+        super().__init__(f"WarrantAPIError ({method} {endpoint} -> HTTP {status_code}): {message}")
+        self.status_code = status_code
+        self.method = method
+        self.endpoint = endpoint
+        self.message = message
+
+
+class AuditorScopeViolationError(WarrantAPIError):
+    """Raised when an external 3PAO auditor bearer token (g1aud_*) calls a non-auditor endpoint."""
+
+
+class WarrantClient:
+    """Remote Python client for G1-Warrant (`warrantd`)."""
+
+    def __init__(
+        self,
+        base_url: str | None = None,
+        auditor_token: str | None = None,
+        timeout: float = 30.0,
+    ) -> None:
+        raw_url = (base_url or os.environ.get("WARRANT_API_URL") or "http://localhost:8080").rstrip("/")
+        parsed = urllib.parse.urlparse(raw_url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ValueError(f"Invalid G1-Warrant base_url {raw_url!r}; must be http:// or https://")
+        self.base_url = raw_url
+        self._scheme = parsed.scheme
+        self._host = parsed.hostname
+        self._port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        self._base_path = parsed.path.rstrip("/")
+        self.auditor_token = (auditor_token or os.environ.get("WARRANT_AUDITOR_TOKEN") or "").strip()
+        self.timeout = timeout
+
+    def _request_raw(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        content_type: str | None = None,
+        bearer_override: str | None = None,
+    ) -> bytes:
+        full_path = f"{self._base_path}{path}"
+        conn_cls = http.client.HTTPSConnection if self._scheme == "https" else http.client.HTTPConnection
+        conn = conn_cls(self._host, self._port, timeout=self.timeout)
+        headers: dict[str, str] = {"User-Agent": "g1-warrant-python-sdk/1.0.0"}
+        if content_type:
+            headers["Content-Type"] = content_type
+        tok = (bearer_override if bearer_override is not None else self.auditor_token).strip()
+        if tok:
+            headers["Authorization"] = f"Bearer {tok}"
+
+        try:
+            conn.request(method, full_path, body=body, headers=headers)
+            resp = conn.getresponse()
+            resp_bytes = resp.read()
+        finally:
+            conn.close()
+
+        if resp.status >= 300:
+            msg = resp_bytes.decode("utf-8", errors="replace").strip()
+            try:
+                err_json = json.loads(msg)
+                msg = err_json.get("error") or err_json.get("reason") or msg
+            except Exception:
+                pass
+            if resp.status == 403 and "AUDITOR_TOKEN_SCOPE_VIOLATION" in msg:
+                raise AuditorScopeViolationError(resp.status, method, path, msg)
+            raise WarrantAPIError(resp.status, method, path, msg)
+
+        return resp_bytes
+
+    def _request_json(
+        self,
+        method: str,
+        path: str,
+        payload: Any = None,
+        bearer_override: str | None = None,
+    ) -> Any:
+        body: bytes | None = None
+        ctype: str | None = None
+        if payload is not None:
+            body = json.dumps(payload).encode("utf-8")
+            ctype = "application/json"
+        raw = self._request_raw(method, path, body=body, content_type=ctype, bearer_override=bearer_override)
+        return json.loads(raw.decode("utf-8")) if raw else None
+
+    # ------------------------------------------------------------------
+    # Core Health, Scoreboard & Bootstrap
+    # ------------------------------------------------------------------
+    def health(self) -> dict[str, Any]:
+        return self._request_json("GET", "/healthz")
+
+    def scoreboard(self) -> dict[str, Any]:
+        return self._request_json("GET", "/api/v1/scoreboard")
+
+    def bootstrap(self) -> dict[str, Any]:
+        return self._request_json("GET", "/api/v1/bootstrap")
+
+    def kernel_public_key_b64(self) -> str:
+        snap = self.bootstrap()
+        return str(snap["kernel_public_key"]["public_key_b64"])
+
+    def builtin_demo_signer(self, principal_id: str) -> SignerKeyBundle:
+        """Fetch a seeded local test smartcard persona from /api/v1/bootstrap for dev/CI ceremonies."""
+        snap = self.bootstrap()
+        for p in snap.get("test_personas") or []:
+            if p.get("principal_id") == principal_id:
+                return SignerKeyBundle(
+                    principal_id=p["principal_id"],
+                    email=p["email"],
+                    display_name=p["display_name"],
+                    role=p["role"],
+                    key_id=p["key_id"],
+                    alg=p["alg"],
+                    public_key_b64=p["public_key_b64"],
+                    private_key_b64=p["private_key_b64"],
+                    key_fingerprint=p["key_fingerprint"],
+                    created_at="",
+                )
+        raise KeyError(f"Demo smartcard persona {principal_id!r} not available on server")
+
+    # ------------------------------------------------------------------
+    # N1 Principals, Standing Warrants & Asymmetric Emergency Freeze
+    # ------------------------------------------------------------------
+    def list_principals(self) -> list[dict[str, Any]]:
+        return self._request_json("GET", "/api/v1/principals")
+
+    def revoke_principal(
+        self,
+        principal_id: str = "",
+        key_fingerprint: str = "",
+        reason_code: str = "SDK_KEY_REVOCATION",
+        revoked_by: str = "g1-warrant-python-sdk",
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "POST",
+            "/api/v1/principals/revoke",
+            {
+                "principal_id": principal_id,
+                "key_fingerprint": key_fingerprint,
+                "reason_code": reason_code,
+                "revoked_by": revoked_by,
+            },
+        )
+
+    def list_warrants(self) -> list[dict[str, Any]]:
+        return self._request_json("GET", "/api/v1/warrants")
+
+    def create_warrant(self, dsse_envelope: dict[str, Any]) -> dict[str, Any]:
+        return self._request_json("POST", "/api/v1/warrants", dsse_envelope)
+
+    def verify_warrant(self, warrant_id: str) -> dict[str, Any]:
+        safe_id = urllib.parse.quote(warrant_id, safe="")
+        try:
+            return self._request_json("POST", f"/api/v1/warrants/{safe_id}/verify", {})
+        except WarrantAPIError as exc:
+            if exc.status_code == 422:
+                return {"valid": False, "reason": exc.message}
+            raise
+
+    def trigger_freeze(
+        self,
+        mode: str = "FREEZE_HOLD",
+        actor: str = "python-sdk-operator",
+        reason_code: str = "EMERGENCY_FREEZE",
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "POST",
+            "/api/v1/freeze",
+            {"mode": mode, "actor": actor, "reason_code": reason_code},
+        )
+
+    def thaw_freeze(self, dsse_envelope: dict[str, Any]) -> dict[str, Any]:
+        return self._request_json("POST", "/api/v1/freeze/thaw", dsse_envelope)
+
+    # ------------------------------------------------------------------
+    # Pipeline, Traces, SARIF Intake & Simulations
+    # ------------------------------------------------------------------
+    def list_pipeline(self) -> list[dict[str, Any]]:
+        return self._request_json("GET", "/api/v1/pipeline")
+
+    def list_traces(self, remediation_id: str) -> list[dict[str, Any]]:
+        safe_id = urllib.parse.quote(remediation_id, safe="")
+        return self._request_json("GET", f"/api/v1/pipeline/{safe_id}/traces")
+
+    def ingest_sarif(
+        self,
+        sarif_payload: bytes | str | Path | dict[str, Any],
+        target_service: str | None = None,
+        profile: str | None = None,
+        max_findings: int | None = None,
+    ) -> list[dict[str, Any]]:
+        if isinstance(sarif_payload, Path):
+            raw = sarif_payload.read_bytes()
+        elif isinstance(sarif_payload, dict):
+            raw = json.dumps(sarif_payload).encode("utf-8")
+        elif isinstance(sarif_payload, str):
+            raw = sarif_payload.encode("utf-8")
+        else:
+            raw = sarif_payload
+
+        params: dict[str, str] = {}
+        if target_service:
+            params["target_service"] = target_service
+        if profile:
+            params["profile"] = profile
+        if max_findings and max_findings > 0:
+            params["max_findings"] = str(max_findings)
+
+        path = "/api/v1/intake/sarif"
+        if params:
+            path += "?" + urllib.parse.urlencode(params)
+        resp = self._request_raw("POST", path, body=raw, content_type="application/json")
+        return json.loads(resp.decode("utf-8"))
+
+    def simulate(self, scenario: str) -> dict[str, Any]:
+        safe_sc = urllib.parse.quote(scenario, safe="")
+        return self._request_json("POST", f"/api/v1/simulate/{safe_sc}", {})
+
+    # ------------------------------------------------------------------
+    # Exceptions, Estate, Shadow Canary, Containment Bridges & Drift
+    # ------------------------------------------------------------------
+    def list_exceptions(self) -> list[dict[str, Any]]:
+        return self._request_json("GET", "/api/v1/exceptions")
+
+    def resolve_exception(
+        self,
+        exception_id: str,
+        decision: str,
+        dsse_envelope: dict[str, Any],
+    ) -> dict[str, Any]:
+        safe_id = urllib.parse.quote(exception_id, safe="")
+        return self._request_json(
+            "POST",
+            f"/api/v1/exceptions/{safe_id}/resolve",
+            {"decision": decision, "dsse_envelope": dsse_envelope},
+        )
+
+    def list_estate(self) -> list[dict[str, Any]]:
+        return self._request_json("GET", "/api/v1/estate")
+
+    def list_shadow_runs(self) -> list[dict[str, Any]]:
+        return self._request_json("GET", "/api/v1/shadow/runs")
+
+    def list_bridges(self) -> list[dict[str, Any]]:
+        return self._request_json("GET", "/api/v1/bridges")
+
+    def list_lockouts(self) -> list[dict[str, Any]]:
+        return self._request_json("GET", "/api/v1/lockouts")
+
+    def list_drift(self) -> list[dict[str, Any]]:
+        return self._request_json("GET", "/api/v1/drift")
+
+    # ------------------------------------------------------------------
+    # N4/N5 Attestations, OSCAL 1.1.2, Auditor Vault & Ledger Chains
+    # ------------------------------------------------------------------
+    def list_attestations(self) -> list[dict[str, Any]]:
+        return self._request_json("GET", "/api/v1/attestations")
+
+    def export_oscal_bundle(self, attestation_or_remediation_id: str) -> dict[str, Any]:
+        safe_id = urllib.parse.quote(attestation_or_remediation_id, safe="")
+        raw = self._request_raw("GET", f"/api/v1/attestations/{safe_id}/oscal")
+        return json.loads(raw.decode("utf-8"))
+
+    def mint_auditor_token(
+        self,
+        label: str = "External 3PAO Assessment",
+        scoped_attestation_ids: list[str] | None = None,
+        ttl_hours: int = 24,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "POST",
+            "/api/v1/auditor-tokens",
+            {
+                "label": label,
+                "scoped_attestation_ids": scoped_attestation_ids or [],
+                "ttl_hours": ttl_hours,
+            },
+        )
+
+    def get_auditor_vault(self, bearer_token: str | None = None) -> dict[str, Any]:
+        return self._request_json("GET", "/api/v1/auditor/vault", bearer_override=bearer_token)
+
+    def list_agent_actions(self) -> list[dict[str, Any]]:
+        return self._request_json("GET", "/api/v1/ledger/actions")
+
+    def verify_ledger_chains(self) -> dict[str, Any]:
+        return self._request_json("POST", "/api/v1/ledger/verify", {})
+
+    # ------------------------------------------------------------------
+    # Live Threat & Scanner Feeds ($0 CISA KEV, Google OSV.dev, Trivy)
+    # ------------------------------------------------------------------
+    def get_feed_status(self) -> dict[str, Any]:
+        return self._request_json("GET", "/api/v1/feeds/status")
+
+    def set_feed_mode(self, mode: str) -> dict[str, Any]:
+        st = self.get_feed_status()
+        cfg = st["config"]
+        cfg["mode"] = mode
+        return self._request_json("POST", "/api/v1/feeds/config", cfg)
+
+    def sync_cisa_kev(self) -> dict[str, Any]:
+        return self._request_json("POST", "/api/v1/feeds/sync/kev", {})
+
+    def sync_osv(self, auto_ingest: bool = False) -> dict[str, Any]:
+        path = "/api/v1/feeds/sync/osv?ingest=true" if auto_ingest else "/api/v1/feeds/sync/osv"
+        return self._request_json("POST", path, {})
+
+    def ingest_osv_advisory(self, osv_id: str, service_id: str) -> list[dict[str, Any]]:
+        return self._request_json(
+            "POST",
+            "/api/v1/feeds/osv/ingest",
+            {"osv_id": osv_id, "service_id": service_id},
+        )

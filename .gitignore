@@ -1,4 +1,9 @@
 web/node_modules/
+__pycache__/
+*.py[cod]
+*.egg-info/
+sdk/python/build/
+sdk/python/dist/
 *.exe
 *.out
 coverage.txt

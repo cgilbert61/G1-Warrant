@@ -32,7 +32,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: warrantd
-          image: ghcr.io/cgilbert61/g1-warrent/warrantd@sha256:6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b
+          image: ghcr.io/cgilbert61/g1-warrant/warrantd@sha256:6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b
           imagePullPolicy: Always
           env:
             - name: WARRANT_LISTEN_ADDR

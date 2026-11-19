@@ -1,0 +1,142 @@
+// Package warrantsdk provides the official typed Go Client SDK and offline
+// cryptographic DSSE/OSCAL ceremony toolkit for G1-Warrant.
+package warrantsdk
+
+import (
+	"fmt"
+
+	"github.com/g1163rt-labs/g1-warrant/internal/crypto"
+	"github.com/g1163rt-labs/g1-warrant/internal/models"
+)
+
+// Version is the semantic version of the G1-Warrant Go SDK.
+const Version = "1.0.0"
+
+// Re-exported protocol constants for callers outside internal/.
+const (
+	RoleServiceOwner        = crypto.RoleServiceOwner
+	RoleAuthorizingOfficial = crypto.RoleAuthorizingOfficial
+
+	FreezeModeOperational = models.FreezeModeOperational
+	FreezeModeHold        = models.FreezeModeHold
+	FreezeModeRollback    = models.FreezeModeRollback
+
+	FeedModeOffline = models.FeedModeOffline
+	FeedModeLive    = models.FeedModeLive
+
+	PayloadTypeWarrant     = crypto.PayloadTypeWarrant
+	PayloadTypeThaw        = crypto.PayloadTypeThaw
+	PayloadTypeException   = crypto.PayloadTypeException
+	PayloadTypeAttestation = crypto.PayloadTypeAttestation
+)
+
+// Public type aliases re-exported cleanly for external Go SDK consumers.
+type (
+	Envelope                 = crypto.Envelope
+	Signature                = crypto.Signature
+	PrincipalKey             = crypto.PrincipalKey
+	GlobalScoreboard         = models.GlobalScoreboard
+	Principal                = models.Principal
+	PrincipalRevocation      = models.PrincipalRevocation
+	WarrantPayload           = models.WarrantPayload
+	WarrantRecord            = models.WarrantRecord
+	FreezeState              = models.FreezeState
+	EstateService            = models.EstateService
+	ShadowComparisonReport   = models.ShadowComparisonReport
+	RemediationItem          = models.RemediationItem
+	TraceEvent               = models.TraceEvent
+	CeilingException         = models.CeilingException
+	ContainmentBridge        = models.ContainmentBridge
+	AdmissionLockout         = models.AdmissionLockout
+	DriftIncident            = models.DriftIncident
+	AgentLedgerEntry         = models.AgentLedgerEntry
+	AttestationRecord        = models.AttestationRecord
+	AuditorShareToken        = models.AuditorShareToken
+	LedgerVerificationReport = models.LedgerVerificationReport
+	FeedRuntimeConfig        = models.FeedRuntimeConfig
+	FeedSyncRun              = models.FeedSyncRun
+	LiveFeedStatus           = models.LiveFeedStatus
+	ExtractedOSVEntry        = models.ExtractedOSVEntry
+)
+
+// APIError represents a structured non-2xx HTTP response from warrantd.
+type APIError struct {
+	StatusCode int
+	Method     string
+	Endpoint   string
+	Message    string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("warrantsdk: %s %s returned HTTP %d: %s", e.Method, e.Endpoint, e.StatusCode, e.Message)
+}
+
+// IsAuditorScopeViolation reports whether an external 3PAO auditor bearer token
+// was blocked from accessing an operational control-plane endpoint (NIST AC-3).
+func (e *APIError) IsAuditorScopeViolation() bool {
+	return e != nil && e.StatusCode == 403
+}
+
+// IsPolicyOrCeremonyRejection reports whether N1/N2/N3 OPA policy or DSSE verification rejected the request.
+func (e *APIError) IsPolicyOrCeremonyRejection() bool {
+	return e != nil && e.StatusCode == 422
+}
+
+// HealthStatus represents the response from GET /healthz.
+type HealthStatus struct {
+	Status       string `json:"status"`
+	Service      string `json:"service"`
+	Organization string `json:"organization"`
+	FreezeMode   string `json:"freeze_mode"`
+}
+
+// WarrantVerifyResponse represents the response from POST /api/v1/warrants/{id}/verify.
+type WarrantVerifyResponse struct {
+	Valid   bool           `json:"valid"`
+	Reason  string         `json:"reason,omitempty"`
+	Warrant *WarrantRecord `json:"warrant,omitempty"`
+}
+
+// RevokePrincipalRequest specifies parameters for POST /api/v1/principals/revoke.
+type RevokePrincipalRequest struct {
+	PrincipalID    string `json:"principal_id"`
+	KeyFingerprint string `json:"key_fingerprint"`
+	ReasonCode     string `json:"reason_code"`
+	RevokedBy      string `json:"revoked_by"`
+}
+
+// SARIFIntakeOptions configures optional query parameters on POST /api/v1/intake/sarif.
+type SARIFIntakeOptions struct {
+	Profile          string // e.g. "STATELESS_CLEAN", "STATEFUL_DDL", "BAD_SYSCALL_EXECVE"
+	TargetService    string
+	VulnerableDigest string
+	MaxFindings      int
+}
+
+// OSVSyncResponse represents the response from POST /api/v1/feeds/sync/osv.
+type OSVSyncResponse struct {
+	SyncRun    FeedSyncRun         `json:"sync_run"`
+	Advisories []ExtractedOSVEntry `json:"advisories"`
+	Ingested   []RemediationItem   `json:"ingested,omitempty"`
+}
+
+// MintedAuditorLink represents the response from POST /api/v1/auditor-tokens.
+type MintedAuditorLink struct {
+	Token      AuditorShareToken `json:"token"`
+	Bearer     string            `json:"bearer"`
+	AuditorURL string            `json:"auditor_url"`
+}
+
+// AuditorVaultSnapshot represents the scoped read-only response from GET /api/v1/auditor/vault.
+type AuditorVaultSnapshot struct {
+	TokenMetadata   AuditorShareToken        `json:"token_metadata"`
+	Attestations    []AttestationRecord      `json:"attestations"`
+	LedgerProof     LedgerVerificationReport `json:"ledger_proof"`
+	KernelPublicKey map[string]string        `json:"kernel_public_key"`
+}
+
+// SSEEvent represents a single real-time control-plane event from GET /api/v1/events/stream.
+type SSEEvent struct {
+	Event string
+	Data  []byte
+}

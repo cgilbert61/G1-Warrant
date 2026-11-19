@@ -27,7 +27,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: warrant-extractor
-          image: ghcr.io/cgilbert61/g1-warrent/warrant-extractor@sha256:d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35
+          image: ghcr.io/cgilbert61/g1-warrant/warrant-extractor@sha256:d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35
           imagePullPolicy: Always
           env:
             - name: EXTRACTOR_LISTEN_ADDR

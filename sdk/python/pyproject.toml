@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "g1-warrant-sdk"
+version = "1.0.0"
+description = "Official Python Client SDK, Offline DSSE/OSCAL Verifier & CLI for G1-Warrant by G1163RT Security Labs"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+authors = [
+  { name = "G1163RT Security Labs, Inc.", email = "security@g1163rt.sec" }
+]
+dependencies = [
+  "cryptography>=42.0.0",
+]
+
+[project.scripts]
+g1-warrant = "g1_warrant.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/cgilbert61/G1-Warrant"
+Repository = "https://github.com/cgilbert61/G1-Warrant"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["g1_warrant*"]
