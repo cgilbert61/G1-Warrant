@@ -53,6 +53,7 @@ type (
 	AttestationRecord        = models.AttestationRecord
 	AuditorShareToken        = models.AuditorShareToken
 	LedgerVerificationReport = models.LedgerVerificationReport
+	LedgerCheckpoint         = models.LedgerCheckpoint
 	FeedRuntimeConfig        = models.FeedRuntimeConfig
 	FeedSyncRun              = models.FeedSyncRun
 	LiveFeedStatus           = models.LiveFeedStatus

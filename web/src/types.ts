@@ -135,6 +135,8 @@ export interface EstateService {
   rollback_automation_verified: boolean;
   baseline_syscalls: string[];
   eligible: boolean;
+  autonomy_tier?: string;
+  shadow_db_mode?: string;
   eligibility_checklist: EligibilityCheckItem[];
   updated_at: string;
 }
@@ -203,13 +205,14 @@ export interface RemediationItem {
   vulnerable_symbol: string;
   exploit_vector: string;
   stage: 'INTAKE_REPRO' | 'BRIDGED_CONTAINED' | 'SHADOW_CANARY' | 'VERIFYING_LOCKING' | 'ATTESTED_CLOSED';
-  status_health: 'NORMAL' | 'BRIDGED' | 'EXCEPTION_ROUTED' | 'ROLLBACK_FAILED' | 'DRIFT_VIOLATION' | 'FROZEN' | 'ATTESTED';
+  status_health: 'NORMAL' | 'BRIDGED' | 'EXCEPTION_ROUTED' | 'ROLLBACK_FAILED' | 'QUARANTINED_ROLLBACK' | 'DRIFT_VIOLATION' | 'FROZEN' | 'ATTESTED';
   blocker_code?: string;
   canary_weight: number;
   stateless_passed: boolean | null;
   schema_diff_passed: boolean | null;
   syscall_diff_passed: boolean | null;
   twin_replay_status: string;
+  assurance_tier?: string;
   pod_sweep_matched: number;
   pod_sweep_total: number;
   lockout_policy_id?: string;
@@ -262,6 +265,8 @@ export interface ContainmentBridge {
   service_id: string;
   cve_id: string;
   bridge_type: string;
+  containment_mode?: string;
+  rulepack_id?: string;
   status: 'ARMED' | 'RETIRED' | 'REARMED_DRIFT';
   sla_minutes: number;
   blocker_reason_code: string;
@@ -321,6 +326,8 @@ export interface AttestationRecord {
   slot2_principal_id: string;
   slot2_email: string;
   twin_transcript_sha256: string;
+  assurance_tier?: string;
+  signer_backend?: string;
   fleet_digest_manifest: PodDigestEntry[];
   lockout_policy_id: string;
   reverify_expires_at: string;
@@ -356,6 +363,10 @@ export interface AgentLedgerEntry {
 
 export interface LedgerVerificationReport {
   all_valid: boolean;
+  external_anchor_verified?: boolean;
+  latest_checkpoint_id?: string;
+  latest_combined_merkle_root?: string;
+  superuser_tamper_detail?: string;
   verified_at: string;
   tables: Array<{
     table_name: string;

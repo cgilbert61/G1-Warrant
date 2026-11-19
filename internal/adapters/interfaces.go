@@ -25,6 +25,7 @@ type BridgeApplyRequest struct {
 	ServiceID         string
 	Namespace         string
 	CVEID             string
+	CWEID             string
 	ExploitVector     string
 	AffectedPort      int
 	BlockedPaths      []string
@@ -54,8 +55,10 @@ type ShieldEnforcer interface {
 type DeploymentTarget interface {
 	ProgressCanary(ctx context.Context, serviceID string, req fleetsim.StageRolloutRequest) (*fleetsim.StageRolloutResponse, error)
 	RollbackCanary(ctx context.Context, serviceID string) error
+	RollbackToDigest(ctx context.Context, serviceID, targetDigest string) error
 	InspectLiveWorkload(ctx context.Context, serviceID string) (*fleetsim.WorkloadState, error)
 	EnforceAdmissionLockout(ctx context.Context, remediationID, serviceID, cveID, bannedDigest, patchedDigest string) (*models.AdmissionLockout, error)
+	SuspendAdmissionLockout(ctx context.Context, lockoutID, policyName, reason string) error
 	InjectDriftSimulation(ctx context.Context, serviceID, bannedDigest string) (roguePod string, injectedUnixMs int64, err error)
 	RegisterImageProfile(ctx context.Context, prof fleetsim.ImageBehaviorProfile) error
 }

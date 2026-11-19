@@ -134,6 +134,12 @@ func (e *Engine) SubmitDualSignedWarrant(ctx context.Context, env crypto.Envelop
 	if wp.MaxP99LatencyMs <= 0 {
 		wp.MaxP99LatencyMs = 120.0
 	}
+	if wp.MinCanarySamples <= 0 {
+		wp.MinCanarySamples = 500
+	}
+	if wp.StageDwellSeconds <= 0 {
+		wp.StageDwellSeconds = 300
+	}
 
 	rec := &models.WarrantRecord{
 		WarrantID:              wp.WarrantID,
@@ -143,6 +149,9 @@ func (e *Engine) SubmitDualSignedWarrant(ctx context.Context, env crypto.Envelop
 		KEVEligible:            wp.KEVEligible,
 		MaxBlastRadiusReplicas: wp.MaxBlastRadiusReplicas,
 		AllowStatefulPatches:   wp.AllowStatefulPatches,
+		AllowGuardedCanary:     wp.AllowGuardedCanary,
+		MinCanarySamples:       wp.MinCanarySamples,
+		StageDwellSeconds:      wp.StageDwellSeconds,
 		SLABridgeMinutes:       wp.SLABridgeMinutes,
 		MaxP99LatencyMs:        wp.MaxP99LatencyMs,
 		IssuedAt:               issuedAt,

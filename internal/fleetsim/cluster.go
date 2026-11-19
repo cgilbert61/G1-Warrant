@@ -47,6 +47,8 @@ type LockoutPolicyState struct {
 	PolicyName      string    `json:"policy_name"`
 	ServiceID       string    `json:"service_id"`
 	BannedDigest    string    `json:"banned_digest"`
+	Suspended       bool      `json:"suspended,omitempty"`
+	SuspendedReason string    `json:"suspended_reason,omitempty"`
 	VAPManifestYAML string    `json:"vap_manifest_yaml"`
 	EnforcedAt      time.Time `json:"enforced_at"`
 }
@@ -95,24 +97,28 @@ type StageRolloutResponse struct {
 	CanarySyscalls             []string `json:"canary_syscalls"`
 }
 
-// TwinReplayRequest executes an isolated exploit replay against an ephemeral twin pod.
+// TwinReplayRequest executes a differential isolated exploit replay against ephemeral unpatched & patched twin pods.
 type TwinReplayRequest struct {
 	ServiceID        string `json:"service_id"`
 	CVEID            string `json:"cve_id"`
+	VulnerableDigest string `json:"vulnerable_digest,omitempty"`
 	PatchedDigest    string `json:"patched_digest"`
 	ExploitVector    string `json:"exploit_vector"`
 	VulnerableSymbol string `json:"vulnerable_symbol"`
+	HasSignedProbe   bool   `json:"has_signed_probe"`
+	BrokenProbe      bool   `json:"broken_probe,omitempty"`
 }
 
-// TwinReplayResponse returns deterministic proof that the exploit was blocked in the isolated twin.
+// TwinReplayResponse returns deterministic proof from both the positive-control unpatched twin and patched twin.
 type TwinReplayResponse struct {
-	Status             string `json:"status"` // "EXPLOIT_BLOCKED" | "EXPLOIT_SUCCEEDED"
-	IsolatedNamespace  string `json:"isolated_namespace"`
-	TwinPodName        string `json:"twin_pod_name"`
-	TestedDigest       string `json:"tested_digest"`
-	ExitCode           int    `json:"exit_code"`
-	TranscriptSHA256   string `json:"transcript_sha256"`
-	ProductionUntouched bool  `json:"production_untouched"`
+	UnpatchedStatus     string `json:"unpatched_status"` // "EXPLOIT_SUCCEEDED" | "EXPLOIT_BLOCKED" | "NOT_APPLICABLE"
+	Status              string `json:"status"`           // "EXPLOIT_BLOCKED" | "EXPLOIT_SUCCEEDED" | "NO_PROBE_PASSIVE_ONLY"
+	IsolatedNamespace   string `json:"isolated_namespace"`
+	TwinPodName         string `json:"twin_pod_name"`
+	TestedDigest        string `json:"tested_digest"`
+	ExitCode            int    `json:"exit_code"`
+	TranscriptSHA256    string `json:"transcript_sha256"`
+	ProductionUntouched bool   `json:"production_untouched"`
 }
 
 // ClusterSimulator maintains the in-memory state of the simulated 6-service Kubernetes/Cilium cluster.
@@ -330,9 +336,9 @@ func (cs *ClusterSimulator) Handler() http.Handler {
 			return
 		}
 
-		// Admission Lockout check: reject banned digests at admission time
+		// Admission Lockout check: reject banned digests at admission time unless explicitly suspended for quarantined rollback
 		for _, lo := range cs.lockouts {
-			if lo.ServiceID == svcID && lo.BannedDigest == req.PatchedDigest {
+			if !lo.Suspended && lo.ServiceID == svcID && lo.BannedDigest == req.PatchedDigest {
 				writeSimJSON(w, http.StatusForbidden, map[string]string{
 					"error":  "ADMISSION_DENIED_LOCKED_DIGEST",
 					"policy": lo.PolicyName,
@@ -354,7 +360,7 @@ func (cs *ClusterSimulator) Handler() http.Handler {
 			canarySyscalls = appendUnique(canarySyscalls, sc)
 		}
 
-		// Build realistic HTTP responses containing volatile fields (RFC3339 timestamps, UUIDv4, hex nonces)
+		// Build realistic HTTP responses containing volatile fields AND unordered SQL-style array results
 		nowBase := time.Now().UTC().Format(time.RFC3339Nano)
 		nowCanary := time.Now().UTC().Add(3 * time.Millisecond).Format(time.RFC3339Nano)
 		baseMap := map[string]any{
@@ -365,6 +371,7 @@ func (cs *ClusterSimulator) Handler() http.Handler {
 			"trace_nonce":  crypto.SHA256Hex([]byte(nowBase))[:32],
 			"schema_ver":   2,
 			"ledger_ok":    true,
+			"shard_nodes":  []any{"shard-east-1", "shard-west-2", "shard-central-3"},
 		}
 		canaryMap := map[string]any{
 			"service":      svcID,
@@ -374,6 +381,7 @@ func (cs *ClusterSimulator) Handler() http.Handler {
 			"trace_nonce":  crypto.SHA256Hex([]byte(nowCanary))[:32],
 			"schema_ver":   2,
 			"ledger_ok":    true,
+			"shard_nodes":  []any{"shard-west-2", "shard-central-3", "shard-east-1"}, // intentionally unordered array!
 		}
 		if breakingSchema {
 			delete(canaryMap, "ledger_ok")
@@ -435,6 +443,11 @@ func (cs *ClusterSimulator) Handler() http.Handler {
 
 	mux.HandleFunc("POST /v1/rollouts/{service_id}/rollback", func(w http.ResponseWriter, r *http.Request) {
 		svcID := r.PathValue("service_id")
+		var req struct {
+			TargetDigest string `json:"target_digest"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+
 		cs.mu.Lock()
 		defer cs.mu.Unlock()
 		wl, ok := cs.workloads[svcID]
@@ -442,15 +455,30 @@ func (cs *ClusterSimulator) Handler() http.Handler {
 			writeSimJSON(w, http.StatusNotFound, map[string]string{"error": "workload not found"})
 			return
 		}
+		targetDigest := wl.BaselineDigest
+		if req.TargetDigest != "" {
+			// Enforce admission lockout even during rollback unless lockout was explicitly suspended after containment re-arm!
+			for _, lo := range cs.lockouts {
+				if !lo.Suspended && lo.ServiceID == svcID && lo.BannedDigest == req.TargetDigest {
+					writeSimJSON(w, http.StatusForbidden, map[string]string{
+						"error":  "ROLLBACK_BLOCKED_BY_ACTIVE_ADMISSION_LOCKOUT",
+						"policy": lo.PolicyName,
+					})
+					return
+				}
+			}
+			targetDigest = req.TargetDigest
+			wl.BaselineDigest = targetDigest
+		}
 		wl.CanaryDigest = ""
 		wl.CanaryWeight = 0
 		for i := range wl.Pods {
-			wl.Pods[i].RunningDigest = wl.BaselineDigest
+			wl.Pods[i].RunningDigest = targetDigest
 		}
 		writeSimJSON(w, http.StatusOK, map[string]any{
-			"service_id":      svcID,
-			"rolled_back_to":  wl.BaselineDigest,
-			"canary_weight":   0,
+			"service_id":     svcID,
+			"rolled_back_to": targetDigest,
+			"canary_weight":  0,
 		})
 	})
 
@@ -460,20 +488,45 @@ func (cs *ClusterSimulator) Handler() http.Handler {
 			writeSimJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		ns := fmt.Sprintf("twin-ephemeral-%s", crypto.SHA256Hex([]byte(req.CVEID+":"+req.PatchedDigest))[:10])
+		pod := fmt.Sprintf("twin-%s-repro", req.ServiceID)
+
+		if !req.HasSignedProbe {
+			transcriptMaterial := fmt.Sprintf("TWIN_PASSIVE_V2|%s|%s|%s|NO_SIGNED_PROBE_ADVISORY_ONLY", req.ServiceID, req.CVEID, req.PatchedDigest)
+			writeSimJSON(w, http.StatusOK, TwinReplayResponse{
+				UnpatchedStatus:     "NOT_APPLICABLE",
+				Status:              "NO_PROBE_PASSIVE_ONLY",
+				IsolatedNamespace:   ns,
+				TwinPodName:         pod,
+				TestedDigest:        req.PatchedDigest,
+				ExitCode:            0,
+				TranscriptSHA256:    crypto.SHA256Hex([]byte(transcriptMaterial)),
+				ProductionUntouched: true,
+			})
+			return
+		}
+
 		cs.mu.RLock()
 		prof := cs.profiles[req.PatchedDigest]
 		cs.mu.RUnlock()
 
+		// Step A: Differential Positive Control against unpatched VulnerableDigest
+		unpatchedStatus := "EXPLOIT_SUCCEEDED"
+		if req.BrokenProbe {
+			unpatchedStatus = "EXPLOIT_BLOCKED" // broken PoC fails to reproduce on vulnerable binary!
+		}
+
+		// Step B: Replay identical signed probe against PatchedDigest
 		status := "EXPLOIT_BLOCKED"
 		exitCode := 0
 		if prof.ExploitStillWorks {
 			status = "EXPLOIT_SUCCEEDED"
 			exitCode = 42
 		}
-		ns := fmt.Sprintf("twin-ephemeral-%s", crypto.SHA256Hex([]byte(req.CVEID+":"+req.PatchedDigest))[:10])
-		pod := fmt.Sprintf("twin-%s-repro", req.ServiceID)
-		transcriptMaterial := fmt.Sprintf("TWIN_V1|%s|%s|%s|%s|%s|PROD_ISOLATED=true", req.ServiceID, req.CVEID, req.PatchedDigest, req.ExploitVector, status)
+		transcriptMaterial := fmt.Sprintf("TWIN_DIFF_V2|%s|%s|unpatched=%s:%s|patched=%s:%s|PROD_ISOLATED=true",
+			req.ServiceID, req.CVEID, req.VulnerableDigest, unpatchedStatus, req.PatchedDigest, status)
 		writeSimJSON(w, http.StatusOK, TwinReplayResponse{
+			UnpatchedStatus:     unpatchedStatus,
 			Status:              status,
 			IsolatedNamespace:   ns,
 			TwinPodName:         pod,
@@ -496,6 +549,25 @@ func (cs *ClusterSimulator) Handler() http.Handler {
 		cs.mu.Lock()
 		cs.lockouts[lo.LockoutID] = lo
 		cs.mu.Unlock()
+		writeSimJSON(w, http.StatusOK, lo)
+	})
+
+	mux.HandleFunc("POST /v1/admission/lockouts/{lockout_id}/suspend", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("lockout_id")
+		var req struct {
+			Reason string `json:"reason"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		cs.mu.Lock()
+		defer cs.mu.Unlock()
+		lo, ok := cs.lockouts[id]
+		if !ok {
+			writeSimJSON(w, http.StatusNotFound, map[string]string{"error": "lockout not found"})
+			return
+		}
+		lo.Suspended = true
+		lo.SuspendedReason = req.Reason
+		cs.lockouts[id] = lo
 		writeSimJSON(w, http.StatusOK, lo)
 	})
 

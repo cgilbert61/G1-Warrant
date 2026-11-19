@@ -316,21 +316,29 @@ func (s *Store) AppendWarrantEnvelope(ctx context.Context, w *models.WarrantReco
 		return err
 	}
 
+	if w.MinCanarySamples <= 0 {
+		w.MinCanarySamples = 500
+	}
+	if w.StageDwellSeconds <= 0 {
+		w.StageDwellSeconds = 300
+	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO warrant_envelopes (
 			warrant_id, warrant_class, scope_services, max_cvss, kev_eligible,
-			max_blast_radius_replicas, allow_stateful_patches, sla_bridge_minutes, max_p99_latency_ms,
+			max_blast_radius_replicas, allow_stateful_patches, allow_guarded_canary, min_canary_samples, stage_dwell_seconds,
+			sla_bridge_minutes, max_p99_latency_ms,
 			issued_at, expires_at, dsse_envelope,
 			slot1_principal_id, slot1_email, slot1_key_fp, slot1_role,
 			slot2_principal_id, slot2_email, slot2_key_fp, slot2_role,
 			prev_hash, entry_hash, created_at
 		) VALUES (
-			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
-			$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
+			$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26
 		)
 	`,
 		w.WarrantID, w.WarrantClass, scopeJSON, w.MaxCVSS, w.KEVEligible,
-		w.MaxBlastRadiusReplicas, w.AllowStatefulPatches, w.SLABridgeMinutes, w.MaxP99LatencyMs,
+		w.MaxBlastRadiusReplicas, w.AllowStatefulPatches, w.AllowGuardedCanary, w.MinCanarySamples, w.StageDwellSeconds,
+		w.SLABridgeMinutes, w.MaxP99LatencyMs,
 		w.IssuedAt, w.ExpiresAt, envJSON,
 		w.Slot1PrincipalID, w.Slot1Email, w.Slot1KeyFP, w.Slot1Role,
 		w.Slot2PrincipalID, w.Slot2Email, w.Slot2KeyFP, w.Slot2Role,
@@ -424,19 +432,25 @@ func (s *Store) AppendAttestation(ctx context.Context, att *models.AttestationRe
 		return err
 	}
 
+	if att.AssuranceTier == "" {
+		att.AssuranceTier = models.AssuranceTier1PassiveDigestSBOM
+	}
+	if att.SignerBackend == "" {
+		att.SignerBackend = "EPHEMERAL_MEMORY_ED25519"
+	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO attestation_records (
 			attestation_id, remediation_id, service_id, cve_id, is_kev, warrant_id,
 			slot1_principal_id, slot1_email, slot2_principal_id, slot2_email,
-			twin_transcript_sha256, fleet_digest_manifest, lockout_policy_id, reverify_expires_at,
+			twin_transcript_sha256, assurance_tier, signer_backend, fleet_digest_manifest, lockout_policy_id, reverify_expires_at,
 			dsse_envelope, oscal_poam_json, ttvr_seconds, prev_hash, entry_hash, minted_at
 		) VALUES (
-			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
 		)
 	`,
 		att.AttestationID, att.RemediationID, att.ServiceID, att.CVEID, att.IsKEV, att.WarrantID,
 		att.Slot1PrincipalID, att.Slot1Email, att.Slot2PrincipalID, att.Slot2Email,
-		att.TwinTranscriptSHA256, manifestJSON, att.LockoutPolicyID, att.ReverifyExpiresAt,
+		att.TwinTranscriptSHA256, att.AssuranceTier, att.SignerBackend, manifestJSON, att.LockoutPolicyID, att.ReverifyExpiresAt,
 		envJSON, oscalJSON, att.TTVRSeconds, att.PrevHash, att.EntryHash, att.MintedAt,
 	)
 	if err != nil {
@@ -446,8 +460,8 @@ func (s *Store) AppendAttestation(ctx context.Context, att *models.AttestationRe
 }
 
 // VerifyAllLedgerChains walks every row in warrant_envelopes, agent_action_ledger, and attestation_records
-// and verifies both prev_hash continuity and recomputed entry_hash integrity.
-func (s *Store) VerifyAllLedgerChains(ctx context.Context) (*models.LedgerVerificationReport, error) {
+// and verifies both prev_hash continuity, recomputed entry_hash integrity, and external Merkle checkpoint consistency.
+func (s *Store) VerifyAllLedgerChains(ctx context.Context, externalWitnesses ...[]models.LedgerCheckpoint) (*models.LedgerVerificationReport, error) {
 	wStatus, err := s.verifyWarrantChain(ctx)
 	if err != nil {
 		return nil, err
@@ -460,11 +474,20 @@ func (s *Store) VerifyAllLedgerChains(ctx context.Context) (*models.LedgerVerifi
 	if err != nil {
 		return nil, err
 	}
-	allValid := wStatus.Valid && aStatus.Valid && attStatus.Valid
+	var witnessSlice []models.LedgerCheckpoint
+	if len(externalWitnesses) > 0 {
+		witnessSlice = externalWitnesses[0]
+	}
+	anchorOK, cpID, merkleRoot, tamperDetail := s.VerifyHistoricalCheckpointConsistency(ctx, witnessSlice)
+	allValid := wStatus.Valid && aStatus.Valid && attStatus.Valid && anchorOK
 	return &models.LedgerVerificationReport{
-		AllValid:   allValid,
-		VerifiedAt: time.Now().UTC(),
-		Tables:     []models.ChainTableStatus{wStatus, aStatus, attStatus},
+		AllValid:                allValid,
+		ExternalAnchorVerified:  anchorOK,
+		LatestCheckpointID:      cpID,
+		LatestCombinedMerkleHex: merkleRoot,
+		SuperuserTamperDetail:   tamperDetail,
+		VerifiedAt:              time.Now().UTC(),
+		Tables:                  []models.ChainTableStatus{wStatus, aStatus, attStatus},
 	}, nil
 }
 

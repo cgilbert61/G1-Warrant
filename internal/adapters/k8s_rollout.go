@@ -59,7 +59,14 @@ func (k *K8sRolloutAdapter) ProgressCanary(ctx context.Context, serviceID string
 }
 
 func (k *K8sRolloutAdapter) RollbackCanary(ctx context.Context, serviceID string) error {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/v1/rollouts/%s/rollback", k.fleetBaseURL, serviceID), bytes.NewReader([]byte(`{}`)))
+	return k.RollbackToDigest(ctx, serviceID, "")
+}
+
+func (k *K8sRolloutAdapter) RollbackToDigest(ctx context.Context, serviceID, targetDigest string) error {
+	reqBody, _ := json.Marshal(map[string]string{
+		"target_digest": targetDigest,
+	})
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/v1/rollouts/%s/rollback", k.fleetBaseURL, serviceID), bytes.NewReader(reqBody))
 	if err != nil {
 		return err
 	}
@@ -178,10 +185,32 @@ violation contains {"msg": msg} if {
 		BannedDigest:    bannedDigest,
 		PatchedDigest:   patchedDigest,
 		PolicyName:      policyName,
+		Status:          "ENFORCED",
 		VAPManifestYAML: string(vapYAML),
 		GatekeeperRego:  gatekeeperRego,
 		EnforcedAt:      now,
 	}, nil
+}
+
+func (k *K8sRolloutAdapter) SuspendAdmissionLockout(ctx context.Context, lockoutID, policyName, reason string) error {
+	body, _ := json.Marshal(map[string]string{
+		"policy_name": policyName,
+		"reason":      reason,
+	})
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/v1/admission/lockouts/%s/suspend", k.fleetBaseURL, lockoutID), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := k.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("suspend admission lockout %s: %w", lockoutID, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("cluster failed suspending lockout %s: HTTP %d", lockoutID, resp.StatusCode)
+	}
+	return nil
 }
 
 func (k *K8sRolloutAdapter) RunExploitReplay(ctx context.Context, req fleetsim.TwinReplayRequest) (*fleetsim.TwinReplayResponse, error) {

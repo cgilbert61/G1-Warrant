@@ -1,4 +1,4 @@
-.PHONY: up up-live down docker-test logs build clean compliance-check sast secrets iac sbom container-scan dast a11y load-test govready
+.PHONY: up up-live down docker-test logs build clean license-check compliance-check sast secrets iac sbom container-scan dast a11y load-test govready
 
 up:
 	docker compose up --build -d
@@ -21,8 +21,11 @@ build:
 clean:
 	docker compose down -v --remove-orphans
 
+license-check:
+	python scripts/audit_licenses.py
+
 # ==============================================================================
-# 9-Gate Federal DevSecOps & Compliance Pipeline (NIST SP 800-53 / DISA STIG)
+# 9-Gate Federal DevSecOps & Compliance Pipeline (NIST SP 800-53 Rev 5 / STIG)
 # ==============================================================================
 compliance-check:
 	python scripts/compliance_harness.py --all

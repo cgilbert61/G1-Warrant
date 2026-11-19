@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"github.com/g1163rt-labs/g1-warrant/internal/crypto"
@@ -60,7 +61,6 @@ func BuildDeterministicSARIF(cveID, cweID string, cvss float64, isKEV bool, serv
 							"vulnerable_symbol": vulnSymbol,
 							"exploit_vector":    vector,
 							"affected_port":     port,
-							"blocked_paths":     []string{"/api/v1/debug", "/internal/admin"},
 						},
 					},
 				},
@@ -75,7 +75,11 @@ func BuildDeterministicSARIF(cveID, cweID string, cvss float64, isKEV bool, serv
 // the 6-service enterprise estate, historical OSCAL closures, an aging containment bridge,
 // and an active Four-Eyes stateful patch exception.
 func (o *ControlPlaneOrchestrator) SeedEnterpriseEstate(ctx context.Context) error {
-	// 1. Register built-in PIV/Smartcard principals + Kernel + Publisher
+	if os.Getenv("WARRANT_ENABLE_TEST_SMARTCARDS") != "true" {
+		log.Printf("WARRANT_ENABLE_TEST_SMARTCARDS is not enabled; skipping built-in sandbox smartcard seed.")
+		return nil
+	}
+	// 1. Register local sandbox PIV/Smartcard principals + Kernel + Publisher (only when WARRANT_ENABLE_TEST_SMARTCARDS=true)
 	personas := crypto.BuiltinTestPersonas()
 	var alice, bob, elena, marcus crypto.TestSmartcardPersona
 	for _, p := range personas {
@@ -271,6 +275,9 @@ func (o *ControlPlaneOrchestrator) SeedEnterpriseEstate(ctx context.Context) err
 		KEVEligible:            true,
 		MaxBlastRadiusReplicas: 10,
 		AllowStatefulPatches:   false,
+		AllowGuardedCanary:     true,
+		MinCanarySamples:       500,
+		StageDwellSeconds:      300,
 		SLABridgeMinutes:       60,
 		MaxP99LatencyMs:        130.0,
 		IssuedAt:               now.Add(-24 * time.Hour).Format(time.RFC3339),

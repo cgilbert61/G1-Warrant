@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -46,25 +47,65 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 		return nil, err
 	}
 	broker := NewSSEBroker()
-	kernelPub, kernelPriv := crypto.KernelKeypair(kernelSeed)
+
+	var signer crypto.EnvelopeSigner
+	if kmsURL := strings.TrimSpace(os.Getenv("WARRANT_KMS_SIGN_URL")); kmsURL != "" {
+		kmsSigner, kErr := crypto.NewRemoteKMSSigner(
+			kmsURL,
+			os.Getenv("WARRANT_KMS_BEARER_TOKEN"),
+			os.Getenv("WARRANT_KMS_KEY_ID"),
+			os.Getenv("WARRANT_KMS_PUBLIC_KEY_B64"),
+		)
+		if kErr != nil {
+			return nil, fmt.Errorf("configure RemoteKMSSigner: %w", kErr)
+		}
+		signer = kmsSigner
+	} else if strings.TrimSpace(kernelSeed) != "" {
+		signer = crypto.NewSeededDevEd25519Signer(kernelSeed)
+	} else {
+		ephSigner, eErr := crypto.NewEphemeralEd25519Signer()
+		if eErr != nil {
+			return nil, fmt.Errorf("generate ephemeral Ed25519 kernel signer: %w", eErr)
+		}
+		signer = ephSigner
+	}
 
 	n1, err := warrant.NewEngine(ctx, store, pol, webauthnCfg, broker.Broadcast)
 	if err != nil {
 		return nil, err
 	}
-	n4 := agentcp.NewControlPlane(store, kernelPub, kernelPriv, extractorURL, broker.Broadcast)
+	n4 := agentcp.NewControlPlane(store, signer, extractorURL, broker.Broadcast)
 	feedMgr, err := feeds.NewManager(ctx, store, n4, broker.Broadcast)
 	if err != nil {
 		return nil, err
 	}
-	shield := adapters.NewCiliumShieldAdapter(fleetURL)
-	k8s := adapters.NewK8sRolloutAdapter(fleetURL)
+
+	rulepacks := adapters.NewDefaultRulepackRegistry()
+	var shield adapters.ShieldEnforcer
+	var deploy adapters.DeploymentTarget
+	var twin adapters.TwinRunner
+
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("WARRANT_CLUSTER_DRIVER")), "kubernetes") {
+		liveK8s, kErr := adapters.NewLiveKubernetesAdapterFromEnv(rulepacks)
+		if kErr != nil {
+			return nil, fmt.Errorf("initialize LiveKubernetesAdapter: %w", kErr)
+		}
+		shield = liveK8s
+		deploy = liveK8s
+		twin = liveK8s
+	} else {
+		shield = adapters.NewCiliumShieldAdapter(fleetURL, rulepacks)
+		simK8s := adapters.NewK8sRolloutAdapter(fleetURL)
+		deploy = simK8s
+		twin = simK8s
+	}
+
 	fixProv := adapters.NewDeterministicFixProvider()
 	sarifIn := adapters.NewSARIFIntakeAdapter(n4)
 
-	n2 := gate.NewEngine(store, pol, n1, n4, k8s, broker.Broadcast)
-	n3 := verify.NewEngine(store, pol, n1, n4, shield, k8s, k8s, broker.Broadcast)
-	n5 := ledger.NewEngine(store, pol, n1, kernelPub, kernelPriv, broker.Broadcast)
+	n2 := gate.NewEngine(store, pol, n1, n4, deploy, broker.Broadcast)
+	n3 := verify.NewEngine(store, pol, n1, n4, shield, deploy, twin, broker.Broadcast, rulepacks)
+	n5 := ledger.NewEngine(store, pol, n1, signer, broker.Broadcast)
 
 	return &ControlPlaneOrchestrator{
 		Store:       store,
@@ -78,8 +119,8 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 		SARIFIntake: sarifIn,
 		FixProvider: fixProv,
 		Shield:      shield,
-		Deploy:      k8s,
-		Twin:        k8s,
+		Deploy:      deploy,
+		Twin:        twin,
 		Broker:      broker,
 		WebAuthnCfg: webauthnCfg,
 	}, nil
@@ -223,6 +264,7 @@ func (o *ControlPlaneOrchestrator) ExecuteSARIFRemediationWithOptions(
 			ServiceID:         svc.ServiceID,
 			Namespace:         svc.Namespace,
 			CVEID:             f.CVEID,
+			CWEID:             f.CWEID,
 			ExploitVector:     f.ExploitVector,
 			AffectedPort:      f.AffectedPort,
 			BlockedPaths:      f.BlockedPaths,

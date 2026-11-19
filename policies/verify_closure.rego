@@ -4,9 +4,46 @@ import rego.v1
 
 default allow_bridge_retirement := false
 default allow_attestation_mint := false
+default assurance_tier := "UNVERIFIED"
+
+# Case A: Signed Regression Probe Present -> Differential Twin Proof Required
+# Must FIRST reproduce on unpatched vulnerable_digest (positive control) AND be blocked on patched_digest!
+has_probe if {
+	object.get(input, "has_signed_probe", true) == true
+}
+
+differential_twin_valid if {
+	has_probe
+	object.get(input, "unpatched_twin_status", "EXPLOIT_SUCCEEDED") == "EXPLOIT_SUCCEEDED"
+	input.twin_replay_status == "EXPLOIT_BLOCKED"
+}
+
+# Case B: Advisory-Only Finding (No Weaponized PoC Available) -> Passive Digest & Provenance Proof
+passive_sbom_valid if {
+	not has_probe
+	object.get(input, "provenance_verified", false) == true
+	input.twin_replay_status == "NO_PROBE_PASSIVE_ONLY"
+}
+
+assurance_tier := "ASSURANCE_TIER_2_DIFFERENTIAL_TWIN" if {
+	differential_twin_valid
+} else := "ASSURANCE_TIER_1_PASSIVE_DIGEST_SBOM" if {
+	passive_sbom_valid
+}
+
+blockers contains "BROKEN_PROBE_POSITIVE_CONTROL_FAILED" if {
+	has_probe
+	object.get(input, "unpatched_twin_status", "EXPLOIT_SUCCEEDED") != "EXPLOIT_SUCCEEDED"
+}
 
 blockers contains "TWIN_REPLAY_NOT_BLOCKED" if {
+	has_probe
 	input.twin_replay_status != "EXPLOIT_BLOCKED"
+}
+
+blockers contains "PASSIVE_CLOSURE_MISSING_PROVENANCE" if {
+	not has_probe
+	object.get(input, "provenance_verified", false) != true
 }
 
 blockers contains "FLEET_DIGEST_SWEEP_INCOMPLETE" if {
@@ -29,8 +66,16 @@ blockers contains "N1_WARRANT_REVERIFY_FAILED" if {
 	input.warrant_reverified != true
 }
 
+closure_evidence_valid if {
+	differential_twin_valid
+}
+
+closure_evidence_valid if {
+	passive_sbom_valid
+}
+
 allow_bridge_retirement if {
-	input.twin_replay_status == "EXPLOIT_BLOCKED"
+	closure_evidence_valid
 	input.total_pods > 0
 	input.attested_pods == input.total_pods
 	input.vulnerable_symbols_loaded == 0

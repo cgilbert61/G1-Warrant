@@ -81,23 +81,29 @@ go build -o warrant ./cmd/warrant
 docker compose exec warrantd /warrant status
 ```
 
-### Multi-Party Offline Dual-Key Warrant Ceremony (`NIST SP 800-53 AC-5`)
+### Multi-Party Offline Dual-Key Warrant Ceremony (`NIST SP 800-53 Rev 5 AC-5`)
+
+Production SDKs and CLIs ship **zero built-in demo signers**. Operators generate or load explicit `SignerKeyBundle` files (or authenticate via hardware WebAuthn PIV/FIDO2 in the Console):
 
 ```bash
-# Step 1: Draft an unsigned RFC 8785 JCS Standing Warrant DSSE envelope
+# Step 1: Generate distinct AC-5 signing keys for Service Owner (Slot 1) and Authorizing Official (Slot 2)
+./warrant keygen --id usr-so-01 --email so@agency.gov --role SERVICE_OWNER --out so-key.json
+./warrant keygen --id usr-ao-01 --email ao@agency.gov --role AUTHORIZING_OFFICIAL --out ao-key.json
+
+# Step 2: Draft an unsigned RFC 8785 JCS Standing Warrant DSSE envelope
 ./warrant warrants draft \
   --class KEV-TIER1-STATELESS \
   --services payments-ledger-api,identity-sso-gateway \
   --max-cvss 10.0 --max-replicas 8 --sla-minutes 60 --ttl-days 30 \
   --out warrant-draft.dsse.json
 
-# Step 2: Slot 1 (Service Owner) signs over DSSEv1 PAE bytes
-./warrant warrants sign --in warrant-draft.dsse.json --slot 1 --demo-persona usr-alice-so
+# Step 3: Slot 1 (Service Owner) signs over DSSEv1 PAE bytes
+./warrant warrants sign --in warrant-draft.dsse.json --slot 1 --key so-key.json
 
-# Step 3: Slot 2 (Authorizing Official) co-signs over identical DSSEv1 PAE bytes
-./warrant warrants sign --in warrant-draft.dsse.json --slot 2 --demo-persona usr-bob-ao
+# Step 4: Slot 2 (Authorizing Official) co-signs over identical DSSEv1 PAE bytes
+./warrant warrants sign --in warrant-draft.dsse.json --slot 2 --key ao-key.json
 
-# Step 4: Submit the 2-of-2 DSSE envelope to N1 (verified by OPA warrant_ac5.rego + PostgreSQL WORM trigger)
+# Step 5: Submit the 2-of-2 DSSE envelope to N1 (verified by OPA warrant_ac5.rego + append-only ledger)
 ./warrant warrants submit warrant-draft.dsse.json
 ```
 
@@ -108,18 +114,18 @@ docker compose exec warrantd /warrant status
 | `warrant status [--json]` | Live control-plane posture, active warrants, 30d median TTVR, armed bridges, and estate eligibility. |
 | `warrant keygen --id <id> --email <e> --role <SO\|AO>` | Generate a portable Ed25519 AC-5 signing key bundle (`0600` JSON). |
 | `warrant principals [list \| revoke]` | List registered PIV/WebAuthn principals or revoke a key to trigger instant fail-closed invalidation. |
-| `warrant warrants [list \| verify \| draft \| sign \| submit \| mint-demo]` | Inspect, verify, or execute `2-of-2` Standing Warrant ceremonies. |
-| `warrant exceptions [list \| approve <id> \| reject <id>]` | Inspect or dual-key resolve stateful/above-ceiling remediation exceptions. |
-| `warrant pipeline [list \| trace <remediation-id>]` | View 5-stage Race Pipeline items or millisecond deterministic state transition traces. |
-| `warrant estate` / `warrant shadow` | Inspect N2 Estate Readiness Scorecard and Differential Shadow canary reports. |
-| `warrant bridges` / `warrant lockouts` / `warrant drift` | Inspect Cilium containment shields, `ValidatingAdmissionPolicy` lockouts, and drift re-arm events. |
+| `warrant warrants [list \| verify \| draft \| sign --key <k> \| submit]` | Inspect, verify, or execute `2-of-2` Standing Warrant ceremonies. |
+| `warrant exceptions [list \| approve <id> --slot1-key <so> --slot2-key <ao> \| reject <id> ...]` | Inspect or dual-key resolve stateful/above-ceiling remediation exceptions. |
+| `warrant pipeline [list \| trace <id> \| rollback <id>]` | View Race Pipeline items, millisecond traces, or execute atomic 3-step `QUARANTINED_ROLLBACK` (`Contain-Before-Unban`). |
+| `warrant estate` / `warrant shadow` | Inspect 3-Tier Graduated Fleet Autonomy Scorecard and Differential Shadow canary reports. |
+| `warrant bridges` / `warrant lockouts` / `warrant drift` | Inspect Zero-Prose vs. Signed-Rulepack shields, `ValidatingAdmissionPolicy` lockouts, and drift re-arm events. |
 | `warrant simulate <scenario>` | Run deterministic drills: `inject-kev`, `bad-syscall`, `stateful-ddl`, or `runtime-drift`. |
 | `warrant intake sarif <file.sarif>` | Submit an untrusted `SARIF 2.1.0` report through `warrant-extractor` into the Race Pipeline. |
 | `warrant feeds [status \| mode \| sync-kev \| sync-osv \| ingest-osv]` | Toggle `offline` vs `live` feeds and sync real CISA KEV & Google OSV.dev advisories. |
-| `warrant freeze [hold \| rollback \| thaw]` | Trigger single-operator emergency freeze/rollback or `2-of-2` DSSE fleet thaw. |
+| `warrant freeze [hold \| rollback \| thaw --slot1-key <so> --slot2-key <ao>]` | Trigger single-operator emergency freeze/rollback or `2-of-2` DSSE fleet thaw. |
 | `warrant oscal [export <id> \| verify-offline <bundle.json>]` | Export DSSE-signed NIST OSCAL `1.1.2` POA&M packages and verify signatures air-gapped. |
 | `warrant auditor [mint-token \| inspect]` | Mint or test a scoped read-only `g1aud_*` external 3PAO auditor bearer link. |
-| `warrant ledger [verify \| actions]` | Verify genesis-to-tip SHA-256 hash chains across all 3 PostgreSQL WORM tables. |
+| `warrant ledger [verify \| actions \| checkpoints \| anchor]` | Verify SHA-256 hash chains + External Merkle Transparency Checkpoints across all 3 ledger tables. |
 | `warrant events` | Stream real-time Server-Sent Events (`SSE`) from `warrantd` in the terminal. |
 
 ---
@@ -136,19 +142,23 @@ pip install -e sdk/python
 
 ```python
 from g1_warrant import (
+    ROLE_AUTHORIZING_OFFICIAL,
+    ROLE_SERVICE_OWNER,
     AuditorScopeViolationError,
     WarrantClient,
     draft_warrant_envelope,
+    generate_ed25519_signer_bundle,
     verify_oscal_bundle_offline,
 )
 
 cli = WarrantClient("http://localhost:8080")
 
-# 1. Mint a 2-of-2 Standing Warrant from Python
+# 1. Draft and 2-of-2 co-sign a Standing Warrant using explicit Ed25519 keys
+so = generate_ed25519_signer_bundle("usr-so-01", "so@agency.gov", "Service Owner", ROLE_SERVICE_OWNER)
+ao = generate_ed25519_signer_bundle("usr-ao-01", "ao@agency.gov", "Authorizing Official", ROLE_AUTHORIZING_OFFICIAL)
 env = draft_warrant_envelope(scope_services=["payments-ledger-api"], max_cvss=10.0)
-cli.builtin_demo_signer("usr-alice-so").sign_envelope(1, env)
-cli.builtin_demo_signer("usr-bob-ao").sign_envelope(2, env)
-warrant = cli.create_warrant(env)
+so.sign_envelope(1, env)
+ao.sign_envelope(2, env)
 
 # 2. Mint a scoped 3PAO Auditor Token & confirm HTTP 403 Operational Isolation
 minted = cli.mint_auditor_token(label="FedRAMP 3PAO Audit", ttl_hours=12)

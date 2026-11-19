@@ -3,10 +3,12 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -662,6 +664,177 @@ func TestLiveFeeds_OfflineDefaultAndCISAKEVOSVTrivyEnrichment(t *testing.T) {
 	chainRep, err := h.store.VerifyAllLedgerChains(h.ctx)
 	if err != nil || !chainRep.AllValid {
 		t.Fatalf("ledger chain broken after live feed syncs: %+v err=%v", chainRep, err)
+	}
+}
+
+// INVARIANT 7: Zero-Prose vs. Signed-Rulepack Containment, Assurance Tiers, Brownfield Tier-2 Canary,
+// Atomic 3-Step Quarantined Rollback (Contain-Before-Unban), Default Persona Redaction, and External Merkle Anchor
+func TestInvariant7_ZeroProseAssuranceTiersQuarantinedRollbackAndExternalAnchor(t *testing.T) {
+	anchorFile := filepath.Join(t.TempDir(), "external-worm-checkpoints.jsonl")
+	t.Setenv("WARRANT_EXTERNAL_ANCHOR_PATH", anchorFile)
+	t.Setenv("WARRANT_ENABLE_TEST_SMARTCARDS", "false")
+
+	h := setupIsolatedHarness(t)
+
+	// 0. Verify test_personas are redacted by default when WARRANT_ENABLE_TEST_SMARTCARDS != "true"
+	bootResp, err := http.Get(h.httpSrv.URL + "/api/v1/bootstrap")
+	if err != nil || bootResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/v1/bootstrap failed: %v", err)
+	}
+	var bootSnap map[string]any
+	_ = json.NewDecoder(bootResp.Body).Decode(&bootSnap)
+	_ = bootResp.Body.Close()
+	if personas, _ := bootSnap["test_personas"].([]any); len(personas) != 0 {
+		t.Fatalf("expected 0 test_personas in production default mode, got %d", len(personas))
+	}
+
+	// Register brownfield workload fulfillment-worker (71.4% coverage, no shadow DB, OTel + rollback verified -> TIER_2_GUARDED_CANARY)
+	brownfieldSvc := models.EstateService{
+		ServiceID:                  "fulfillment-worker",
+		DisplayName:                "Fulfillment Queue Worker",
+		Namespace:                  "ops-fulfill",
+		Tier:                       "TIER_2_PRODUCTION",
+		WarrantClass:               "KEV-TIER2-COMMERCE",
+		CurrentDigest:              "sha256:e500000000000000000000000000000000000000000000000000000000000005",
+		CurrentPURL:                "pkg:oci/fulfillment-worker@sha256:e500000000000000000000000000000000000000000000000000000000000005",
+		Replicas:                   3,
+		TestCoveragePct:            71.4,
+		OtelHealthProbes:           true,
+		ReadonlyShadowReplica:      false,
+		RollbackAutomationVerified: true,
+		BaselineSyscalls:           []string{"accept4", "close", "epoll_ctl", "epoll_wait", "fcntl", "fstat", "futex", "getsockopt", "mmap", "munmap", "nanosleep", "openat", "read", "recvfrom", "rt_sigaction", "rt_sigprocmask", "sendto", "setsockopt", "socket", "write"},
+	}
+	gate.GradeServiceReadiness(&brownfieldSvc)
+	if brownfieldSvc.AutonomyTier != models.AutonomyTier2GuardedCanary {
+		t.Fatalf("expected TIER_2_GUARDED_CANARY, got %s", brownfieldSvc.AutonomyTier)
+	}
+	if err := h.store.UpsertEstateService(h.ctx, brownfieldSvc); err != nil {
+		t.Fatal(err)
+	}
+
+	// Mint Standing Warrant authorizing AllowGuardedCanary = true
+	now := time.Now().UTC()
+	wp := models.WarrantPayload{
+		WarrantID:              "wrt-inv7-guarded",
+		WarrantClass:           "KEV-TIER2-COMMERCE",
+		ScopeServices:          []string{"payments-ledger-api", "fulfillment-worker"},
+		MaxCVSS:                10.0,
+		KEVEligible:            true,
+		MaxBlastRadiusReplicas: 10,
+		AllowStatefulPatches:   false,
+		AllowGuardedCanary:     true,
+		MinCanarySamples:       500,
+		StageDwellSeconds:      300,
+		SLABridgeMinutes:       60,
+		MaxP99LatencyMs:        120.0,
+		IssuedAt:               now.Format(time.RFC3339),
+		ExpiresAt:              now.Add(24 * time.Hour).Format(time.RFC3339),
+	}
+	wEnv, _, _ := crypto.NewUnsignedEnvelope(crypto.PayloadTypeWarrant, wp)
+	_ = wEnv.SignEd25519(1, h.alice.ToPrincipalKey(), h.alice.PrivateKey)
+	_ = wEnv.SignEd25519(2, h.bob.ToPrincipalKey(), h.bob.PrivateKey)
+	if _, err := h.orch.N1Warrant.SubmitDualSignedWarrant(h.ctx, *wEnv); err != nil {
+		t.Fatalf("SubmitDualSignedWarrant failed: %v", err)
+	}
+
+	// 1. Advisory WITHOUT matching L7 rulepack (CWE-000 / HTTP2_RAPID_RESET) on brownfield Tier-2 service:
+	//    Must use ZERO_PROSE_EGRESS_MESH_QUARANTINE and close at ASSURANCE_TIER_1_PASSIVE_DIGEST_SBOM!
+	sarifZeroProse := server.BuildDeterministicSARIF(
+		"CVE-2026-97001", "CWE-000", 8.5, false, "fulfillment-worker",
+		"sha256:e500000000000000000000000000000000000000000000000000000000000005",
+		"sha256:e599999999999999999999999999999999999999999999999999999999999905",
+		"", "HTTP2_RAPID_RESET", 8080,
+	)
+	zpItems, err := h.orch.ExecuteSARIFRemediation(h.ctx, sarifZeroProse, "STATELESS_CLEAN")
+	if err != nil || len(zpItems) != 1 {
+		t.Fatalf("Zero-prose brownfield remediation failed: %v", err)
+	}
+	if zpItems[0].Stage != models.StageAttestedClosed || zpItems[0].AssuranceTier != models.AssuranceTier1PassiveDigestSBOM {
+		t.Fatalf("expected ATTESTED_CLOSED with ASSURANCE_TIER_1_PASSIVE_DIGEST_SBOM, got stage=%s tier=%s blocker=%s",
+			zpItems[0].Stage, zpItems[0].AssuranceTier, zpItems[0].BlockerCode)
+	}
+	zpBridge, err := h.store.GetBridge(h.ctx, zpItems[0].BridgeID)
+	if err != nil || zpBridge.ContainmentMode != models.ContainmentModeZeroProseQuarantine {
+		t.Fatalf("expected ZERO_PROSE_EGRESS_MESH_QUARANTINE bridge, got %+v err=%v", zpBridge, err)
+	}
+
+	// 2. Advisory WITH publisher-signed rulepack (CWE-787 / TLS_HEARTBEAT) on Tier-1 service:
+	//    Must use SIGNED_RULEPACK_L7_SHIELD and close at ASSURANCE_TIER_2_DIFFERENTIAL_TWIN!
+	vulnDigest := "sha256:a100000000000000000000000000000000000000000000000000000000000001"
+	patchedDigest := "sha256:a188888888888888888888888888888888888888888888888888888888888801"
+	sarifRulepack := server.BuildDeterministicSARIF(
+		"CVE-2026-97002", "CWE-787", 9.8, true, "payments-ledger-api",
+		vulnDigest, patchedDigest, "tls_heartbeat_ext_parse_vuln", "TLS_HEARTBEAT", 8443,
+	)
+	rpItems, err := h.orch.ExecuteSARIFRemediation(h.ctx, sarifRulepack, "STATELESS_CLEAN")
+	if err != nil || len(rpItems) != 1 {
+		t.Fatalf("Signed-rulepack remediation failed: %v", err)
+	}
+	if rpItems[0].AssuranceTier != models.AssuranceTier2DifferentialTwin {
+		t.Fatalf("expected ASSURANCE_TIER_2_DIFFERENTIAL_TWIN, got %s", rpItems[0].AssuranceTier)
+	}
+	rpBridge, err := h.store.GetBridge(h.ctx, rpItems[0].BridgeID)
+	if err != nil || rpBridge.ContainmentMode != models.ContainmentModeSignedRulepackL7 || rpBridge.RulepackID == "" {
+		t.Fatalf("expected SIGNED_RULEPACK_L7_SHIELD with rulepack_id, got %+v err=%v", rpBridge, err)
+	}
+
+	// 3. Post-Closure Latent Regression -> Atomic 3-Step Quarantined Rollback (Contain-Before-Unban)
+	qrbBody := bytes.NewReader([]byte(`{"actor":"sre-oncall","reason":"LATENT_CONN_POOL_EXHAUSTION"}`))
+	qrbResp, err := http.Post(h.httpSrv.URL+"/api/v1/pipeline/"+rpItems[0].RemediationID+"/emergency-rollback", "application/json", qrbBody)
+	if err != nil || qrbResp.StatusCode != http.StatusOK {
+		t.Fatalf("POST emergency-rollback failed: resp=%v err=%v", qrbResp, err)
+	}
+	var rolledBack models.RemediationItem
+	_ = json.NewDecoder(qrbResp.Body).Decode(&rolledBack)
+	_ = qrbResp.Body.Close()
+
+	if rolledBack.StatusHealth != models.HealthQuarantinedRollback || rolledBack.Stage != models.StageBridgedContained {
+		t.Fatalf("expected QUARANTINED_ROLLBACK at BRIDGED_CONTAINED, got health=%s stage=%s", rolledBack.StatusHealth, rolledBack.Stage)
+	}
+	rearmed, err := h.store.GetBridge(h.ctx, rolledBack.BridgeID)
+	if err != nil || rearmed.Status != "REARMED_DRIFT" {
+		t.Fatalf("expected containment bridge re-armed before unban, got %+v err=%v", rearmed, err)
+	}
+	wlAfter, err := h.orch.Deploy.InspectLiveWorkload(h.ctx, "payments-ledger-api")
+	if err != nil || wlAfter.BaselineDigest != vulnDigest {
+		t.Fatalf("expected workload reverted to previous digest %s under quarantine, got %+v err=%v", vulnDigest, wlAfter, err)
+	}
+
+	// 4. External Transparency Checkpoint Verification & Simulated PostgreSQL Superuser Rewrite Detection
+	verResp1, err := http.Post(h.httpSrv.URL+"/api/v1/ledger/verify", "application/json", bytes.NewReader([]byte(`{}`)))
+	if err != nil || verResp1.StatusCode != http.StatusOK {
+		t.Fatalf("POST /api/v1/ledger/verify failed: %v", err)
+	}
+	var repBefore models.LedgerVerificationReport
+	_ = json.NewDecoder(verResp1.Body).Decode(&repBefore)
+	_ = verResp1.Body.Close()
+	if !repBefore.AllValid || !repBefore.ExternalAnchorVerified || repBefore.LatestCheckpointID == "" {
+		t.Fatalf("expected valid ledger + external anchor before tamper, got %+v", repBefore)
+	}
+
+	// Simulate rogue DB superuser disabling triggers on BOTH attestation_records and ledger_checkpoints,
+	// wiping in-DB checkpoints, and rewriting historical entry_hash!
+	_, err = h.store.Pool().Exec(h.ctx, `
+		ALTER TABLE ledger_checkpoints DISABLE TRIGGER trg_immutable_ledger_checkpoints;
+		DELETE FROM ledger_checkpoints;
+		ALTER TABLE ledger_checkpoints ENABLE TRIGGER trg_immutable_ledger_checkpoints;
+		ALTER TABLE attestation_records DISABLE TRIGGER trg_immutable_attestation_records;
+		UPDATE attestation_records SET entry_hash = repeat('f', 64) WHERE seq_no = 1;
+		ALTER TABLE attestation_records ENABLE TRIGGER trg_immutable_attestation_records;
+	`)
+	if err != nil {
+		t.Fatalf("simulate superuser rewrite failed: %v", err)
+	}
+
+	verResp2, err := http.Post(h.httpSrv.URL+"/api/v1/ledger/verify", "application/json", bytes.NewReader([]byte(`{}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var repAfter models.LedgerVerificationReport
+	_ = json.NewDecoder(verResp2.Body).Decode(&repAfter)
+	_ = verResp2.Body.Close()
+	if repAfter.AllValid || repAfter.ExternalAnchorVerified || !strings.Contains(repAfter.SuperuserTamperDetail, "DB_SUPERUSER_REWRITE_DETECTED") {
+		t.Fatalf("expected External Transparency Anchor to catch DB superuser rewrite, got %+v", repAfter)
 	}
 }
 

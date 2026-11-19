@@ -196,27 +196,21 @@ func main() {
 			inFile := fs.String("in", "warrant-draft.dsse.json", "Input DSSE envelope JSON")
 			outFile := fs.String("out", "", "Output DSSE envelope JSON (defaults to --in)")
 			slot := fs.Int("slot", 1, "AC-5 signature slot: 1 (SERVICE_OWNER) or 2 (AUTHORIZING_OFFICIAL)")
-			keyFile := fs.String("key", "", "Path to SignerKeyBundle JSON (or use --demo-persona)")
-			persona := fs.String("demo-persona", "", "Builtin smartcard persona ID (e.g. usr-alice-so or usr-bob-ao)")
+			keyFile := fs.String("key", "", "Path to SignerKeyBundle JSON")
 			_ = fs.Parse(args[2:])
 
+			if *keyFile == "" {
+				fatalf("--key <bundle.json> is required (demo signers are prohibited in production CLIs)")
+			}
 			rawEnv, err := os.ReadFile(*inFile)
 			must(err)
 			var env warrantsdk.Envelope
 			must(json.Unmarshal(rawEnv, &env))
 
-			var signer *warrantsdk.SignerKeyBundle
-			if *persona != "" {
-				signer, err = warrantsdk.BuiltinDemoSignerBundle(*persona)
-				must(err)
-			} else if *keyFile != "" {
-				kb, kErr := os.ReadFile(*keyFile)
-				must(kErr)
-				signer = &warrantsdk.SignerKeyBundle{}
-				must(json.Unmarshal(kb, signer))
-			} else {
-				fatalf("provide either --key <bundle.json> or --demo-persona <usr-alice-so|usr-bob-ao>")
-			}
+			kb, kErr := os.ReadFile(*keyFile)
+			must(kErr)
+			signer, err := warrantsdk.LoadSignerBundleFile(kb)
+			must(err)
 
 			must(signer.SignEnvelope(*slot, &env))
 			dest := *outFile
@@ -245,35 +239,6 @@ func main() {
 			fmt.Printf("Minted Standing Warrant %s (%s) — Status: %s | EntryHash: %s\n",
 				rec.WarrantID, rec.WarrantClass, rec.LiveStatus, rec.EntryHash)
 
-		case "mint-demo":
-			fs := flag.NewFlagSet("warrants mint-demo", flag.ExitOnError)
-			wClass := fs.String("class", "KEV-TIER1-STATELESS", "Warrant class")
-			services := fs.String("services", "payments-ledger-api,identity-sso-gateway", "Comma-separated service IDs")
-			ttlDays := fs.Int("ttl-days", 30, "TTL days")
-			_ = fs.Parse(args[2:])
-
-			env, _, err := warrantsdk.DraftWarrantEnvelope(warrantsdk.WarrantDraftOptions{
-				WarrantClass:  *wClass,
-				ScopeServices: splitCSV(*services),
-				KEVEligible:   true,
-				TTLDays:       *ttlDays,
-			})
-			must(err)
-			alice, err := warrantsdk.BuiltinDemoSignerBundle("usr-alice-so")
-			must(err)
-			bob, err := warrantsdk.BuiltinDemoSignerBundle("usr-bob-ao")
-			must(err)
-			must(alice.SignEnvelope(1, env))
-			must(bob.SignEnvelope(2, env))
-			rec, err := cli.CreateWarrant(ctx, *env)
-			must(err)
-			if jsonOutput {
-				printJSON(rec)
-				return
-			}
-			fmt.Printf("Minted Dual-Signed Standing Warrant %s (Slot1=%s + Slot2=%s) | Hash=%s\n",
-				rec.WarrantID, rec.Slot1PrincipalID, rec.Slot2PrincipalID, rec.EntryHash[:16])
-
 		default:
 			printUsage()
 			os.Exit(1)
@@ -299,9 +264,18 @@ func main() {
 
 		case "approve", "reject":
 			if len(args) < 3 {
-				fatalf("usage: warrant exceptions [approve|reject] <exception-id>")
+				fatalf("usage: warrant exceptions [approve|reject] <exception-id> --slot1-key <so.json> --slot2-key <ao.json>")
 			}
 			exID := args[2]
+			fs := flag.NewFlagSet("exceptions resolve", flag.ExitOnError)
+			slot1Key := fs.String("slot1-key", "", "Path to Slot 1 (SERVICE_OWNER) SignerKeyBundle JSON")
+			slot2Key := fs.String("slot2-key", "", "Path to Slot 2 (AUTHORIZING_OFFICIAL) SignerKeyBundle JSON")
+			if len(args) > 3 {
+				_ = fs.Parse(args[3:])
+			}
+			if *slot1Key == "" || *slot2Key == "" {
+				fatalf("--slot1-key <so.json> and --slot2-key <ao.json> are required for 2-of-2 Four-Eyes resolution")
+			}
 			decision := "APPROVED"
 			if sub == "reject" {
 				decision = "REJECTED"
@@ -321,10 +295,16 @@ func main() {
 			}
 			env, err := warrantsdk.DraftExceptionResolutionEnvelope(*target)
 			must(err)
-			alice, _ := warrantsdk.BuiltinDemoSignerBundle("usr-alice-so")
-			bob, _ := warrantsdk.BuiltinDemoSignerBundle("usr-bob-ao")
-			must(alice.SignEnvelope(1, env))
-			must(bob.SignEnvelope(2, env))
+			s1Raw, err := os.ReadFile(*slot1Key)
+			must(err)
+			s2Raw, err := os.ReadFile(*slot2Key)
+			must(err)
+			s1, err := warrantsdk.LoadSignerBundleFile(s1Raw)
+			must(err)
+			s2, err := warrantsdk.LoadSignerBundleFile(s2Raw)
+			must(err)
+			must(s1.SignEnvelope(1, env))
+			must(s2.SignEnvelope(2, env))
 			resolved, rem, err := cli.ResolveException(ctx, exID, decision, *env)
 			must(err)
 			printJSON(map[string]any{"exception": resolved, "remediation": rem})
@@ -365,6 +345,20 @@ func main() {
 				fmt.Printf("[%s] %-7s %-36s %-9s actor=%s hash=%s\n",
 					t.OccurredAt.Format("15:04:05.000"), t.Engine, t.StepCode, t.Outcome, t.ActorOrToken, t.EvidenceHash[:16])
 			}
+		case "rollback":
+			if len(args) < 3 {
+				fatalf("usage: warrant pipeline rollback <remediation-id> [--actor <id>] [--reason <code>]")
+			}
+			remID := args[2]
+			fs := flag.NewFlagSet("pipeline rollback", flag.ExitOnError)
+			actor := fs.String("actor", "cli-incident-commander", "Actor invoking emergency quarantined rollback")
+			reason := fs.String("reason", "POST_PROMOTION_REGRESSION", "Rollback reason")
+			if len(args) > 3 {
+				_ = fs.Parse(args[3:])
+			}
+			rem, err := cli.EmergencyRollback(ctx, remID, *actor, *reason)
+			must(err)
+			printJSON(rem)
 		default:
 			printUsage()
 			os.Exit(1)
@@ -458,6 +452,9 @@ func main() {
 		fs := flag.NewFlagSet("freeze", flag.ExitOnError)
 		actor := fs.String("actor", "cli-operator", "Actor triggering emergency freeze")
 		reason := fs.String("reason", "CLI_EMERGENCY_ACTION", "Reason code")
+		slot1Key := fs.String("slot1-key", "", "Slot 1 (SERVICE_OWNER) SignerKeyBundle JSON for thaw")
+		slot2Key := fs.String("slot2-key", "", "Slot 2 (AUTHORIZING_OFFICIAL) SignerKeyBundle JSON for thaw")
+		envFile := fs.String("envelope", "", "Optional pre-signed 2-of-2 DSSE Thaw envelope JSON")
 		if len(args) > 2 {
 			_ = fs.Parse(args[2:])
 		}
@@ -475,13 +472,30 @@ func main() {
 			}
 			fmt.Printf("Emergency Freeze Activated: %s by %s at %s\n", out.Mode, out.Actor, out.UpdatedAt.Format(time.RFC3339))
 		case "thaw":
-			env, err := warrantsdk.DraftThawEnvelope()
-			must(err)
-			alice, _ := warrantsdk.BuiltinDemoSignerBundle("usr-alice-so")
-			bob, _ := warrantsdk.BuiltinDemoSignerBundle("usr-bob-ao")
-			must(alice.SignEnvelope(1, env))
-			must(bob.SignEnvelope(2, env))
-			out, err := cli.ThawFreeze(ctx, *env)
+			var thawEnv warrantsdk.Envelope
+			if *envFile != "" {
+				raw, rErr := os.ReadFile(*envFile)
+				must(rErr)
+				must(json.Unmarshal(raw, &thawEnv))
+			} else {
+				if *slot1Key == "" || *slot2Key == "" {
+					fatalf("usage: warrant freeze thaw --slot1-key <so.json> --slot2-key <ao.json> (or --envelope <signed.dsse.json>)")
+				}
+				draft, dErr := warrantsdk.DraftThawEnvelope()
+				must(dErr)
+				s1Raw, rErr1 := os.ReadFile(*slot1Key)
+				must(rErr1)
+				s2Raw, rErr2 := os.ReadFile(*slot2Key)
+				must(rErr2)
+				s1, lErr1 := warrantsdk.LoadSignerBundleFile(s1Raw)
+				must(lErr1)
+				s2, lErr2 := warrantsdk.LoadSignerBundleFile(s2Raw)
+				must(lErr2)
+				must(s1.SignEnvelope(1, draft))
+				must(s2.SignEnvelope(2, draft))
+				thawEnv = *draft
+			}
+			out, err := cli.ThawFreeze(ctx, thawEnv)
 			must(err)
 			if jsonOutput {
 				printJSON(out)
@@ -637,6 +651,14 @@ func main() {
 					a.ActionID, a.WorkerName, a.ActionType, a.TargetAsset, a.EgressProfile, a.TokenTTLSec, a.Status)
 			}
 			_ = tw.Flush()
+		case "checkpoints":
+			list, err := cli.ListLedgerCheckpoints(ctx)
+			must(err)
+			printJSON(list)
+		case "anchor":
+			cp, err := cli.CreateLedgerCheckpoint(ctx)
+			must(err)
+			printJSON(cp)
 		default:
 			printUsage()
 			os.Exit(1)
@@ -719,9 +741,9 @@ Commands:
   warrant status
   warrant keygen --id <id> --email <email> --role <SERVICE_OWNER|AUTHORIZING_OFFICIAL> [--out <key.json>]
   warrant principals [list | revoke --principal <id> --reason <code>]
-  warrant warrants [list | verify <id> | draft | sign | submit <file.dsse.json> | mint-demo]
-  warrant exceptions [list | approve <id> | reject <id>]
-  warrant pipeline [list | trace <remediation-id>]
+  warrant warrants [list | verify <id> | draft | sign --key <key.json> | submit <file.dsse.json>]
+  warrant exceptions [list | approve <id> --slot1-key <so.json> --slot2-key <ao.json> | reject <id> ...]
+  warrant pipeline [list | trace <remediation-id> | rollback <remediation-id>]
   warrant estate
   warrant shadow
   warrant bridges
@@ -731,11 +753,11 @@ Commands:
   warrant intake sarif <file.sarif> [--service <id>] [--profile <STATELESS_CLEAN|STATEFUL_DDL|BAD_SYSCALL_EXECVE>]
   warrant feeds [status | mode <offline|live> | sync-kev | sync-osv | ingest-osv <osv-id> <service-id>]
   warrant freeze [hold | rollback] [--actor <id>] [--reason <code>]
-  warrant freeze thaw
+  warrant freeze thaw --slot1-key <so.json> --slot2-key <ao.json>
   warrant attestations
   warrant oscal [export <id> [out.json] | verify-offline <bundle.json> [--pubkey <b64>]]
   warrant auditor [mint-token --label <str> --ttl-hours <n> | inspect --token <g1aud_...>]
-  warrant ledger [verify | actions]
+  warrant ledger [verify | actions | checkpoints | anchor]
   warrant events
 `, warrantsdk.Version)
 }

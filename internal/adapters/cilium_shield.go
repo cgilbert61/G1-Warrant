@@ -15,21 +15,38 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// CiliumShieldAdapter compiles declarative CiliumNetworkPolicy, NetworkPolicy, and Envoy mTLS
-// manifests and applies/retires them over HTTP against the target cluster.
+// CiliumShieldAdapter compiles declarative containment policies in two distinct safety modes:
+//   1. ZERO_PROSE_EGRESS_MESH_QUARANTINE (Default when warrant-extractor strips prose and no signed L7 rulepack exists):
+//      Enforces L3/L4 internet egress cut (stopping reverse shells, JNDI callbacks, and C2) + strict mTLS peer ingress
+//      WITHOUT guessing application HTTP routes or causing blind L7 outages.
+//   2. SIGNED_RULEPACK_L7_SHIELD (When a publisher-signed CWE/CVE rulepack matches in RulepackRegistry):
+//      Enforces targeted Envoy/Cilium L7 HTTP path/header deny rules alongside internet egress denial.
 type CiliumShieldAdapter struct {
 	fleetBaseURL string
 	httpClient   *http.Client
+	rulepacks    *RulepackRegistry
 }
 
-// NewCiliumShieldAdapter constructs a CiliumShieldAdapter targeting fleetBaseURL.
-func NewCiliumShieldAdapter(fleetBaseURL string) *CiliumShieldAdapter {
+// NewCiliumShieldAdapter constructs a CiliumShieldAdapter with a verified RulepackRegistry.
+func NewCiliumShieldAdapter(fleetBaseURL string, rulepacks ...*RulepackRegistry) *CiliumShieldAdapter {
+	var reg *RulepackRegistry
+	if len(rulepacks) > 0 && rulepacks[0] != nil {
+		reg = rulepacks[0]
+	} else {
+		reg = NewDefaultRulepackRegistry()
+	}
 	return &CiliumShieldAdapter{
 		fleetBaseURL: fleetBaseURL,
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
+		rulepacks: reg,
 	}
+}
+
+// Rulepacks exposes the verified publisher-signed rulepack registry.
+func (c *CiliumShieldAdapter) Rulepacks() *RulepackRegistry {
+	return c.rulepacks
 }
 
 func (c *CiliumShieldAdapter) CompileAndApplyBridge(ctx context.Context, req BridgeApplyRequest) (*models.ContainmentBridge, error) {
@@ -39,11 +56,40 @@ func (c *CiliumShieldAdapter) CompileAndApplyBridge(ctx context.Context, req Bri
 	if req.AffectedPort <= 0 {
 		req.AffectedPort = 8080
 	}
-	if len(req.BlockedPaths) == 0 {
-		req.BlockedPaths = []string{"/api/v1/debug", "/.."}
+
+	matchedRP := c.rulepacks.Lookup(req.CVEID, req.CWEID, req.ExploitVector)
+	containmentMode := models.ContainmentModeZeroProseQuarantine
+	rulepackID := ""
+	bridgeType := "K8S_NETPOL"
+	var blockedPaths []string
+
+	if matchedRP != nil {
+		containmentMode = models.ContainmentModeSignedRulepackL7
+		rulepackID = matchedRP.RulepackID
+		blockedPaths = matchedRP.BlockedPaths
+		bridgeType = "CILIUM_L7_NETPOL"
+		if matchedRP.ExploitVector == "TLS_HEARTBEAT" {
+			bridgeType = "ENVOY_MTLS_WAF"
+		}
 	}
 
 	// 1. Declarative CiliumNetworkPolicy (cilium.io/v2)
+	// In ZERO_PROSE_EGRESS_MESH_QUARANTINE mode, we NEVER invent HTTP path allowlists that break business traffic;
+	// instead we restrict ingress to authenticated cluster mesh entities and cut external world egress.
+	ingressPortSpec := map[string]any{
+		"ports": []map[string]string{
+			{"port": strconv.Itoa(req.AffectedPort), "protocol": "TCP"},
+		},
+	}
+	if containmentMode == models.ContainmentModeSignedRulepackL7 && len(blockedPaths) > 0 {
+		// Apply L7 inspection only when backed by a verified publisher-signed rulepack
+		ingressPortSpec["rules"] = map[string]any{
+			"http": []map[string]any{
+				{"headers": []string{"X-G1-Signed-Rulepack: " + rulepackID}},
+			},
+		}
+	}
+
 	ciliumDoc := map[string]any{
 		"apiVersion": "cilium.io/v2",
 		"kind":       "CiliumNetworkPolicy",
@@ -51,10 +97,12 @@ func (c *CiliumShieldAdapter) CompileAndApplyBridge(ctx context.Context, req Bri
 			"name":      fmt.Sprintf("g1-shield-%s", req.BridgeID),
 			"namespace": req.Namespace,
 			"labels": map[string]string{
-				"g1.warrant/bridge-id":      req.BridgeID,
-				"g1.warrant/remediation-id": req.RemediationID,
-				"g1.warrant/cve":            req.CVEID,
-				"g1.warrant/managed-by":     "warrantd",
+				"g1.warrant/bridge-id":        req.BridgeID,
+				"g1.warrant/remediation-id":   req.RemediationID,
+				"g1.warrant/cve":              req.CVEID,
+				"g1.warrant/containment-mode": containmentMode,
+				"g1.warrant/rulepack-id":      rulepackID,
+				"g1.warrant/managed-by":       "warrantd",
 			},
 		},
 		"spec": map[string]any{
@@ -66,19 +114,7 @@ func (c *CiliumShieldAdapter) CompileAndApplyBridge(ctx context.Context, req Bri
 			"ingress": []map[string]any{
 				{
 					"fromEntities": []string{"cluster"},
-					"toPorts": []map[string]any{
-						{
-							"ports": []map[string]string{
-								{"port": strconv.Itoa(req.AffectedPort), "protocol": "TCP"},
-							},
-							"rules": map[string]any{
-								"http": []map[string]string{
-									{"method": "GET", "path": "^/healthz$"},
-									{"method": "POST", "path": "^/api/v2/safe/.*$"},
-								},
-							},
-						},
-					},
+					"toPorts":      []map[string]any{ingressPortSpec},
 				},
 			},
 			"egressDeny": []map[string]any{
@@ -137,27 +173,18 @@ func (c *CiliumShieldAdapter) CompileAndApplyBridge(ctx context.Context, req Bri
 		return nil, fmt.Errorf("marshal NetworkPolicy YAML: %w", err)
 	}
 
-	// 3. Edge Envoy HTTP RBAC + SPIFFE mTLS filter config
+	// 3. Edge Envoy filter config (SPIFFE mTLS peer enforcement + optional signed L7 rulepack)
+	envoyRules := map[string]any{
+		"mode":                 containmentMode,
+		"mtls_spiffe_required": fmt.Sprintf("spiffe://cluster.local/ns/%s/sa/*", req.Namespace),
+	}
+	if containmentMode == models.ContainmentModeSignedRulepackL7 {
+		envoyRules["signed_rulepack_id"] = rulepackID
+		envoyRules["deny_paths"] = blockedPaths
+	}
 	envoyDoc := map[string]any{
-		"filter_name": "envoy.filters.http.rbac",
-		"typed_config": map[string]any{
-			"@type": "type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC",
-			"shadow_rules_stat_prefix": "g1_shield_",
-			"rules": map[string]any{
-				"action": "DENY",
-				"policies": map[string]any{
-					fmt.Sprintf("block-%s-%s", req.CVEID, req.ExploitVector): map[string]any{
-						"permissions": []map[string]any{
-							{"blocked_paths": req.BlockedPaths},
-						},
-						"principals": []map[string]any{
-							{"any": true},
-						},
-					},
-				},
-			},
-			"mtls_spiffe_required": fmt.Sprintf("spiffe://cluster.local/ns/%s/sa/*", req.Namespace),
-		},
+		"filter_name":  "envoy.filters.http.rbac",
+		"typed_config": envoyRules,
 	}
 	envoyCanon, err := crypto.CanonicalizeStruct(envoyDoc)
 	if err != nil {
@@ -167,10 +194,6 @@ func (c *CiliumShieldAdapter) CompileAndApplyBridge(ctx context.Context, req Bri
 	status := "ARMED"
 	if req.RearmCount > 0 {
 		status = "REARMED_DRIFT"
-	}
-	bridgeType := "CILIUM_L7_NETPOL"
-	if req.ExploitVector == "TLS_HEARTBEAT" {
-		bridgeType = "ENVOY_MTLS_WAF"
 	}
 
 	now := time.Now().UTC()
@@ -204,6 +227,8 @@ func (c *CiliumShieldAdapter) CompileAndApplyBridge(ctx context.Context, req Bri
 		ServiceID:          req.ServiceID,
 		CVEID:              req.CVEID,
 		BridgeType:         bridgeType,
+		ContainmentMode:    containmentMode,
+		RulepackID:         rulepackID,
 		Status:             status,
 		SLABridgeMinutes:   req.SLABridgeMinutes,
 		BlockerReasonCode:  req.BlockerReasonCode,

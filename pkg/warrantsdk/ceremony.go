@@ -54,27 +54,17 @@ func GenerateEd25519SignerBundle(principalID, email, displayName, role string) (
 	}, nil
 }
 
-// BuiltinDemoSignerBundle returns a SignerKeyBundle for one of the seeded smartcard test personas
-// (e.g., "usr-alice-so" for Slot 1 or "usr-bob-ao" for Slot 2) when running local/CI evaluations.
-func BuiltinDemoSignerBundle(principalID string) (*SignerKeyBundle, error) {
-	for _, p := range crypto.BuiltinTestPersonas() {
-		if p.PrincipalID == principalID {
-			pk := p.ToPrincipalKey()
-			return &SignerKeyBundle{
-				PrincipalID:    pk.PrincipalID,
-				Email:          pk.Email,
-				DisplayName:    pk.DisplayName,
-				Role:           pk.Role,
-				KeyID:          pk.KeyID,
-				Alg:            pk.Alg,
-				PublicKeyB64:   base64.StdEncoding.EncodeToString(pk.PublicKeyBytes),
-				PrivateKeyB64:  base64.StdEncoding.EncodeToString(p.PrivateKey),
-				KeyFingerprint: pk.KeyFingerprint,
-				CreatedAt:      time.Now().UTC().Format(time.RFC3339),
-			}, nil
-		}
+// LoadSignerBundleFile loads a SignerKeyBundle JSON file from disk.
+// Production SDKs and CLIs strictly prohibit hardcoded/built-in demo signers.
+func LoadSignerBundleFile(rawJSON []byte) (*SignerKeyBundle, error) {
+	var b SignerKeyBundle
+	if err := json.Unmarshal(rawJSON, &b); err != nil {
+		return nil, fmt.Errorf("decode SignerKeyBundle JSON: %w", err)
 	}
-	return nil, fmt.Errorf("builtin demo persona %q not found", principalID)
+	if b.PrincipalID == "" || b.PrivateKeyB64 == "" || b.PublicKeyB64 == "" {
+		return nil, errors.New("incomplete SignerKeyBundle: principal_id, public_key_b64, and private_key_b64 are required")
+	}
+	return &b, nil
 }
 
 // ToPrincipalKey extracts the public verification identity from the bundle.
@@ -123,6 +113,9 @@ type WarrantDraftOptions struct {
 	KEVEligible            bool
 	MaxBlastRadiusReplicas int
 	AllowStatefulPatches   bool
+	AllowGuardedCanary     bool
+	MinCanarySamples       int
+	StageDwellSeconds      int
 	SLABridgeMinutes       int
 	MaxP99LatencyMs        float64
 	TTLDays                int
@@ -154,6 +147,12 @@ func DraftWarrantEnvelope(opts WarrantDraftOptions) (*Envelope, WarrantPayload, 
 	if opts.TTLDays <= 0 {
 		opts.TTLDays = 30
 	}
+	if opts.MinCanarySamples <= 0 {
+		opts.MinCanarySamples = 500
+	}
+	if opts.StageDwellSeconds <= 0 {
+		opts.StageDwellSeconds = 300
+	}
 	now := time.Now().UTC()
 	payload := WarrantPayload{
 		WarrantID:              opts.WarrantID,
@@ -163,6 +162,9 @@ func DraftWarrantEnvelope(opts WarrantDraftOptions) (*Envelope, WarrantPayload, 
 		KEVEligible:            opts.KEVEligible,
 		MaxBlastRadiusReplicas: opts.MaxBlastRadiusReplicas,
 		AllowStatefulPatches:   opts.AllowStatefulPatches,
+		AllowGuardedCanary:     opts.AllowGuardedCanary,
+		MinCanarySamples:       opts.MinCanarySamples,
+		StageDwellSeconds:      opts.StageDwellSeconds,
 		SLABridgeMinutes:       opts.SLABridgeMinutes,
 		MaxP99LatencyMs:        opts.MaxP99LatencyMs,
 		IssuedAt:               now.Format(time.RFC3339),

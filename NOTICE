@@ -1,0 +1,137 @@
+========================================================================
+G1-Warrant — Third-Party Open Source Software Notice and Attributions
+Copyright 2026 G1163RT Security Labs, Inc.
+Licensed under the Apache License, Version 2.0
+========================================================================
+
+G1-Warrant utilizes and interoperates with permissive open-source software
+libraries, container runtimes, and open security specifications. Every
+linked runtime library in `warrantd`, `warrant`, `warrant-extractor`,
+`fleet-sim`, `G1-Warrant Console`, `pkg/warrantsdk`, and `g1-warrant-sdk`
+is permissively licensed (Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause,
+or ISC) with zero GPL/LGPL/AGPL copyleft dependencies.
+
+Each third-party component continues to be governed by its own license:
+
+------------------------------------------------------------------------
+A. Go Control Plane, Policy Engine & Database Libraries (`go.mod`)
+------------------------------------------------------------------------
+
+1. Open Policy Agent (OPA) (https://github.com/open-policy-agent/opa)
+   License: Apache License 2.0 (SPDX: Apache-2.0)
+   Copyright (c) The Open Policy Agent Authors
+
+2. pgx — PostgreSQL Driver and Toolkit for Go (https://github.com/jackc/pgx)
+   License: MIT License (SPDX: MIT)
+   Copyright (c) 2013-2026 Jack Christensen
+
+3. Google UUID for Go (https://github.com/google/uuid)
+   License: BSD 3-Clause License (SPDX: BSD-3-Clause)
+   Copyright (c) 2009, 2014 Google Inc. All rights reserved.
+
+4. go-yaml / yaml.v3 (https://github.com/go-yaml/yaml / https://go.yaml.in/yaml)
+   License: Apache License 2.0 & MIT License (SPDX: Apache-2.0 AND MIT)
+   Copyright (c) Canonical Ltd.
+
+5. Go Extended Standard Libraries — golang.org/x/{crypto,net,sync,sys,term,text,time}
+   (https://cs.opensource.google/go/x/)
+   License: BSD 3-Clause License (SPDX: BSD-3-Clause)
+   Copyright (c) The Go Authors. All rights reserved.
+
+6. OpenTelemetry Go & OTLP Exporters (https://github.com/open-telemetry/opentelemetry-go)
+   License: Apache License 2.0 (SPDX: Apache-2.0)
+   Copyright (c) The OpenTelemetry Authors
+
+7. Prometheus Go Client Libraries (https://github.com/prometheus/client_golang)
+   License: Apache License 2.0 (SPDX: Apache-2.0)
+   Copyright (c) The Prometheus Authors
+
+8. Protocol Buffers for Go & gRPC-Go (https://github.com/protocolbuffers/protobuf-go,
+   https://github.com/grpc/grpc-go)
+   License: BSD 3-Clause & Apache License 2.0 (SPDX: BSD-3-Clause / Apache-2.0)
+   Copyright (c) Google LLC / gRPC Authors
+
+9. Wazero — Zero-Dependency WebAssembly Runtime for Go (https://github.com/tetratelabs/wazero)
+   License: Apache License 2.0 (SPDX: Apache-2.0)
+   Copyright (c) Tetrate, Inc.
+
+10. BadgerDB v4 & Ristretto v2 (https://github.com/dgraph-io/badger)
+    License: Apache License 2.0 (SPDX: Apache-2.0)
+    Copyright (c) Dgraph Labs, Inc.
+
+11. Lestrrat JWX v3 & DSIG (https://github.com/lestrrat-go/jwx)
+    License: MIT License (SPDX: MIT)
+    Copyright (c) Daisuke Maki
+
+12. ORAS Go v2 (https://github.com/oras-project/oras-go)
+    License: Apache License 2.0 (SPDX: Apache-2.0)
+    Copyright (c) The ORAS Authors
+
+------------------------------------------------------------------------
+B. Embedded Console Frontend Libraries (`web/package.json`)
+------------------------------------------------------------------------
+
+13. React & React DOM v19 (https://github.com/facebook/react)
+    License: MIT License (SPDX: MIT)
+    Copyright (c) Meta Platforms, Inc. and affiliates.
+
+14. Noble Ed25519 & Noble Hashes (https://github.com/paulmillr/noble-ed25519,
+    https://github.com/paulmillr/noble-hashes)
+    License: MIT License (SPDX: MIT)
+    Copyright (c) Paul Miller (https://paulmillr.com)
+
+15. Lucide React Icons (https://github.com/lucide-icons/lucide)
+    License: ISC License (SPDX: ISC)
+    Copyright (c) Cole Bemis & Lucide Contributors
+
+16. Tailwind CSS, PostCSS & Autoprefixer (https://github.com/tailwindlabs/tailwindcss)
+    License: MIT License (SPDX: MIT)
+    Copyright (c) Tailwind Labs, Inc.
+
+17. Vite & @vitejs/plugin-react (https://github.com/vitejs/vite)
+    License: MIT License (SPDX: MIT)
+    Copyright (c) Evan You & Vite Contributors
+
+18. TypeScript (https://github.com/microsoft/TypeScript)
+    License: Apache License 2.0 (SPDX: Apache-2.0)
+    Copyright (c) Microsoft Corporation
+
+------------------------------------------------------------------------
+C. Python Client SDK Dependencies (`sdk/python/pyproject.toml`)
+------------------------------------------------------------------------
+
+19. pyca/cryptography (https://github.com/pyca/cryptography)
+    License: Dual Licensed under Apache License 2.0 OR BSD 3-Clause License
+    Copyright (c) Individual contributors
+
+------------------------------------------------------------------------
+D. Container Base Images, Databases & Open Specifications
+------------------------------------------------------------------------
+
+20. Google Distroless Base Images — gcr.io/distroless/static:nonroot
+    (https://github.com/GoogleContainerTools/distroless)
+    License: Apache License 2.0 (SPDX: Apache-2.0)
+    Copyright (c) Google LLC
+
+21. PostgreSQL 16 (https://www.postgresql.org/)
+    License: The PostgreSQL License (SPDX: PostgreSQL — OSI Permissive)
+    Copyright (c) 1996-2026 The PostgreSQL Global Development Group
+
+22. Dead Simple Signing Envelope (DSSE) & in-toto Attestation Framework
+    (https://github.com/secure-systems-lab/dsse, https://github.com/in-toto/attestation)
+    License: Apache License 2.0 (SPDX: Apache-2.0)
+    Copyright (c) Secure Systems Lab / in-toto Authors
+
+23. NIST Open Security Controls Assessment Language (OSCAL 1.1.2)
+    (https://pages.nist.gov/OSCAL/)
+    License: US Government Public Domain (17 U.S.C. § 105 / CC0-1.0)
+
+------------------------------------------------------------------------
+E. Out-of-Process DevSecOps & CI Verification Containers (Not Linked)
+------------------------------------------------------------------------
+Note: External scanners invoked by `scripts/compliance_harness.py` (Semgrep
+LGPL-2.1, Gitleaks MIT, Checkov Apache-2.0, Syft Apache-2.0, Trivy Apache-2.0,
+OWASP ZAP Apache-2.0, Grafana k6 AGPL-3.0, and GovReady-Q GNU GPL v3) execute
+strictly as isolated out-of-process CLI/Docker test harnesses over HTTP or
+static files. Zero code from those external tools is linked into, bundled
+with, or distributed inside G1-Warrant binaries or SDK packages.

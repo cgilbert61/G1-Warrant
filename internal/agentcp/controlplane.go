@@ -3,7 +3,6 @@ package agentcp
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,19 +23,17 @@ import (
 // isolated warrant-extractor socket invocations, and hash-chained agent_action_ledger logging.
 type ControlPlane struct {
 	store        *db.Store
-	kernelPub    crypto.PrincipalKey
-	kernelPriv   ed25519.PrivateKey
+	signer       crypto.EnvelopeSigner
 	extractorURL string
 	httpClient   *http.Client
 	onBroadcast  func(eventType string, payload any)
 }
 
-// NewControlPlane initializes the N4 Agent Control Plane.
-func NewControlPlane(store *db.Store, kernelPub crypto.PrincipalKey, kernelPriv ed25519.PrivateKey, extractorURL string, onBroadcast func(string, any)) *ControlPlane {
+// NewControlPlane initializes the N4 Agent Control Plane backed by an EnvelopeSigner (KMS/HSM or ephemeral).
+func NewControlPlane(store *db.Store, signer crypto.EnvelopeSigner, extractorURL string, onBroadcast func(string, any)) *ControlPlane {
 	return &ControlPlane{
 		store:        store,
-		kernelPub:    kernelPub,
-		kernelPriv:   kernelPriv,
+		signer:       signer,
 		extractorURL: strings.TrimRight(extractorURL, "/"),
 		httpClient: &http.Client{
 			Timeout: 12 * time.Second,
@@ -71,7 +68,7 @@ func (cp *ControlPlane) MintTaskWarrant(warrantID, remediationID, workerName, ta
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := env.SignEd25519(1, cp.kernelPub, cp.kernelPriv); err != nil {
+	if err := cp.signer.SignEnvelope(context.Background(), 1, env); err != nil {
 		return nil, nil, err
 	}
 	return env, &payload, nil
@@ -118,7 +115,8 @@ func (cp *ControlPlane) VerifyAndConsumeTaskWarrant(ctx context.Context, env *cr
 	if err := json.Unmarshal(rawPayload, &p); err != nil {
 		return nil, recordViolation("INVALID_TASK_JSON", "", "", "", "", "", "", 0)
 	}
-	if err := crypto.VerifySingleSignature(env.PayloadType, rawPayload, env.Signatures[0], &cp.kernelPub, crypto.DefaultWebAuthnConfig()); err != nil {
+	kernelPK := cp.signer.PublicKey()
+	if err := crypto.VerifySingleSignature(env.PayloadType, rawPayload, env.Signatures[0], &kernelPK, crypto.DefaultWebAuthnConfig()); err != nil {
 		return nil, recordViolation("FORGED_TASK_SIGNATURE", p.TaskTokenID, p.WarrantID, p.RemediationID, p.WorkerName, p.Slot1PrincipalID, p.Slot2PrincipalID, p.TTLSeconds)
 	}
 	nowUnix := time.Now().UTC().Unix()

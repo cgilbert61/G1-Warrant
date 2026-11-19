@@ -12,6 +12,7 @@ from .client import WarrantAPIError, WarrantClient
 from .crypto import (
     ROLE_AUTHORIZING_OFFICIAL,
     ROLE_SERVICE_OWNER,
+    SignerKeyBundle,
     draft_thaw_envelope,
     draft_warrant_envelope,
     generate_ed25519_signer_bundle,
@@ -40,7 +41,9 @@ def main(argv: list[str] | None = None) -> int:
     p_verify_w = sub.add_parser("warrant-verify", help="Re-verify a Standing Warrant live in N1")
     p_verify_w.add_argument("warrant_id")
 
-    p_mint = sub.add_parser("warrant-mint-demo", help="Draft and 2-of-2 co-sign a demo Standing Warrant")
+    p_mint = sub.add_parser("warrant-mint", help="Draft and 2-of-2 co-sign a Standing Warrant using explicit Slot 1 & Slot 2 keys")
+    p_mint.add_argument("--slot1-key", type=Path, required=True, help="Slot 1 (SERVICE_OWNER) SignerKeyBundle JSON")
+    p_mint.add_argument("--slot2-key", type=Path, required=True, help="Slot 2 (AUTHORIZING_OFFICIAL) SignerKeyBundle JSON")
     p_mint.add_argument("--warrant-class", default="KEV-TIER1-STATELESS")
     p_mint.add_argument("--services", default="payments-ledger-api,identity-sso-gateway")
 
@@ -71,6 +74,13 @@ def main(argv: list[str] | None = None) -> int:
     p_freeze.add_argument("action", choices=["hold", "rollback", "thaw"])
     p_freeze.add_argument("--actor", default="g1-warrant-pycli")
     p_freeze.add_argument("--reason", default="CLI_EMERGENCY_ACTION")
+    p_freeze.add_argument("--slot1-key", type=Path, default=None, help="Slot 1 (SERVICE_OWNER) SignerKeyBundle JSON for thaw")
+    p_freeze.add_argument("--slot2-key", type=Path, default=None, help="Slot 2 (AUTHORIZING_OFFICIAL) SignerKeyBundle JSON for thaw")
+
+    p_qrb = sub.add_parser("pipeline-rollback", help="Execute atomic 3-step Quarantined Rollback (Contain-Before-Unban)")
+    p_qrb.add_argument("remediation_id")
+    p_qrb.add_argument("--actor", default="g1-warrant-pycli")
+    p_qrb.add_argument("--reason", default="POST_PROMOTION_REGRESSION")
 
     p_feeds = sub.add_parser("feeds", help="Inspect or sync CISA KEV & Google OSV.dev live feeds")
     p_feeds.add_argument("action", choices=["status", "live", "offline", "sync-kev", "sync-osv"])
@@ -131,13 +141,13 @@ def main(argv: list[str] | None = None) -> int:
             _dump(res)
             return 0 if res.get("valid") else 2
 
-        if args.command == "warrant-mint-demo":
+        if args.command == "warrant-mint":
             svcs = [s.strip() for s in args.services.split(",") if s.strip()]
             env = draft_warrant_envelope(scope_services=svcs, warrant_class=args.warrant_class)
-            alice = cli.builtin_demo_signer("usr-alice-so")
-            bob = cli.builtin_demo_signer("usr-bob-ao")
-            alice.sign_envelope(1, env)
-            bob.sign_envelope(2, env)
+            s1 = SignerKeyBundle.from_dict(json.loads(args.slot1_key.read_text(encoding="utf-8")))
+            s2 = SignerKeyBundle.from_dict(json.loads(args.slot2_key.read_text(encoding="utf-8")))
+            s1.sign_envelope(1, env)
+            s2.sign_envelope(2, env)
             _dump(cli.create_warrant(env))
             return 0
 
@@ -174,10 +184,18 @@ def main(argv: list[str] | None = None) -> int:
                 mode = "FREEZE_HOLD" if args.action == "hold" else "FREEZE_ROLLBACK"
                 _dump(cli.trigger_freeze(mode=mode, actor=args.actor, reason_code=args.reason))
             else:
+                if not args.slot1_key or not args.slot2_key:
+                    raise ValueError("--slot1-key and --slot2-key are required for 2-of-2 fleet thaw")
                 env = draft_thaw_envelope()
-                cli.builtin_demo_signer("usr-alice-so").sign_envelope(1, env)
-                cli.builtin_demo_signer("usr-bob-ao").sign_envelope(2, env)
+                s1 = SignerKeyBundle.from_dict(json.loads(args.slot1_key.read_text(encoding="utf-8")))
+                s2 = SignerKeyBundle.from_dict(json.loads(args.slot2_key.read_text(encoding="utf-8")))
+                s1.sign_envelope(1, env)
+                s2.sign_envelope(2, env)
                 _dump(cli.thaw_freeze(env))
+            return 0
+
+        if args.command == "pipeline-rollback":
+            _dump(cli.emergency_rollback(args.remediation_id, actor=args.actor, reason=args.reason))
             return 0
 
         if args.command == "feeds":

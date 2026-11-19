@@ -28,16 +28,54 @@ func TestNormalizeAndDiffHTTPJSON_MasksVolatilesAndDetectsBreaking(t *testing.T)
 	}
 }
 
+func TestNormalizeAndDiffHTTPJSON_UnorderedArraysFloatToleranceAndCustomMasks(t *testing.T) {
+	base := `{
+		"status": "SETTLED",
+		"amount": 12.0000001,
+		"shard_nodes": ["fin-core-a", "fin-core-b", "fin-core-c"],
+		"custom_trace_token": "req-abc-001"
+	}`
+	canary := `{
+		"status": "SETTLED",
+		"amount": 12.0,
+		"shard_nodes": ["fin-core-c", "fin-core-a", "fin-core-b"],
+		"custom_trace_token": "req-xyz-999"
+	}`
+
+	normB, normC, masked, diffs, breaking, err := NormalizeAndDiffHTTPJSON(base, canary, "$.custom_trace_token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if normB != normC || breaking != 0 || len(diffs) != 0 || len(masked) != 1 {
+		t.Fatalf("expected unordered arrays + 1e-6 float drift + custom mask to match cleanly, got normB=%s normC=%s breaking=%d diffs=%+v masked=%v", normB, normC, breaking, diffs, masked)
+	}
+}
+
 func TestGradeServiceReadiness(t *testing.T) {
-	svc := models.EstateService{
+	svcTier2 := models.EstateService{
 		ServiceID:                  "fulfillment-worker",
 		TestCoveragePct:            71.4,
 		OtelHealthProbes:           true,
 		ReadonlyShadowReplica:      false,
 		RollbackAutomationVerified: true,
 	}
-	GradeServiceReadiness(&svc)
-	if svc.Eligible {
-		t.Fatal("expected service with 71.4% coverage and missing shadow replica to be ineligible")
+	GradeServiceReadiness(&svcTier2)
+	if svcTier2.Eligible {
+		t.Fatal("expected service with 71.4% coverage and missing shadow replica to be false for Tier 1 full shadow Eligible")
+	}
+	if svcTier2.AutonomyTier != models.AutonomyTier2GuardedCanary {
+		t.Fatalf("expected brownfield service with OTel + rollback hook to receive TIER_2_GUARDED_CANARY, got %s", svcTier2.AutonomyTier)
+	}
+
+	svcTier3 := models.EstateService{
+		ServiceID:                  "legacy-billing-monolith",
+		TestCoveragePct:            54.0,
+		OtelHealthProbes:           false,
+		ReadonlyShadowReplica:      false,
+		RollbackAutomationVerified: false,
+	}
+	GradeServiceReadiness(&svcTier3)
+	if svcTier3.AutonomyTier != models.AutonomyTier3ContainAndCAB {
+		t.Fatalf("expected legacy monolith to receive TIER_3_CONTAIN_AND_CAB, got %s", svcTier3.AutonomyTier)
 	}
 }

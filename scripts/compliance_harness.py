@@ -327,6 +327,12 @@ def gate_sbom(mount_dir: Path) -> dict:
     if staged_cdx.exists() and staged_cdx != report_cdx:
         shutil.copy2(staged_cdx, report_cdx)
 
+    # Enrich SBOM with 100% SPDX license expressions & verify zero copyleft/unknown licenses (NIST SR-3)
+    lic_script = WORKSPACE / "scripts/audit_licenses.py"
+    lic_code = 0
+    if lic_script.exists():
+        lic_code, _, _ = run_command([sys.executable, str(lic_script)], timeout=60)
+
     comp_count = 0
     if report_cdx.exists() and report_cdx.stat().st_size > 0:
         try:
@@ -335,8 +341,8 @@ def gate_sbom(mount_dir: Path) -> dict:
         except Exception:
             comp_count = 0
 
-    status = "PASS" if report_cdx.exists() and comp_count > 0 else "FAIL"
-    print(f"  Results: SBOM generated ({comp_count} cataloged components in {report_cdx.name}). Status: {status}")
+    status = "PASS" if report_cdx.exists() and comp_count > 0 and lic_code == 0 else "FAIL"
+    print(f"  Results: SBOM generated & SPDX-licensed ({comp_count} cataloged components in {report_cdx.name}). Status: {status}")
     return {"gate": name, "tool": tool, "standard": standard, "status": status, "report": str(report_cdx), "findings": 0 if status == "PASS" else 1}
 
 
@@ -557,16 +563,16 @@ def gate_load(mount_dir: Path) -> dict:
 
 
 # ==============================================================================
-# GATE 9: GOVREADY-Q NIST SP 800-53 GRC ASSESSMENT
+# GATE 9: GOVREADY-Q NIST SP 800-53 REV 5 GRC ASSESSMENT
 # ==============================================================================
 def gate_govready(_mount_dir: Path) -> dict:
     name = "Federal GRC Assessment"
     tool = "GovReady-Q"
-    standard = "NIST SP 800-53 Rev 4 (14 Controls)"
+    standard = "NIST SP 800-53 Rev 5 (16 Controls)"
     report_summary = REPORTS_DIR / "govready_assessment_summary.json"
     report_oscal = REPORTS_DIR / "govready_oscal_component.json"
 
-    print("\n[GATE 9: GovReady-Q] Running NIST SP 800-53 Compliance Assessment...")
+    print("\n[GATE 9: GovReady-Q] Running NIST SP 800-53 Rev 5 Compliance Assessment...")
 
     script_path = WORKSPACE / "scripts/run_govready_assessment.py"
     code, out, err = run_command([sys.executable, str(script_path)], timeout=120)

@@ -52,6 +52,7 @@ type AC5Decision struct {
 type GateInput struct {
 	FreezeMode          string           `json:"freeze_mode"`
 	BlastRadiusExceeded bool             `json:"blast_radius_exceeded"`
+	AllowGuardedCanary  bool             `json:"allow_guarded_canary"`
 	ShadowEvaluated     bool             `json:"shadow_evaluated"`
 	Service             GateServiceInput `json:"service"`
 	Patch               GatePatchInput   `json:"patch"`
@@ -62,6 +63,7 @@ type GateServiceInput struct {
 	TestCoveragePct            float64 `json:"test_coverage_pct"`
 	OtelHealthProbes           bool    `json:"otel_health_probes"`
 	ReadonlyShadowReplica      bool    `json:"readonly_shadow_replica"`
+	ShadowDBMode               string  `json:"shadow_db_mode,omitempty"`
 	RollbackAutomationVerified bool    `json:"rollback_automation_verified"`
 }
 
@@ -73,30 +75,38 @@ type GatePatchInput struct {
 }
 
 type GateShadowInput struct {
-	SchemaBreakingDiffs int      `json:"schema_breaking_diffs"`
-	StatusCodeDriftPct  float64  `json:"status_code_drift_pct"`
-	P99LatencyMs        float64  `json:"p99_latency_ms"`
-	MaxP99LatencyMs     float64  `json:"max_p99_latency_ms"`
-	BaselineSyscalls    []string `json:"baseline_syscalls"`
-	CanarySyscalls      []string `json:"canary_syscalls"`
+	SchemaBreakingDiffs       int      `json:"schema_breaking_diffs"`
+	StatusCodeDriftPct        float64  `json:"status_code_drift_pct"`
+	P99LatencyMs              float64  `json:"p99_latency_ms"`
+	MaxP99LatencyMs           float64  `json:"max_p99_latency_ms"`
+	BaselineSyscalls          []string `json:"baseline_syscalls"`
+	CanarySyscalls            []string `json:"canary_syscalls"`
+	SensitiveFilesAccessed    []string `json:"sensitive_files_accessed,omitempty"`
+	UnexpectedEgressEndpoints []string `json:"unexpected_egress_endpoints,omitempty"`
+	HasMutatingTraffic        bool     `json:"has_mutating_traffic,omitempty"`
 }
 
 // GateDecision is the deterministic decision from data.warrant.gate.
 type GateDecision struct {
-	ServiceEligible          bool     `json:"service_eligible"`
-	PatchStateless           bool     `json:"patch_stateless"`
-	ShadowSafe               bool     `json:"shadow_safe"`
-	FreezeBlocked            bool     `json:"freeze_blocked"`
-	TriggerCanaryRollback    bool     `json:"trigger_canary_rollback"`
-	RouteToExceptionCockpit  bool     `json:"route_to_exception_cockpit"`
-	AllowAutonomousRollout   bool     `json:"allow_autonomous_rollout"`
-	UnauthorizedSyscalls     []string `json:"unauthorized_syscalls"`
-	Reasons                  []string `json:"reasons"`
+	ServiceEligible         bool     `json:"service_eligible"`
+	GuardedCanaryEligible   bool     `json:"guarded_canary_eligible"`
+	AutonomyTier            string   `json:"autonomy_tier"`
+	PatchStateless          bool     `json:"patch_stateless"`
+	ShadowSafe              bool     `json:"shadow_safe"`
+	FreezeBlocked           bool     `json:"freeze_blocked"`
+	TriggerCanaryRollback   bool     `json:"trigger_canary_rollback"`
+	RouteToExceptionCockpit bool     `json:"route_to_exception_cockpit"`
+	AllowAutonomousRollout  bool     `json:"allow_autonomous_rollout"`
+	UnauthorizedSyscalls    []string `json:"unauthorized_syscalls"`
+	Reasons                 []string `json:"reasons"`
 }
 
 // VerifyInput represents structured input to data.warrant.verify.
 type VerifyInput struct {
+	HasSignedProbe           bool   `json:"has_signed_probe"`
+	UnpatchedTwinStatus      string `json:"unpatched_twin_status"`
 	TwinReplayStatus         string `json:"twin_replay_status"`
+	ProvenanceVerified       bool   `json:"provenance_verified"`
 	AttestedPods             int    `json:"attested_pods"`
 	TotalPods                int    `json:"total_pods"`
 	VulnerableSymbolsLoaded  int    `json:"vulnerable_symbols_loaded"`
@@ -108,6 +118,7 @@ type VerifyInput struct {
 type VerifyDecision struct {
 	AllowBridgeRetirement bool     `json:"allow_bridge_retirement"`
 	AllowAttestationMint  bool     `json:"allow_attestation_mint"`
+	AssuranceTier         string   `json:"assurance_tier"`
 	Blockers              []string `json:"blockers"`
 }
 
@@ -187,8 +198,11 @@ func (e *Engine) EvalGate(ctx context.Context, in GateInput) (*GateDecision, err
 		b, _ := m[k].(bool)
 		return b
 	}
+	autonomyTier, _ := m["autonomy_tier"].(string)
 	return &GateDecision{
 		ServiceEligible:         boolField("service_eligible"),
+		GuardedCanaryEligible:   boolField("guarded_canary_eligible"),
+		AutonomyTier:            autonomyTier,
 		PatchStateless:          boolField("patch_stateless"),
 		ShadowSafe:              boolField("shadow_safe"),
 		FreezeBlocked:           boolField("freeze_blocked"),
@@ -212,9 +226,11 @@ func (e *Engine) EvalVerify(ctx context.Context, in VerifyInput) (*VerifyDecisio
 	}
 	retire, _ := m["allow_bridge_retirement"].(bool)
 	mint, _ := m["allow_attestation_mint"].(bool)
+	tier, _ := m["assurance_tier"].(string)
 	return &VerifyDecision{
 		AllowBridgeRetirement: retire,
 		AllowAttestationMint:  mint,
+		AssuranceTier:         tier,
 		Blockers:              extractSortedStrings(m["blockers"]),
 	}, nil
 }

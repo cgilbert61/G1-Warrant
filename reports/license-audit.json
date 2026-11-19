@@ -1,0 +1,392 @@
+{
+  "system": "G1-Warrant",
+  "project_license": "Apache-2.0",
+  "timestamp": "2026-11-19T23:30:07.681797+00:00",
+  "policy": "Permissive Open-Source Only (Zero Copyleft / Zero GPL-LGPL-AGPL in Linked Binaries)",
+  "total_dependencies_audited": 46,
+  "go_modules_count": 32,
+  "npm_packages_count": 13,
+  "python_sdk_packages_count": 1,
+  "sbom_components_total": 48,
+  "sbom_components_with_spdx": 48,
+  "spdx_distribution": {
+    "BSD-3-Clause": 6,
+    "MIT": 30,
+    "Apache-2.0": 5,
+    "Apache-2.0 AND MIT": 2,
+    "ISC": 2,
+    "Apache-2.0 OR BSD-3-Clause": 1
+  },
+  "violations_count": 0,
+  "status": "PASS",
+  "dependencies": [
+    {
+      "ecosystem": "golang",
+      "name": "github.com/google/uuid",
+      "version": "v1.6.0",
+      "scope": "direct",
+      "spdx": "BSD-3-Clause",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "github.com/jackc/pgx/v5",
+      "version": "v5.13.0",
+      "scope": "direct",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "github.com/open-policy-agent/opa",
+      "version": "v1.22.4",
+      "scope": "direct",
+      "spdx": "Apache-2.0",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "gopkg.in/yaml.v3",
+      "version": "v3.0.1",
+      "scope": "direct",
+      "spdx": "Apache-2.0 AND MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "github.com/agnivade/levenshtein",
+      "version": "v1.2.2",
+      "scope": "indirect",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "github.com/cespare/xxhash/v2",
+      "version": "v2.3.0",
+      "scope": "indirect",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "github.com/decred/dcrd/dcrec/secp256k1/v4",
+      "version": "v4.4.1",
+      "scope": "indirect",
+      "spdx": "ISC",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "github.com/gobwas/glob",
+      "version": "v1.1.0",
+      "scope": "indirect",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "github.com/goccy/go-json",
+      "version": "v0.11.2",
+      "scope": "indirect",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "github.com/jackc/pgpassfile",
+      "version": "v1.0.0",
+      "scope": "indirect",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "github.com/jackc/pgservicefile",
+      "version": "v0.0.0-20240606120523-5a60cdf6a761",
+      "scope": "indirect",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "github.com/jackc/puddle/v2",
+      "version": "v2.2.3",
+      "scope": "indirect",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "github.com/lestrrat-go/blackmagic",
+      "version": "v1.0.4",
+      "scope": "indirect",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "github.com/lestrrat-go/dsig",
+      "version": "v1.4.0",
+      "scope": "indirect",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "github.com/lestrrat-go/dsig-secp256k1",
+      "version": "v1.0.0",
+      "scope": "indirect",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "github.com/lestrrat-go/httpcc",
+      "version": "v1.0.1",
+      "scope": "indirect",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "github.com/lestrrat-go/httprc/v3",
+      "version": "v3.0.6",
+      "scope": "indirect",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "github.com/lestrrat-go/jwx/v3",
+      "version": "v3.4.0",
+      "scope": "indirect",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "github.com/lestrrat-go/option/v2",
+      "version": "v2.0.0",
+      "scope": "indirect",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "github.com/segmentio/asm",
+      "version": "v1.2.1",
+      "scope": "indirect",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "github.com/sirupsen/logrus",
+      "version": "v1.10.2",
+      "scope": "indirect",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "github.com/valyala/fastjson",
+      "version": "v1.6.10",
+      "scope": "indirect",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "github.com/vektah/gqlparser/v2",
+      "version": "v2.5.64",
+      "scope": "indirect",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "github.com/xeipuuv/gojsonpointer",
+      "version": "v0.0.0-20190905194746-02993c407bfb",
+      "scope": "indirect",
+      "spdx": "Apache-2.0",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "github.com/xeipuuv/gojsonreference",
+      "version": "v0.0.0-20180127040603-bd5ef7bd5415",
+      "scope": "indirect",
+      "spdx": "Apache-2.0",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "github.com/yashtewari/glob-intersection",
+      "version": "v0.2.0",
+      "scope": "indirect",
+      "spdx": "Apache-2.0",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "go.yaml.in/yaml/v3",
+      "version": "v3.0.6",
+      "scope": "indirect",
+      "spdx": "Apache-2.0 AND MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "golang.org/x/net",
+      "version": "v0.62.0",
+      "scope": "indirect",
+      "spdx": "BSD-3-Clause",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "golang.org/x/sync",
+      "version": "v0.25.0",
+      "scope": "indirect",
+      "spdx": "BSD-3-Clause",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "golang.org/x/sys",
+      "version": "v0.50.0",
+      "scope": "indirect",
+      "spdx": "BSD-3-Clause",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "golang.org/x/text",
+      "version": "v0.44.0",
+      "scope": "indirect",
+      "spdx": "BSD-3-Clause",
+      "compliant": true
+    },
+    {
+      "ecosystem": "golang",
+      "name": "google.golang.org/protobuf",
+      "version": "v1.36.12",
+      "scope": "indirect",
+      "spdx": "BSD-3-Clause",
+      "compliant": true
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@noble/ed25519",
+      "version": "2.3.0",
+      "scope": "runtime",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@noble/hashes",
+      "version": "1.8.0",
+      "scope": "runtime",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "npm",
+      "name": "lucide-react",
+      "version": "0.468.0",
+      "scope": "runtime",
+      "spdx": "ISC",
+      "compliant": true
+    },
+    {
+      "ecosystem": "npm",
+      "name": "react",
+      "version": "19.3.1",
+      "scope": "runtime",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "npm",
+      "name": "react-dom",
+      "version": "19.3.1",
+      "scope": "runtime",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@types/react",
+      "version": "19.3.0",
+      "scope": "build-dev",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@types/react-dom",
+      "version": "19.3.0",
+      "scope": "build-dev",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@vitejs/plugin-react",
+      "version": "4.7.0",
+      "scope": "build-dev",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "npm",
+      "name": "autoprefixer",
+      "version": "10.6.2",
+      "scope": "build-dev",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "npm",
+      "name": "postcss",
+      "version": "8.5.33",
+      "scope": "build-dev",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "npm",
+      "name": "tailwindcss",
+      "version": "3.4.19",
+      "scope": "build-dev",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "npm",
+      "name": "typescript",
+      "version": "5.7.3",
+      "scope": "build-dev",
+      "spdx": "Apache-2.0",
+      "compliant": true
+    },
+    {
+      "ecosystem": "npm",
+      "name": "vite",
+      "version": "6.4.6",
+      "scope": "build-dev",
+      "spdx": "MIT",
+      "compliant": true
+    },
+    {
+      "ecosystem": "pypi",
+      "name": "cryptography",
+      "version": ">=42.0.0",
+      "scope": "sdk-runtime",
+      "spdx": "Apache-2.0 OR BSD-3-Clause",
+      "compliant": true
+    }
+  ]
+}

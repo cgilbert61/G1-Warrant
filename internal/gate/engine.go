@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strings"
@@ -56,15 +57,27 @@ func NewEngine(
 	}
 }
 
-// GradeServiceReadiness deterministically grades an EstateService against N2 eligibility bars.
+// GradeServiceReadiness deterministically grades an EstateService across three graduated autonomy tiers:
+//   - TIER_1_FULL_AUTONOMOUS: >=80% coverage, OTel SLI probes, CoW/shadow DB isolation, verified <10s rollback
+//   - TIER_2_GUARDED_CANARY:  Brownfield workloads with OTel SLI probes + verified rollback (eligible when warrant sets allow_guarded_canary)
+//   - TIER_3_CONTAIN_AND_CAB: Legacy workloads lacking OTel probes or rollback hooks (automatic containment + Four-Eyes CAB)
 func GradeServiceReadiness(svc *models.EstateService) {
 	covOK := svc.TestCoveragePct >= 80.0
+	if svc.ShadowDBMode == "" {
+		if svc.ReadonlyShadowReplica {
+			svc.ShadowDBMode = "EPHEMERAL_COW_BRANCH"
+		} else {
+			svc.ShadowDBMode = "NONE"
+		}
+	}
+	shadowCapable := svc.ReadonlyShadowReplica || svc.ShadowDBMode == "EPHEMERAL_COW_BRANCH" || svc.ShadowDBMode == "READONLY_REPLICA"
+
 	checks := []models.EligibilityCheckItem{
 		{
 			CriterionCode:     "TEST_COVERAGE_BAR",
 			Passed:            covOK,
 			ObservedValue:     fmt.Sprintf("%.1f%%", svc.TestCoveragePct),
-			RequiredThreshold: ">= 80.0%",
+			RequiredThreshold: ">= 80.0% (Tier 1) / Optional for Tier 2 Guarded Canary",
 			ActionCode:        ternary(covOK, "NONE", "INCREASE_INTEGRATION_TEST_COVERAGE_TO_80_PCT"),
 		},
 		{
@@ -75,11 +88,11 @@ func GradeServiceReadiness(svc *models.EstateService) {
 			ActionCode:        ternary(svc.OtelHealthProbes, "NONE", "WIRE_OTEL_GRPC_HTTP_SLI_PROBES"),
 		},
 		{
-			CriterionCode:     "SHADOW_READONLY_REPLICA",
-			Passed:            svc.ReadonlyShadowReplica,
-			ObservedValue:     fmt.Sprintf("%t", svc.ReadonlyShadowReplica),
-			RequiredThreshold: "true",
-			ActionCode:        ternary(svc.ReadonlyShadowReplica, "NONE", "PROVISION_READONLY_SHADOW_DB_REPLICA_AND_SINK"),
+			CriterionCode:     "SHADOW_ISOLATION_DB",
+			Passed:            shadowCapable,
+			ObservedValue:     fmt.Sprintf("%t (%s)", shadowCapable, svc.ShadowDBMode),
+			RequiredThreshold: "EPHEMERAL_COW_BRANCH or READONLY_REPLICA (Tier 1)",
+			ActionCode:        ternary(shadowCapable, "NONE", "PROVISION_EPHEMERAL_COW_SHADOW_DB_OR_USE_TIER2_GUARDED_CANARY"),
 		},
 		{
 			CriterionCode:     "AUTOMATED_ROLLBACK_DRILL",
@@ -90,12 +103,24 @@ func GradeServiceReadiness(svc *models.EstateService) {
 		},
 	}
 	svc.EligibilityChecklist = checks
-	svc.Eligible = covOK && svc.OtelHealthProbes && svc.ReadonlyShadowReplica && svc.RollbackAutomationVerified
+	switch {
+	case covOK && svc.OtelHealthProbes && shadowCapable && svc.RollbackAutomationVerified:
+		svc.AutonomyTier = models.AutonomyTier1FullAutonomous
+		svc.Eligible = true
+	case svc.OtelHealthProbes && svc.RollbackAutomationVerified:
+		svc.AutonomyTier = models.AutonomyTier2GuardedCanary
+		svc.Eligible = false
+	default:
+		svc.AutonomyTier = models.AutonomyTier3ContainAndCAB
+		svc.Eligible = false
+	}
 }
 
-// NormalizeAndDiffHTTPJSON strips volatile fields (RFC3339 timestamps, UUIDv4/v7, cryptographic hex nonces),
-// canonicalizes both payloads via RFC 8785 JCS, and computes structural field/type diffs.
-func NormalizeAndDiffHTTPJSON(baselineRaw, canaryRaw string) (normBase string, normCanary string, maskedPaths []string, diffs []models.SchemaFieldDiff, breakingCount int, err error) {
+// NormalizeAndDiffHTTPJSON strips volatile fields (RFC3339 timestamps, UUIDv4/v7, cryptographic hex nonces,
+// plus any caller-configured custom volatile JSONPaths), normalizes floats within 1e-6 epsilon, compares JSON arrays
+// order-insensitively as canonical multisets, and computes structural field/type diffs.
+// Strict byte-for-byte RFC 8785 JCS without array reordering remains reserved for DSSE cryptographic envelopes.
+func NormalizeAndDiffHTTPJSON(baselineRaw, canaryRaw string, extraMaskPaths ...string) (normBase string, normCanary string, maskedPaths []string, diffs []models.SchemaFieldDiff, breakingCount int, err error) {
 	var baseVal, canaryVal any
 	if err := json.Unmarshal([]byte(baselineRaw), &baseVal); err != nil {
 		return "", "", nil, nil, 0, fmt.Errorf("parse baseline json: %w", err)
@@ -104,9 +129,20 @@ func NormalizeAndDiffHTTPJSON(baselineRaw, canaryRaw string) (normBase string, n
 		return "", "", nil, nil, 0, fmt.Errorf("parse canary json: %w", err)
 	}
 
+	customMasks := make(map[string]bool, len(extraMaskPaths))
+	for _, p := range extraMaskPaths {
+		trimmed := strings.TrimSpace(p)
+		if trimmed != "" {
+			if !strings.HasPrefix(trimmed, "$") {
+				trimmed = "$." + strings.TrimPrefix(trimmed, ".")
+			}
+			customMasks[trimmed] = true
+		}
+	}
+
 	maskedSet := map[string]bool{}
-	maskedBase := maskVolatileValue("$", baseVal, maskedSet)
-	maskedCanary := maskVolatileValue("$", canaryVal, maskedSet)
+	maskedBase := maskVolatileValue("$", baseVal, maskedSet, customMasks)
+	maskedCanary := maskVolatileValue("$", canaryVal, maskedSet, customMasks)
 
 	canonBase, err := crypto.CanonicalizeStruct(maskedBase)
 	if err != nil {
@@ -132,8 +168,19 @@ func NormalizeAndDiffHTTPJSON(baselineRaw, canaryRaw string) (normBase string, n
 	return string(canonBase), string(canonCanary), maskedList, diffs, breakingCount, nil
 }
 
-func maskVolatileValue(path string, v any, masked map[string]bool) any {
+func maskVolatileValue(path string, v any, masked map[string]bool, customMasks map[string]bool) any {
+	if customMasks[path] {
+		masked[path+" (CUSTOM_VOLATILE)"] = true
+		return "[MASKED:CUSTOM]"
+	}
 	switch val := v.(type) {
+	case float64:
+		// Quantize floating-point telemetry/currency values to 1e-6 epsilon so benign IEEE-754 drift does not trigger false rollbacks
+		rounded := math.Round(val*1e6) / 1e6
+		if rounded == 0 {
+			rounded = 0 // avoid -0.0
+		}
+		return rounded
 	case string:
 		switch {
 		case reUUID.MatchString(val):
@@ -151,14 +198,21 @@ func maskVolatileValue(path string, v any, masked map[string]bool) any {
 	case map[string]any:
 		out := make(map[string]any, len(val))
 		for k, child := range val {
-			out[k] = maskVolatileValue(path+"."+k, child, masked)
+			out[k] = maskVolatileValue(path+"."+k, child, masked, customMasks)
 		}
 		return out
 	case []any:
 		out := make([]any, len(val))
+		elemPath := path + "[*]"
 		for i, elem := range val {
-			out[i] = maskVolatileValue(fmt.Sprintf("%s[%d]", path, i), elem, masked)
+			out[i] = maskVolatileValue(elemPath, elem, masked, customMasks)
 		}
+		// Order-insensitive multiset canonicalization for HTTP JSON array comparisons
+		sort.SliceStable(out, func(i, j int) bool {
+			bi, _ := crypto.CanonicalizeStruct(out[i])
+			bj, _ := crypto.CanonicalizeStruct(out[j])
+			return string(bi) < string(bj)
+		})
 		return out
 	default:
 		return val
@@ -177,6 +231,13 @@ func compareSchemaStructure(path string, base, canary any) []models.SchemaFieldD
 			ChangeKind:   "TYPE_CHANGED",
 			Breaking:     true,
 		}}
+	}
+	if bArr, okB := base.([]any); okB {
+		cArr, okC := canary.([]any)
+		if okC && len(bArr) > 0 && len(cArr) > 0 {
+			out = append(out, compareSchemaStructure(path+"[*]", bArr[0], cArr[0])...)
+		}
+		return out
 	}
 	bMap, okB := base.(map[string]any)
 	cMap, okC := canary.(map[string]any)
@@ -280,16 +341,18 @@ func (e *Engine) EvaluateAndRollout(ctx context.Context, item *models.Remediatio
 		"slot2": w.Slot2PrincipalID,
 	})
 
-	// 3. Pre-rollout OPA Gate Check (Service Readiness + Patch Statelessness + Blast Radius)
+	// 3. Pre-rollout OPA Gate Check (Graduated Autonomy Tier + Patch Statelessness + Blast Radius)
 	blastExceeded := svc.Replicas > w.MaxBlastRadiusReplicas
 	preGate, err := e.policy.EvalGate(ctx, policy.GateInput{
 		FreezeMode:          freeze.Mode,
 		BlastRadiusExceeded: blastExceeded,
+		AllowGuardedCanary:  w.AllowGuardedCanary,
 		ShadowEvaluated:     false,
 		Service: policy.GateServiceInput{
 			TestCoveragePct:            svc.TestCoveragePct,
 			OtelHealthProbes:           svc.OtelHealthProbes,
 			ReadonlyShadowReplica:      svc.ReadonlyShadowReplica,
+			ShadowDBMode:               svc.ShadowDBMode,
 			RollbackAutomationVerified: svc.RollbackAutomationVerified,
 		},
 		Patch: policy.GatePatchInput{
@@ -358,6 +421,10 @@ func (e *Engine) EvaluateAndRollout(ctx context.Context, item *models.Remediatio
 	_ = e.store.UpsertRemediation(ctx, item)
 
 	stages := []int{0, 10, 50, 100}
+	if preGate.AutonomyTier == models.AutonomyTier2GuardedCanary && !svc.ReadonlyShadowReplica {
+		// Tier 2 Brownfield Guarded Canary: skips synthetic DB-mirror stage 0 and progresses SLI-guarded live canary steps
+		stages = []int{10, 50, 100}
+	}
 	for _, weight := range stages {
 		// Re-check freeze & warrant before EVERY canary step
 		curFreeze := e.warrants.CurrentFreezeState()
@@ -399,7 +466,7 @@ func (e *Engine) EvaluateAndRollout(ctx context.Context, item *models.Remediatio
 			crypto.SHA256Hex([]byte(stageResp.CanaryHTTPBody)),
 		)
 
-		normBase, normCanary, maskedFields, schemaDiffs, breakingCount, err := NormalizeAndDiffHTTPJSON(stageResp.BaselineHTTPBody, stageResp.CanaryHTTPBody)
+		normBase, normCanary, maskedFields, schemaDiffs, breakingCount, err := NormalizeAndDiffHTTPJSON(stageResp.BaselineHTTPBody, stageResp.CanaryHTTPBody, svc.VolatileJSONPaths...)
 		if err != nil {
 			return err
 		}
@@ -407,11 +474,13 @@ func (e *Engine) EvaluateAndRollout(ctx context.Context, item *models.Remediatio
 		shadowGate, err := e.policy.EvalGate(ctx, policy.GateInput{
 			FreezeMode:          curFreeze.Mode,
 			BlastRadiusExceeded: false,
+			AllowGuardedCanary:  w.AllowGuardedCanary,
 			ShadowEvaluated:     true,
 			Service: policy.GateServiceInput{
 				TestCoveragePct:            svc.TestCoveragePct,
 				OtelHealthProbes:           true,
 				ReadonlyShadowReplica:      stageResp.ReadonlyDBBound,
+				ShadowDBMode:               svc.ShadowDBMode,
 				RollbackAutomationVerified: true,
 			},
 			Patch: policy.GatePatchInput{
@@ -435,7 +504,7 @@ func (e *Engine) EvaluateAndRollout(ctx context.Context, item *models.Remediatio
 
 		schemaOK := breakingCount == 0
 		syscallOK := len(shadowGate.UnauthorizedSyscalls) == 0
-		isolationOK := stageResp.ReadonlyDBBound && stageResp.OutboundMutationSinkActive
+		isolationOK := (stageResp.ReadonlyDBBound && stageResp.OutboundMutationSinkActive) || preGate.AutonomyTier == models.AutonomyTier2GuardedCanary
 		passed := shadowGate.ShadowSafe && isolationOK
 
 		failureCode := ""

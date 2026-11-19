@@ -24,13 +24,33 @@ const (
 
 // Health / Exception States
 const (
-	HealthNormal          = "NORMAL"
-	HealthBridged         = "BRIDGED"
-	HealthExceptionRouted = "EXCEPTION_ROUTED"
-	HealthRollbackFailed  = "ROLLBACK_FAILED"
-	HealthDriftViolation  = "DRIFT_VIOLATION"
-	HealthFrozen          = "FROZEN"
-	HealthAttested        = "ATTESTED"
+	HealthNormal              = "NORMAL"
+	HealthBridged             = "BRIDGED"
+	HealthExceptionRouted     = "EXCEPTION_ROUTED"
+	HealthRollbackFailed      = "ROLLBACK_FAILED"
+	HealthQuarantinedRollback = "QUARANTINED_ROLLBACK"
+	HealthDriftViolation      = "DRIFT_VIOLATION"
+	HealthFrozen              = "FROZEN"
+	HealthAttested            = "ATTESTED"
+)
+
+// Autonomy Tiers for Brownfield vs. Greenfield Estate Services (N2)
+const (
+	AutonomyTier1FullAutonomous = "TIER_1_FULL_AUTONOMOUS"
+	AutonomyTier2GuardedCanary  = "TIER_2_GUARDED_CANARY"
+	AutonomyTier3ContainAndCAB  = "TIER_3_CONTAIN_AND_CAB"
+)
+
+// Containment Modes Separating Coarse Zero-Prose Quarantine from Signed L7 Rulepacks (N3)
+const (
+	ContainmentModeZeroProseQuarantine = "ZERO_PROSE_EGRESS_MESH_QUARANTINE"
+	ContainmentModeSignedRulepackL7    = "SIGNED_RULEPACK_L7_SHIELD"
+)
+
+// Closure Assurance Tiers Distinguishing Differential PoC Proof from Passive Digest/SBOM Proof (N3/N5)
+const (
+	AssuranceTier1PassiveDigestSBOM = "ASSURANCE_TIER_1_PASSIVE_DIGEST_SBOM"
+	AssuranceTier2DifferentialTwin  = "ASSURANCE_TIER_2_DIFFERENTIAL_TWIN"
 )
 
 // ExtractedFinding is a prose-free, strictly bounded canonical vulnerability record
@@ -130,6 +150,9 @@ type WarrantPayload struct {
 	KEVEligible            bool     `json:"kev_eligible"`
 	MaxBlastRadiusReplicas int      `json:"max_blast_radius_replicas"`
 	AllowStatefulPatches   bool     `json:"allow_stateful_patches"`
+	AllowGuardedCanary     bool     `json:"allow_guarded_canary,omitempty"`
+	MinCanarySamples       int      `json:"min_canary_samples,omitempty"`
+	StageDwellSeconds      int      `json:"stage_dwell_seconds,omitempty"`
 	SLABridgeMinutes       int      `json:"sla_bridge_minutes"`
 	MaxP99LatencyMs        float64  `json:"max_p99_latency_ms"`
 	IssuedAt               string   `json:"issued_at"`
@@ -145,6 +168,9 @@ type WarrantRecord struct {
 	KEVEligible            bool            `json:"kev_eligible"`
 	MaxBlastRadiusReplicas int             `json:"max_blast_radius_replicas"`
 	AllowStatefulPatches   bool            `json:"allow_stateful_patches"`
+	AllowGuardedCanary     bool            `json:"allow_guarded_canary"`
+	MinCanarySamples       int             `json:"min_canary_samples"`
+	StageDwellSeconds      int             `json:"stage_dwell_seconds"`
 	SLABridgeMinutes       int             `json:"sla_bridge_minutes"`
 	MaxP99LatencyMs        float64         `json:"max_p99_latency_ms"`
 	IssuedAt               time.Time       `json:"issued_at"`
@@ -207,9 +233,12 @@ type EstateService struct {
 	TestCoveragePct            float64                `json:"test_coverage_pct"`
 	OtelHealthProbes           bool                   `json:"otel_health_probes"`
 	ReadonlyShadowReplica      bool                   `json:"readonly_shadow_replica"`
+	ShadowDBMode               string                 `json:"shadow_db_mode"` // "EPHEMERAL_COW_BRANCH" | "READONLY_REPLICA" | "NONE"
 	RollbackAutomationVerified bool                   `json:"rollback_automation_verified"`
 	BaselineSyscalls           []string               `json:"baseline_syscalls"`
+	VolatileJSONPaths          []string               `json:"volatile_json_paths,omitempty"`
 	Eligible                   bool                   `json:"eligible"`
+	AutonomyTier               string                 `json:"autonomy_tier"` // "TIER_1_FULL_AUTONOMOUS" | "TIER_2_GUARDED_CANARY" | "TIER_3_CONTAIN_AND_CAB"
 	EligibilityChecklist       []EligibilityCheckItem `json:"eligibility_checklist"`
 	UpdatedAt                  time.Time              `json:"updated_at"`
 }
@@ -251,6 +280,9 @@ type ShadowComparisonReport struct {
 	BaselineSyscalls           []string          `json:"baseline_syscalls"`
 	CanarySyscalls             []string          `json:"canary_syscalls"`
 	UnauthorizedSyscalls       []string          `json:"unauthorized_syscalls"`
+	SensitiveFilesAccessed     []string          `json:"sensitive_files_accessed,omitempty"`
+	UnexpectedEgressEndpoints  []string          `json:"unexpected_egress_endpoints,omitempty"`
+	SampleCount                int               `json:"sample_count,omitempty"`
 	Passed                     bool              `json:"passed"`
 	FailureCode                string            `json:"failure_code,omitempty"`
 	EvaluatedAt                time.Time         `json:"evaluated_at"`
@@ -278,6 +310,7 @@ type RemediationItem struct {
 	SchemaDiffPassed *bool                   `json:"schema_diff_passed"`
 	SyscallPassed    *bool                   `json:"syscall_diff_passed"`
 	TwinReplayStatus string                  `json:"twin_replay_status"`
+	AssuranceTier    string                  `json:"assurance_tier,omitempty"`
 	PodSweepMatched  int                     `json:"pod_sweep_matched"`
 	PodSweepTotal    int                     `json:"pod_sweep_total"`
 	LockoutPolicyID  string                  `json:"lockout_policy_id,omitempty"`
@@ -332,8 +365,10 @@ type ContainmentBridge struct {
 	RemediationID      string     `json:"remediation_id"`
 	ServiceID          string     `json:"service_id"`
 	CVEID              string     `json:"cve_id"`
-	BridgeType         string     `json:"bridge_type"` // "CILIUM_L7_NETPOL" | "ENVOY_MTLS_WAF" | "K8S_NETPOL"
-	Status             string     `json:"status"`      // "ARMED" | "RETIRED" | "REARMED_DRIFT"
+	BridgeType         string     `json:"bridge_type"`      // "CILIUM_L7_NETPOL" | "ENVOY_MTLS_WAF" | "K8S_NETPOL"
+	ContainmentMode    string     `json:"containment_mode"` // "ZERO_PROSE_EGRESS_MESH_QUARANTINE" | "SIGNED_RULEPACK_L7_SHIELD"
+	RulepackID         string     `json:"rulepack_id,omitempty"`
+	Status             string     `json:"status"` // "ARMED" | "RETIRED" | "REARMED_DRIFT"
 	SLABridgeMinutes   int        `json:"sla_minutes"`
 	BlockerReasonCode  string     `json:"blocker_reason_code"`
 	CiliumManifestYAML string     `json:"cilium_manifest_yaml"`
@@ -353,6 +388,8 @@ type AdmissionLockout struct {
 	BannedDigest    string     `json:"banned_digest"`
 	PatchedDigest   string     `json:"patched_digest"`
 	PolicyName      string     `json:"policy_name"`
+	Status          string     `json:"status"` // "ENFORCED" | "SUSPENDED_FOR_QUARANTINED_ROLLBACK"
+	SuspendedReason string     `json:"suspended_reason,omitempty"`
 	VAPManifestYAML string     `json:"vap_manifest_yaml"`
 	GatekeeperRego  string     `json:"gatekeeper_rego"`
 	EnforcedAt      time.Time  `json:"enforced_at"`
@@ -434,6 +471,8 @@ type AttestationRecord struct {
 	Slot2PrincipalID     string           `json:"slot2_principal_id"`
 	Slot2Email           string           `json:"slot2_email"`
 	TwinTranscriptSHA256 string           `json:"twin_transcript_sha256"`
+	AssuranceTier        string           `json:"assurance_tier"`
+	SignerBackend        string           `json:"signer_backend"`
 	FleetDigestManifest  []PodDigestEntry `json:"fleet_digest_manifest"`
 	LockoutPolicyID      string           `json:"lockout_policy_id"`
 	ReverifyExpiresAt    time.Time        `json:"reverify_expires_at"`
@@ -466,11 +505,33 @@ type ChainTableStatus struct {
 	FailureDetail    string `json:"failure_detail,omitempty"`
 }
 
-// LedgerVerificationReport summarizes hash-chain integrity across all 3 append-only tables.
+// LedgerVerificationReport summarizes hash-chain integrity across all 3 append-only tables
+// and cross-verifies against External Transparency Checkpoints to detect DB superuser tampering.
 type LedgerVerificationReport struct {
-	AllValid   bool               `json:"all_valid"`
-	VerifiedAt time.Time          `json:"verified_at"`
-	Tables     []ChainTableStatus `json:"tables"`
+	AllValid                bool               `json:"all_valid"`
+	ExternalAnchorVerified  bool               `json:"external_anchor_verified"`
+	LatestCheckpointID      string             `json:"latest_checkpoint_id,omitempty"`
+	LatestCombinedMerkleHex string             `json:"latest_combined_merkle_root,omitempty"`
+	SuperuserTamperDetail   string             `json:"superuser_tamper_detail,omitempty"`
+	VerifiedAt              time.Time          `json:"verified_at"`
+	Tables                  []ChainTableStatus `json:"tables"`
+}
+
+// LedgerCheckpoint represents a periodic DSSE-signed Merkle Root receipt shipped to an
+// external WORM / Transparency boundary (S3 Object Lock, Rekor, RFC 3161 TSA, or immutable external sink).
+type LedgerCheckpoint struct {
+	CheckpointID         string          `json:"checkpoint_id"`
+	WarrantHeadHash      string          `json:"warrant_head_hash"`
+	WarrantRowCount      int             `json:"warrant_row_count"`
+	AgentHeadHash        string          `json:"agent_head_hash"`
+	AgentRowCount        int             `json:"agent_row_count"`
+	AttestationHeadHash  string          `json:"attestation_head_hash"`
+	AttestationRowCount  int             `json:"attestation_row_count"`
+	CombinedMerkleRoot   string          `json:"combined_merkle_root"`
+	DSSEEnvelope         crypto.Envelope `json:"dsse_envelope"`
+	ExternalAnchorTarget string          `json:"external_anchor_target"`
+	ExternalReceiptHash  string          `json:"external_receipt_hash"`
+	AnchoredAt           time.Time       `json:"anchored_at"`
 }
 
 // GlobalScoreboard aggregates the persistent Global Command Bar KPIs.

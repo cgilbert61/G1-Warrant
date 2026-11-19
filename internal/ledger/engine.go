@@ -2,7 +2,6 @@ package ledger
 
 import (
 	"context"
-	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -19,13 +18,13 @@ import (
 )
 
 // Engine implements N5: Cryptographic Attestation Ledger, NIST OSCAL 1.1.2 POA&M Minting,
-// Hash-Chain Verification, and Scoped External Auditor Bearer Tokens.
+// External Merkle Transparency Anchoring, Hash-Chain Verification, and Scoped External Auditor Bearer Tokens.
 type Engine struct {
 	store       *db.Store
 	policy      *policy.Engine
 	warrants    *warrant.Engine
-	kernelPub   crypto.PrincipalKey
-	kernelPriv  ed25519.PrivateKey
+	signer      crypto.EnvelopeSigner
+	anchor      *TransparencyAnchor
 	onBroadcast func(eventType string, payload any)
 }
 
@@ -34,23 +33,44 @@ func NewEngine(
 	store *db.Store,
 	pol *policy.Engine,
 	warrants *warrant.Engine,
-	kernelPub crypto.PrincipalKey,
-	kernelPriv ed25519.PrivateKey,
+	signer crypto.EnvelopeSigner,
 	onBroadcast func(string, any),
+	anchor ...*TransparencyAnchor,
 ) *Engine {
+	var anc *TransparencyAnchor
+	if len(anchor) > 0 && anchor[0] != nil {
+		anc = anchor[0]
+	} else {
+		anc = NewTransparencyAnchor("", "")
+	}
 	return &Engine{
 		store:       store,
 		policy:      pol,
 		warrants:    warrants,
-		kernelPub:   kernelPub,
-		kernelPriv:  kernelPriv,
+		signer:      signer,
+		anchor:      anc,
 		onBroadcast: onBroadcast,
 	}
 }
 
 // KernelPublicKey returns the public key metadata for external/in-browser DSSE verification.
 func (e *Engine) KernelPublicKey() crypto.PrincipalKey {
-	return e.kernelPub
+	return e.signer.PublicKey()
+}
+
+// SignerBackend returns the active cryptographic signing backend mode (KMS/HSM vs ephemeral memory).
+func (e *Engine) SignerBackend() string {
+	return e.signer.BackendMode()
+}
+
+// Anchor returns the External Merkle Transparency Anchor.
+func (e *Engine) Anchor() *TransparencyAnchor {
+	return e.anchor
+}
+
+// CreateCheckpoint signs and ships an explicit Merkle Root checkpoint across all 3 ledger tables.
+func (e *Engine) CreateCheckpoint(ctx context.Context) (*models.LedgerCheckpoint, error) {
+	return e.anchor.AnchorCheckpoint(ctx, e.store, e.signer)
 }
 
 // MintOSCALAttestation re-verifies N1 human signatures, validates N3 verification proofs via OPA,
@@ -68,7 +88,10 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 	}
 
 	verDec, err := e.policy.EvalVerify(ctx, policy.VerifyInput{
+		HasSignedProbe:           bundle.AssuranceTier == models.AssuranceTier2DifferentialTwin,
+		UnpatchedTwinStatus:      bundle.UnpatchedTwinStatus,
 		TwinReplayStatus:         item.TwinReplayStatus,
+		ProvenanceVerified:       true,
 		AttestedPods:             len(bundle.PodManifest),
 		TotalPods:                svc.Replicas,
 		VulnerableSymbolsLoaded:  0,
@@ -111,6 +134,9 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 				"props": []map[string]string{
 					{"name": "organization", "value": "G1163RT Security Labs, Inc."},
 					{"name": "control-plane", "value": "G1-Warrant Deterministic Kernel"},
+					{"name": "compliance-baseline", "value": "NIST-SP-800-53-Rev5"},
+					{"name": "assurance-tier", "value": verDec.AssuranceTier},
+					{"name": "signer-backend", "value": e.signer.BackendMode()},
 					{"name": "attestation-id", "value": attID},
 					{"name": "reverification-expires-at", "value": reverifyExpiry.Format(time.RFC3339)},
 				},
@@ -246,7 +272,7 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 	if err != nil {
 		return nil, err
 	}
-	if err := env.SignEd25519(1, e.kernelPub, e.kernelPriv); err != nil {
+	if err := e.signer.SignEnvelope(ctx, 1, env); err != nil {
 		return nil, err
 	}
 
@@ -267,6 +293,8 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 		Slot2PrincipalID:     w.Slot2PrincipalID,
 		Slot2Email:           w.Slot2Email,
 		TwinTranscriptSHA256: bundle.TwinTranscriptSHA256,
+		AssuranceTier:        verDec.AssuranceTier,
+		SignerBackend:        e.signer.BackendMode(),
 		FleetDigestManifest:  bundle.PodManifest,
 		LockoutPolicyID:      bundle.Lockout.PolicyName,
 		ReverifyExpiresAt:    reverifyExpiry,
@@ -278,23 +306,29 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 	if err := e.store.AppendAttestation(ctx, rec); err != nil {
 		return nil, err
 	}
+	// Anchor DSSE-signed Merkle Root checkpoint across all 3 ledger tables on every closure
+	_, _ = e.anchor.AnchorCheckpoint(ctx, e.store, e.signer)
 
 	item.Stage = models.StageAttestedClosed
 	item.StatusHealth = models.HealthAttested
 	item.BlockerCode = ""
 	item.AttestationID = attID
+	item.AssuranceTier = verDec.AssuranceTier
 	item.ClosedAt = &now
 	_ = e.store.UpsertRemediation(ctx, item)
+	kernelPK := e.signer.PublicKey()
 	_ = e.store.AppendTrace(ctx, models.TraceEvent{
 		TraceID:       "trc-" + uuid.NewString()[:8],
 		RemediationID: item.RemediationID,
 		Engine:        "N5",
 		StepCode:      "OSCAL_1_1_2_ATTESTATION_MINTED",
 		Outcome:       "ATTESTED",
-		ActorOrToken:  e.kernelPub.KeyID,
+		ActorOrToken:  kernelPK.KeyID,
 		EvidenceHash:  rec.EntryHash,
 		Fields: map[string]string{
 			"attestation_id": attID,
+			"assurance_tier": verDec.AssuranceTier,
+			"signer_backend": e.signer.BackendMode(),
 			"ttvr_seconds":   fmt.Sprintf("%d", ttvrSec),
 			"oscal_version":  "1.1.2",
 		},
@@ -324,7 +358,8 @@ func (e *Engine) VerifyAttestationEnvelope(env crypto.Envelope) error {
 	if len(env.Signatures) == 0 {
 		return fmt.Errorf("missing kernel attestation signature")
 	}
-	return crypto.VerifySingleSignature(env.PayloadType, raw, env.Signatures[0], &e.kernelPub, crypto.DefaultWebAuthnConfig())
+	kernelPK := e.signer.PublicKey()
+	return crypto.VerifySingleSignature(env.PayloadType, raw, env.Signatures[0], &kernelPK, crypto.DefaultWebAuthnConfig())
 }
 
 // MintScopedAuditorToken generates a read-only, time-bounded cryptographic bearer token

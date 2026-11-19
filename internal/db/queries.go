@@ -16,7 +16,9 @@ import (
 func (s *Store) ListWarrants(ctx context.Context) ([]models.WarrantRecord, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT w.warrant_id, w.warrant_class, w.scope_services, w.max_cvss, w.kev_eligible,
-		       w.max_blast_radius_replicas, w.allow_stateful_patches, w.sla_bridge_minutes, w.max_p99_latency_ms,
+		       w.max_blast_radius_replicas, w.allow_stateful_patches,
+		       w.allow_guarded_canary, w.min_canary_samples, w.stage_dwell_seconds,
+		       w.sla_bridge_minutes, w.max_p99_latency_ms,
 		       w.issued_at, w.expires_at, w.dsse_envelope,
 		       w.slot1_principal_id, w.slot1_email, w.slot1_key_fp, w.slot1_role,
 		       w.slot2_principal_id, w.slot2_email, w.slot2_key_fp, w.slot2_role,
@@ -43,7 +45,9 @@ func (s *Store) ListWarrants(ctx context.Context) ([]models.WarrantRecord, error
 		var scopeRaw, envRaw []byte
 		if err := rows.Scan(
 			&w.WarrantID, &w.WarrantClass, &scopeRaw, &w.MaxCVSS, &w.KEVEligible,
-			&w.MaxBlastRadiusReplicas, &w.AllowStatefulPatches, &w.SLABridgeMinutes, &w.MaxP99LatencyMs,
+			&w.MaxBlastRadiusReplicas, &w.AllowStatefulPatches,
+			&w.AllowGuardedCanary, &w.MinCanarySamples, &w.StageDwellSeconds,
+			&w.SLABridgeMinutes, &w.MaxP99LatencyMs,
 			&w.IssuedAt, &w.ExpiresAt, &envRaw,
 			&w.Slot1PrincipalID, &w.Slot1Email, &w.Slot1KeyFP, &w.Slot1Role,
 			&w.Slot2PrincipalID, &w.Slot2Email, &w.Slot2KeyFP, &w.Slot2Role,
@@ -184,15 +188,33 @@ func (s *Store) UpsertEstateService(ctx context.Context, svc models.EstateServic
 	if len(svc.SBOMPURLs) == 0 {
 		sbomJSON = []byte("[]")
 	}
+	volPathsJSON, _ := json.Marshal(svc.VolatileJSONPaths)
+	if len(svc.VolatileJSONPaths) == 0 {
+		volPathsJSON = []byte("[]")
+	}
+	if svc.AutonomyTier == "" {
+		if svc.Eligible {
+			svc.AutonomyTier = models.AutonomyTier1FullAutonomous
+		} else {
+			svc.AutonomyTier = models.AutonomyTier3ContainAndCAB
+		}
+	}
+	if svc.ShadowDBMode == "" {
+		if svc.ReadonlyShadowReplica {
+			svc.ShadowDBMode = "EPHEMERAL_COW_BRANCH"
+		} else {
+			svc.ShadowDBMode = "NONE"
+		}
+	}
 	if svc.UpdatedAt.IsZero() {
 		svc.UpdatedAt = time.Now().UTC()
 	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO estate_services (
 			service_id, display_name, namespace, tier, warrant_class, current_digest, current_purl, sbom_purls,
-			replicas, test_coverage_pct, otel_health_probes, readonly_shadow_replica,
-			rollback_automation_verified, baseline_syscalls, eligible, eligibility_checklist, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+			replicas, test_coverage_pct, otel_health_probes, readonly_shadow_replica, shadow_db_mode,
+			rollback_automation_verified, baseline_syscalls, volatile_json_paths, eligible, autonomy_tier, eligibility_checklist, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
 		ON CONFLICT (service_id) DO UPDATE SET
 			display_name = EXCLUDED.display_name,
 			namespace = EXCLUDED.namespace,
@@ -205,15 +227,18 @@ func (s *Store) UpsertEstateService(ctx context.Context, svc models.EstateServic
 			test_coverage_pct = EXCLUDED.test_coverage_pct,
 			otel_health_probes = EXCLUDED.otel_health_probes,
 			readonly_shadow_replica = EXCLUDED.readonly_shadow_replica,
+			shadow_db_mode = EXCLUDED.shadow_db_mode,
 			rollback_automation_verified = EXCLUDED.rollback_automation_verified,
 			baseline_syscalls = EXCLUDED.baseline_syscalls,
+			volatile_json_paths = EXCLUDED.volatile_json_paths,
 			eligible = EXCLUDED.eligible,
+			autonomy_tier = EXCLUDED.autonomy_tier,
 			eligibility_checklist = EXCLUDED.eligibility_checklist,
 			updated_at = EXCLUDED.updated_at
 	`,
 		svc.ServiceID, svc.DisplayName, svc.Namespace, svc.Tier, svc.WarrantClass, svc.CurrentDigest, svc.CurrentPURL, sbomJSON,
-		svc.Replicas, svc.TestCoveragePct, svc.OtelHealthProbes, svc.ReadonlyShadowReplica,
-		svc.RollbackAutomationVerified, syscallsJSON, svc.Eligible, checklistJSON, svc.UpdatedAt,
+		svc.Replicas, svc.TestCoveragePct, svc.OtelHealthProbes, svc.ReadonlyShadowReplica, svc.ShadowDBMode,
+		svc.RollbackAutomationVerified, syscallsJSON, volPathsJSON, svc.Eligible, svc.AutonomyTier, checklistJSON, svc.UpdatedAt,
 	)
 	return err
 }
@@ -222,8 +247,8 @@ func (s *Store) UpsertEstateService(ctx context.Context, svc models.EstateServic
 func (s *Store) ListEstateServices(ctx context.Context) ([]models.EstateService, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT service_id, display_name, namespace, tier, warrant_class, current_digest, current_purl, sbom_purls,
-		       replicas, test_coverage_pct, otel_health_probes, readonly_shadow_replica,
-		       rollback_automation_verified, baseline_syscalls, eligible, eligibility_checklist, updated_at
+		       replicas, test_coverage_pct, otel_health_probes, readonly_shadow_replica, shadow_db_mode,
+		       rollback_automation_verified, baseline_syscalls, volatile_json_paths, eligible, autonomy_tier, eligibility_checklist, updated_at
 		FROM estate_services ORDER BY tier ASC, service_id ASC
 	`)
 	if err != nil {
@@ -233,16 +258,17 @@ func (s *Store) ListEstateServices(ctx context.Context) ([]models.EstateService,
 	out := []models.EstateService{}
 	for rows.Next() {
 		var svc models.EstateService
-		var sbomRaw, sysRaw, checkRaw []byte
+		var sbomRaw, sysRaw, volRaw, checkRaw []byte
 		if err := rows.Scan(
 			&svc.ServiceID, &svc.DisplayName, &svc.Namespace, &svc.Tier, &svc.WarrantClass, &svc.CurrentDigest, &svc.CurrentPURL, &sbomRaw,
-			&svc.Replicas, &svc.TestCoveragePct, &svc.OtelHealthProbes, &svc.ReadonlyShadowReplica,
-			&svc.RollbackAutomationVerified, &sysRaw, &svc.Eligible, &checkRaw, &svc.UpdatedAt,
+			&svc.Replicas, &svc.TestCoveragePct, &svc.OtelHealthProbes, &svc.ReadonlyShadowReplica, &svc.ShadowDBMode,
+			&svc.RollbackAutomationVerified, &sysRaw, &volRaw, &svc.Eligible, &svc.AutonomyTier, &checkRaw, &svc.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(sbomRaw, &svc.SBOMPURLs)
 		_ = json.Unmarshal(sysRaw, &svc.BaselineSyscalls)
+		_ = json.Unmarshal(volRaw, &svc.VolatileJSONPaths)
 		_ = json.Unmarshal(checkRaw, &svc.EligibilityChecklist)
 		out = append(out, svc)
 	}
@@ -277,18 +303,21 @@ func (s *Store) UpsertRemediation(ctx context.Context, item *models.RemediationI
 		item.CreatedAt = time.Now().UTC()
 	}
 	item.UpdatedAt = time.Now().UTC()
+	if item.AssuranceTier == "" {
+		item.AssuranceTier = "PENDING"
+	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO remediation_items (
 			remediation_id, cve_id, cwe_id, is_kev, cvss_score, service_id, warrant_id,
 			vulnerable_digest, patched_digest, package_purl, vulnerable_symbol, exploit_vector,
 			stage, status_health, blocker_code, canary_weight,
 			stateless_passed, schema_diff_passed, syscall_diff_passed,
-			twin_replay_status, pod_sweep_matched, pod_sweep_total,
+			twin_replay_status, assurance_tier, pod_sweep_matched, pod_sweep_total,
 			lockout_policy_id, bridge_id, bridge_sla_minutes, attestation_id,
 			patch_metadata, shadow_report, created_at, bridged_at, closed_at, updated_at
 		) VALUES (
 			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-			$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32
+			$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33
 		)
 		ON CONFLICT (remediation_id) DO UPDATE SET
 			warrant_id = EXCLUDED.warrant_id,
@@ -301,6 +330,7 @@ func (s *Store) UpsertRemediation(ctx context.Context, item *models.RemediationI
 			schema_diff_passed = EXCLUDED.schema_diff_passed,
 			syscall_diff_passed = EXCLUDED.syscall_diff_passed,
 			twin_replay_status = EXCLUDED.twin_replay_status,
+			assurance_tier = EXCLUDED.assurance_tier,
 			pod_sweep_matched = EXCLUDED.pod_sweep_matched,
 			pod_sweep_total = EXCLUDED.pod_sweep_total,
 			lockout_policy_id = EXCLUDED.lockout_policy_id,
@@ -316,7 +346,7 @@ func (s *Store) UpsertRemediation(ctx context.Context, item *models.RemediationI
 		item.VulnerableDigest, item.PatchedDigest, item.PackagePURL, item.VulnerableSymbol, item.ExploitVector,
 		item.Stage, item.StatusHealth, item.BlockerCode, item.CanaryWeight,
 		item.StatelessPassed, item.SchemaDiffPassed, item.SyscallPassed,
-		item.TwinReplayStatus, item.PodSweepMatched, item.PodSweepTotal,
+		item.TwinReplayStatus, item.AssuranceTier, item.PodSweepMatched, item.PodSweepTotal,
 		item.LockoutPolicyID, item.BridgeID, item.BridgeSLAMIN, item.AttestationID,
 		patchRaw, shadowRaw, item.CreatedAt, item.BridgedAt, item.ClosedAt, item.UpdatedAt,
 	)
@@ -330,7 +360,7 @@ func (s *Store) ListRemediations(ctx context.Context) ([]models.RemediationItem,
 		       vulnerable_digest, patched_digest, package_purl, vulnerable_symbol, exploit_vector,
 		       stage, status_health, blocker_code, canary_weight,
 		       stateless_passed, schema_diff_passed, syscall_diff_passed,
-		       twin_replay_status, pod_sweep_matched, pod_sweep_total,
+		       twin_replay_status, assurance_tier, pod_sweep_matched, pod_sweep_total,
 		       lockout_policy_id, bridge_id, bridge_sla_minutes, attestation_id,
 		       patch_metadata, shadow_report, created_at, bridged_at, closed_at, updated_at
 		FROM remediation_items ORDER BY updated_at DESC, created_at DESC
@@ -348,7 +378,7 @@ func (s *Store) ListRemediations(ctx context.Context) ([]models.RemediationItem,
 			&r.VulnerableDigest, &r.PatchedDigest, &r.PackagePURL, &r.VulnerableSymbol, &r.ExploitVector,
 			&r.Stage, &r.StatusHealth, &r.BlockerCode, &r.CanaryWeight,
 			&r.StatelessPassed, &r.SchemaDiffPassed, &r.SyscallPassed,
-			&r.TwinReplayStatus, &r.PodSweepMatched, &r.PodSweepTotal,
+			&r.TwinReplayStatus, &r.AssuranceTier, &r.PodSweepMatched, &r.PodSweepTotal,
 			&r.LockoutPolicyID, &r.BridgeID, &r.BridgeSLAMIN, &r.AttestationID,
 			&patchRaw, &shadowRaw, &r.CreatedAt, &r.BridgedAt, &r.ClosedAt, &r.UpdatedAt,
 		); err != nil {
@@ -427,19 +457,24 @@ func (s *Store) UpsertBridge(ctx context.Context, b models.ContainmentBridge) er
 	if b.ArmedAt.IsZero() {
 		b.ArmedAt = time.Now().UTC()
 	}
+	if b.ContainmentMode == "" {
+		b.ContainmentMode = models.ContainmentModeZeroProseQuarantine
+	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO containment_bridges (
-			bridge_id, remediation_id, service_id, cve_id, bridge_type, status,
+			bridge_id, remediation_id, service_id, cve_id, bridge_type, containment_mode, rulepack_id, status,
 			sla_minutes, blocker_reason_code, cilium_manifest_yaml, k8s_netpol_yaml, envoy_filter_json,
 			armed_at, retired_at, rearmed_count
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 		ON CONFLICT (bridge_id) DO UPDATE SET
+			containment_mode = EXCLUDED.containment_mode,
+			rulepack_id = EXCLUDED.rulepack_id,
 			status = EXCLUDED.status,
 			blocker_reason_code = EXCLUDED.blocker_reason_code,
 			retired_at = EXCLUDED.retired_at,
 			rearmed_count = EXCLUDED.rearmed_count
 	`,
-		b.BridgeID, b.RemediationID, b.ServiceID, b.CVEID, b.BridgeType, b.Status,
+		b.BridgeID, b.RemediationID, b.ServiceID, b.CVEID, b.BridgeType, b.ContainmentMode, b.RulepackID, b.Status,
 		b.SLABridgeMinutes, b.BlockerReasonCode, b.CiliumManifestYAML, b.K8sNetpolYAML, b.EnvoyFilterJSON,
 		b.ArmedAt, b.RetiredAt, b.RearmedCount,
 	)
@@ -449,7 +484,7 @@ func (s *Store) UpsertBridge(ctx context.Context, b models.ContainmentBridge) er
 // ListBridges lists all containment bridges ordered by active status then armed_at.
 func (s *Store) ListBridges(ctx context.Context) ([]models.ContainmentBridge, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT bridge_id, remediation_id, service_id, cve_id, bridge_type, status,
+		SELECT bridge_id, remediation_id, service_id, cve_id, bridge_type, containment_mode, rulepack_id, status,
 		       sla_minutes, blocker_reason_code, cilium_manifest_yaml, k8s_netpol_yaml, envoy_filter_json,
 		       armed_at, retired_at, rearmed_count
 		FROM containment_bridges
@@ -463,7 +498,7 @@ func (s *Store) ListBridges(ctx context.Context) ([]models.ContainmentBridge, er
 	for rows.Next() {
 		var b models.ContainmentBridge
 		if err := rows.Scan(
-			&b.BridgeID, &b.RemediationID, &b.ServiceID, &b.CVEID, &b.BridgeType, &b.Status,
+			&b.BridgeID, &b.RemediationID, &b.ServiceID, &b.CVEID, &b.BridgeType, &b.ContainmentMode, &b.RulepackID, &b.Status,
 			&b.SLABridgeMinutes, &b.BlockerReasonCode, &b.CiliumManifestYAML, &b.K8sNetpolYAML, &b.EnvoyFilterJSON,
 			&b.ArmedAt, &b.RetiredAt, &b.RearmedCount,
 		); err != nil {
@@ -494,17 +529,22 @@ func (s *Store) UpsertLockout(ctx context.Context, l models.AdmissionLockout) er
 	if l.EnforcedAt.IsZero() {
 		l.EnforcedAt = time.Now().UTC()
 	}
+	if l.Status == "" {
+		l.Status = "ENFORCED"
+	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO admission_lockouts (
 			lockout_id, remediation_id, service_id, cve_id, banned_digest, patched_digest,
-			policy_name, vap_manifest_yaml, gatekeeper_rego, enforced_at, drift_count, last_drift_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+			policy_name, status, suspended_reason, vap_manifest_yaml, gatekeeper_rego, enforced_at, drift_count, last_drift_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 		ON CONFLICT (lockout_id) DO UPDATE SET
+			status = EXCLUDED.status,
+			suspended_reason = EXCLUDED.suspended_reason,
 			drift_count = EXCLUDED.drift_count,
 			last_drift_at = EXCLUDED.last_drift_at
 	`,
 		l.LockoutID, l.RemediationID, l.ServiceID, l.CVEID, l.BannedDigest, l.PatchedDigest,
-		l.PolicyName, l.VAPManifestYAML, l.GatekeeperRego, l.EnforcedAt, l.DriftCount, l.LastDriftAt,
+		l.PolicyName, l.Status, l.SuspendedReason, l.VAPManifestYAML, l.GatekeeperRego, l.EnforcedAt, l.DriftCount, l.LastDriftAt,
 	)
 	return err
 }
@@ -513,7 +553,7 @@ func (s *Store) UpsertLockout(ctx context.Context, l models.AdmissionLockout) er
 func (s *Store) ListLockouts(ctx context.Context) ([]models.AdmissionLockout, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT lockout_id, remediation_id, service_id, cve_id, banned_digest, patched_digest,
-		       policy_name, vap_manifest_yaml, gatekeeper_rego, enforced_at, drift_count, last_drift_at
+		       policy_name, status, suspended_reason, vap_manifest_yaml, gatekeeper_rego, enforced_at, drift_count, last_drift_at
 		FROM admission_lockouts ORDER BY enforced_at DESC
 	`)
 	if err != nil {
@@ -525,7 +565,7 @@ func (s *Store) ListLockouts(ctx context.Context) ([]models.AdmissionLockout, er
 		var l models.AdmissionLockout
 		if err := rows.Scan(
 			&l.LockoutID, &l.RemediationID, &l.ServiceID, &l.CVEID, &l.BannedDigest, &l.PatchedDigest,
-			&l.PolicyName, &l.VAPManifestYAML, &l.GatekeeperRego, &l.EnforcedAt, &l.DriftCount, &l.LastDriftAt,
+			&l.PolicyName, &l.Status, &l.SuspendedReason, &l.VAPManifestYAML, &l.GatekeeperRego, &l.EnforcedAt, &l.DriftCount, &l.LastDriftAt,
 		); err != nil {
 			return nil, err
 		}
@@ -717,7 +757,7 @@ func (s *Store) ListAttestations(ctx context.Context) ([]models.AttestationRecor
 	rows, err := s.pool.Query(ctx, `
 		SELECT attestation_id, remediation_id, service_id, cve_id, is_kev, warrant_id,
 		       slot1_principal_id, slot1_email, slot2_principal_id, slot2_email,
-		       twin_transcript_sha256, fleet_digest_manifest, lockout_policy_id, reverify_expires_at,
+		       twin_transcript_sha256, assurance_tier, signer_backend, fleet_digest_manifest, lockout_policy_id, reverify_expires_at,
 		       dsse_envelope, oscal_poam_json, ttvr_seconds, prev_hash, entry_hash, minted_at
 		FROM attestation_records ORDER BY seq_no DESC
 	`)
@@ -732,7 +772,7 @@ func (s *Store) ListAttestations(ctx context.Context) ([]models.AttestationRecor
 		if err := rows.Scan(
 			&a.AttestationID, &a.RemediationID, &a.ServiceID, &a.CVEID, &a.IsKEV, &a.WarrantID,
 			&a.Slot1PrincipalID, &a.Slot1Email, &a.Slot2PrincipalID, &a.Slot2Email,
-			&a.TwinTranscriptSHA256, &manifestRaw, &a.LockoutPolicyID, &a.ReverifyExpiresAt,
+			&a.TwinTranscriptSHA256, &a.AssuranceTier, &a.SignerBackend, &manifestRaw, &a.LockoutPolicyID, &a.ReverifyExpiresAt,
 			&envRaw, &oscalRaw, &a.TTVRSeconds, &a.PrevHash, &a.EntryHash, &a.MintedAt,
 		); err != nil {
 			return nil, err

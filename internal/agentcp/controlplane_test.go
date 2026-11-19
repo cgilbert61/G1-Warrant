@@ -7,8 +7,8 @@ import (
 )
 
 func TestMintTaskWarrant_EnforcesTTLCeilingAndAttribution(t *testing.T) {
-	pub, priv := crypto.KernelKeypair("test-seed")
-	cp := NewControlPlane(nil, pub, priv, "http://extractor:8090", nil)
+	signer := crypto.NewSeededDevEd25519Signer("test-seed")
+	cp := NewControlPlane(nil, signer, "http://extractor:8090", nil)
 
 	// Reject TTL > 300s
 	if _, _, err := cp.MintTaskWarrant("wrt-1", "rem-1", "worker", "svc-a", "ROLLOUT", "s1", "s2", 301); err == nil {

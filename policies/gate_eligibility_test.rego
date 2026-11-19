@@ -6,11 +6,13 @@ import rego.v1
 clean_gate_input := {
 	"freeze_mode": "OPERATIONAL",
 	"blast_radius_exceeded": false,
+	"allow_guarded_canary": true,
 	"shadow_evaluated": true,
 	"service": {
 		"test_coverage_pct": 91.5,
 		"otel_health_probes": true,
 		"readonly_shadow_replica": true,
+		"shadow_db_mode": "EPHEMERAL_COW_BRANCH",
 		"rollback_automation_verified": true,
 	},
 	"patch": {
@@ -26,13 +28,32 @@ clean_gate_input := {
 		"max_p99_latency_ms": 120.0,
 		"baseline_syscalls": ["read", "write", "futex", "epoll_wait", "accept4"],
 		"canary_syscalls": ["read", "write", "futex", "epoll_wait", "accept4"],
+		"sensitive_files_accessed": [],
+		"unexpected_egress_endpoints": [],
 	},
 }
 
 test_clean_stateless_patch_autonomous_allowed if {
 	gate.allow_autonomous_rollout with input as clean_gate_input
+	gate.autonomy_tier == "TIER_1_FULL_AUTONOMOUS" with input as clean_gate_input
 	not gate.route_to_exception_cockpit with input as clean_gate_input
 	not gate.trigger_canary_rollback with input as clean_gate_input
+}
+
+test_brownfield_service_qualifies_for_tier2_guarded_canary if {
+	brownfield := object.union(clean_gate_input, {
+		"allow_guarded_canary": true,
+		"service": {
+			"test_coverage_pct": 58.0,
+			"otel_health_probes": true,
+			"readonly_shadow_replica": false,
+			"shadow_db_mode": "NONE",
+			"rollback_automation_verified": true,
+		},
+	})
+	gate.autonomy_tier == "TIER_2_GUARDED_CANARY" with input as brownfield
+	gate.allow_autonomous_rollout with input as brownfield
+	not gate.route_to_exception_cockpit with input as brownfield
 }
 
 test_execve_syscall_triggers_rollback if {
@@ -45,6 +66,19 @@ test_execve_syscall_triggers_rollback if {
 	gate.trigger_canary_rollback with input as bad
 	"execve" in gate.unauthorized_syscalls with input as bad
 	"SHADOW_UNAUTHORIZED_SYSCALL" in gate.reasons with input as bad
+}
+
+test_in_process_sa_token_read_triggers_rollback_without_new_syscall if {
+	exfil := object.union(clean_gate_input, {
+		"shadow": object.union(clean_gate_input.shadow, {
+			"sensitive_files_accessed": ["/var/run/secrets/kubernetes.io/serviceaccount/token"],
+			"unexpected_egress_endpoints": ["198.51.100.42:443"],
+		}),
+	})
+	not gate.allow_autonomous_rollout with input as exfil
+	gate.trigger_canary_rollback with input as exfil
+	"SHADOW_SENSITIVE_FILE_READ_DETECTED" in gate.reasons with input as exfil
+	"SHADOW_UNEXPECTED_EGRESS_EXFILTRATION" in gate.reasons with input as exfil
 }
 
 test_ddl_migration_routes_to_exception_cockpit if {

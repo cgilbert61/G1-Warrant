@@ -218,7 +218,7 @@ func ParseUntrustedSARIFWithOptions(raw []byte, extractorDigest string, opts SAR
 			}
 			cwe := reCWE.FindString(strings.ToUpper(props.CWE + " " + strings.Join(props.Tags, " ")))
 			if cwe == "" {
-				cwe = "CWE-20"
+				cwe = "CWE-000"
 			}
 
 			cvss := props.CVSS
@@ -277,10 +277,7 @@ func ParseUntrustedSARIFWithOptions(raw []byte, extractorDigest string, opts SAR
 			}
 
 			vec := strings.ToUpper(strings.TrimSpace(props.ExploitVector))
-			if vec == "" {
-				vec = "HTTP_PATH_TRAVERSAL"
-			}
-			if !allowedVectors[vec] {
+			if vec == "" || !allowedVectors[vec] {
 				vec = "GENERIC_RCE"
 			}
 
@@ -289,14 +286,11 @@ func ParseUntrustedSARIFWithOptions(raw []byte, extractorDigest string, opts SAR
 				port = 8080
 			}
 
-			var blockedPaths []string
+			blockedPaths := []string{}
 			for _, bp := range props.BlockedPaths {
 				if reSafePath.MatchString(bp) {
 					blockedPaths = append(blockedPaths, bp)
 				}
-			}
-			if len(blockedPaths) == 0 {
-				blockedPaths = []string{"/api/v1/debug", "/.."}
 			}
 			sort.Strings(blockedPaths)
 

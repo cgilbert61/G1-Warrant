@@ -57,6 +57,8 @@ services:
       FLEET_SIM_URL: "http://fleet-sim:8095"
       WEBAUTHN_RP_ID: "localhost"
       WEBAUTHN_RP_ORIGIN: "http://localhost:8080"
+      WARRANT_ENABLE_TEST_SMARTCARDS: "${WARRANT_ENABLE_TEST_SMARTCARDS:-true}"
+      WARRANT_EXTERNAL_ANCHOR_PATH: "/var/lib/warrant-anchor/checkpoints.jsonl"
       WARRANT_FEED_MODE: "${WARRANT_FEED_MODE:-offline}"
       WARRANT_CISA_KEV_URL: "${WARRANT_CISA_KEV_URL:-https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json}"
       WARRANT_KEV_POLL_INTERVAL: "${WARRANT_KEV_POLL_INTERVAL:-1h}"
@@ -64,6 +66,8 @@ services:
       WARRANT_TRIVY_ENABLED: "${WARRANT_TRIVY_ENABLED:-false}"
     ports:
       - "127.0.0.1:8080:8080"
+    tmpfs:
+      - /var/lib/warrant-anchor:rw,noexec,nosuid,uid=65532,gid=65532,size=32m
     read_only: true
     cap_drop:
       - ALL

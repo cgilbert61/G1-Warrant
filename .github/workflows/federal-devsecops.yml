@@ -53,18 +53,22 @@ jobs:
             -d /tf/k8s -f /tf/Dockerfile.warrantd -f /tf/Dockerfile.extractor -f /tf/Dockerfile.fleetsim \
             --output sarif --output-file-path /tf/reports
 
-      - name: Generate CycloneDX 1.5 SBOM with Syft
+      - name: Generate CycloneDX 1.5 SBOM with Syft & Audit SPDX Licenses
         run: |
           docker run --rm -v "${PWD}:/src" anchore/syft:latest \
             scan dir:/src --exclude "./reports/**" --exclude "./web/node_modules/**" --exclude "./.git/**" \
             -o cyclonedx-json=/src/reports/sbom.cdx.json
+          sudo chown -R "$(id -u):$(id -g)" reports
+          python3 scripts/audit_licenses.py
 
-      - name: Archive SBOM Artifact
+      - name: Archive SBOM & SPDX License Audit Artifact
         if: always() && hashFiles('reports/sbom.cdx.json') != ''
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: g1-warrant-sbom-cyclonedx
-          path: reports/sbom.cdx.json
+          path: |
+            reports/sbom.cdx.json
+            reports/license-audit.json
 
   sca-and-containers:
     name: Gate 5 — SCA & Container Hardening (Trivy)
@@ -131,7 +135,7 @@ jobs:
             reports/zap_warrantd_report.json
 
   govready-compliance:
-    name: Gate 9 — GovReady-Q NIST SP 800-53 Rev 4 Verification
+    name: Gate 9 — GovReady-Q NIST SP 800-53 Rev 5 Verification (16 Controls)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -143,8 +147,8 @@ jobs:
             -e FIRST_RUN=1 -e DB_BACKED_UP_DO_UPGRADE=True govready/govready-q:latest
           sleep 15
 
-      - name: Execute NIST SP 800-53 Control Verification (14 Controls)
-        run: python scripts/run_govready_assessment.py
+      - name: Execute NIST SP 800-53 Rev 5 Control Verification (16 Controls)
+        run: python3 scripts/run_govready_assessment.py
 
       - name: Archive OSCAL & Assessment Deliverables
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

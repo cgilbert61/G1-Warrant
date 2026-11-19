@@ -28,7 +28,7 @@ func main() {
 	}
 	extractorURL := envOrDefault("EXTRACTOR_URL", "http://warrant-extractor:8090")
 	fleetURL := envOrDefault("FLEET_SIM_URL", "http://fleet-sim:8095")
-	kernelSeed := envOrDefault("KERNEL_ATTESTATION_SEED", "kernel:warrantd-attestation-seal-v1")
+	kernelSeed := strings.TrimSpace(os.Getenv("KERNEL_ATTESTATION_SEED"))
 	rpID := envOrDefault("WEBAUTHN_RP_ID", "localhost")
 	rpOrigin := envOrDefault("WEBAUTHN_RP_ORIGIN", "http://localhost:8080")
 
@@ -61,21 +61,23 @@ func main() {
 	}
 
 	waitHTTPReady(ctx, extractorURL+"/healthz", "warrant-extractor", 25)
-	waitHTTPReady(ctx, fleetURL+"/healthz", "fleet-sim", 25)
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("WARRANT_CLUSTER_DRIVER")), "kubernetes") {
+		waitHTTPReady(ctx, fleetURL+"/healthz", "fleet-sim", 25)
+	}
 
 	orch, err := server.NewOrchestrator(ctx, store, extractorURL, fleetURL, kernelSeed, webauthnCfg)
 	if err != nil {
 		log.Fatalf("initialize control-plane orchestrator: %v", err)
 	}
 
-	if os.Getenv("SKIP_SEED") != "true" {
+	if os.Getenv("WARRANT_ENABLE_TEST_SMARTCARDS") == "true" && os.Getenv("SKIP_SEED") != "true" {
 		if err := orch.SeedEnterpriseEstate(ctx); err != nil {
 			log.Printf("seed warning: %v", err)
 		}
 	}
 
 	orch.N1Warrant.StartFreezeListener(ctx)
-	orch.N3Verify.StartDriftWatcher(ctx, 200*time.Millisecond)
+	orch.N3Verify.StartDriftWatcher(ctx, 2*time.Second)
 	orch.Feeds.StartBackgroundPoller(ctx)
 
 	srv := &http.Server{

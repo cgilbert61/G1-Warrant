@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -58,13 +59,19 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		attestations, _ := o.Store.ListAttestations(ctx)
 		agentActions, _ := o.Store.ListAgentActions(ctx)
 		auditorTokens, _ := o.Store.ListAuditorTokens(ctx)
+		checkpoints, _ := o.Store.ListLedgerCheckpoints(ctx)
 		feedStatus, _ := o.Store.GetLiveFeedStatus(ctx)
 		kernelPK := o.N5Ledger.KernelPublicKey()
+
+		var testPersonas any = []crypto.TestSmartcardPersona{}
+		if os.Getenv("WARRANT_ENABLE_TEST_SMARTCARDS") == "true" {
+			testPersonas = crypto.BuiltinTestPersonas()
+		}
 
 		writeAPIJSON(w, http.StatusOK, map[string]any{
 			"scoreboard":     sb,
 			"principals":     principals,
-			"test_personas":  crypto.BuiltinTestPersonas(),
+			"test_personas":  testPersonas,
 			"revocations":    revocations,
 			"warrants":       warrants,
 			"pressure":       pressure,
@@ -78,7 +85,9 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			"attestations":   attestations,
 			"agent_actions":  agentActions,
 			"auditor_tokens": auditorTokens,
+			"checkpoints":    checkpoints,
 			"feed_status":    feedStatus,
+			"signer_backend": o.N5Ledger.SignerBackend(),
 			"kernel_public_key": map[string]string{
 				"key_id":          kernelPK.KeyID,
 				"alg":             kernelPK.Alg,
@@ -270,6 +279,21 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			return
 		}
 		writeAPIJSON(w, http.StatusOK, traces)
+	})
+
+	// Atomic 3-Step Quarantined Rollback (Contain-Before-Unban) for Post-Closure Latent Regressions
+	mux.HandleFunc("POST /api/v1/pipeline/{id}/emergency-rollback", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Actor  string `json:"actor"`
+			Reason string `json:"reason"`
+		}
+		_ = decodeJSONBody(w, r, &req)
+		rem, err := o.N3Verify.ExecuteEmergencyQuarantinedRollback(r.Context(), r.PathValue("id"), req.Actor, req.Reason)
+		if err != nil {
+			writeAPIError(w, http.StatusUnprocessableEntity, err)
+			return
+		}
+		writeAPIJSON(w, http.StatusOK, rem)
 	})
 
 	mux.HandleFunc("POST /api/v1/intake/sarif", func(w http.ResponseWriter, r *http.Request) {
@@ -604,8 +628,26 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		writeAPIJSON(w, http.StatusOK, list)
 	})
 
+	mux.HandleFunc("GET /api/v1/ledger/checkpoints", func(w http.ResponseWriter, r *http.Request) {
+		list, err := o.Store.ListLedgerCheckpoints(r.Context())
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeAPIJSON(w, http.StatusOK, list)
+	})
+
+	mux.HandleFunc("POST /api/v1/ledger/checkpoints", func(w http.ResponseWriter, r *http.Request) {
+		cp, err := o.N5Ledger.CreateCheckpoint(r.Context())
+		if err != nil {
+			writeAPIError(w, http.StatusUnprocessableEntity, err)
+			return
+		}
+		writeAPIJSON(w, http.StatusCreated, cp)
+	})
+
 	mux.HandleFunc("POST /api/v1/ledger/verify", func(w http.ResponseWriter, r *http.Request) {
-		rep, err := o.Store.VerifyAllLedgerChains(r.Context())
+		rep, err := o.Store.VerifyAllLedgerChains(r.Context(), o.N5Ledger.Anchor().ExternalWitnessRecords())
 		if err != nil {
 			writeAPIError(w, http.StatusInternalServerError, err)
 			return
@@ -640,7 +682,7 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 				filtered = append(filtered, a)
 			}
 		}
-		chainRep, _ := o.Store.VerifyAllLedgerChains(r.Context())
+		chainRep, _ := o.Store.VerifyAllLedgerChains(r.Context(), o.N5Ledger.Anchor().ExternalWitnessRecords())
 		kernelPK := o.N5Ledger.KernelPublicKey()
 		writeAPIJSON(w, http.StatusOK, map[string]any{
 			"token_metadata": tok,

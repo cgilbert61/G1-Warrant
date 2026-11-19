@@ -9,8 +9,6 @@ import urllib.parse
 from pathlib import Path
 from typing import Any
 
-from .crypto import SignerKeyBundle
-
 
 class WarrantAPIError(RuntimeError):
     """Raised when warrantd returns a non-2xx HTTP response."""
@@ -117,25 +115,6 @@ class WarrantClient:
         snap = self.bootstrap()
         return str(snap["kernel_public_key"]["public_key_b64"])
 
-    def builtin_demo_signer(self, principal_id: str) -> SignerKeyBundle:
-        """Fetch a seeded local test smartcard persona from /api/v1/bootstrap for dev/CI ceremonies."""
-        snap = self.bootstrap()
-        for p in snap.get("test_personas") or []:
-            if p.get("principal_id") == principal_id:
-                return SignerKeyBundle(
-                    principal_id=p["principal_id"],
-                    email=p["email"],
-                    display_name=p["display_name"],
-                    role=p["role"],
-                    key_id=p["key_id"],
-                    alg=p["alg"],
-                    public_key_b64=p["public_key_b64"],
-                    private_key_b64=p["private_key_b64"],
-                    key_fingerprint=p["key_fingerprint"],
-                    created_at="",
-                )
-        raise KeyError(f"Demo smartcard persona {principal_id!r} not available on server")
-
     # ------------------------------------------------------------------
     # N1 Principals, Standing Warrants & Asymmetric Emergency Freeze
     # ------------------------------------------------------------------
@@ -199,6 +178,20 @@ class WarrantClient:
     def list_traces(self, remediation_id: str) -> list[dict[str, Any]]:
         safe_id = urllib.parse.quote(remediation_id, safe="")
         return self._request_json("GET", f"/api/v1/pipeline/{safe_id}/traces")
+
+    def emergency_rollback(
+        self,
+        remediation_id: str,
+        actor: str = "python-sdk-incident-commander",
+        reason: str = "POST_PROMOTION_REGRESSION",
+    ) -> dict[str, Any]:
+        """Execute atomic 3-step Contain-Before-Unban Quarantined Rollback."""
+        safe_id = urllib.parse.quote(remediation_id, safe="")
+        return self._request_json(
+            "POST",
+            f"/api/v1/pipeline/{safe_id}/emergency-rollback",
+            {"actor": actor, "reason": reason},
+        )
 
     def ingest_sarif(
         self,
@@ -303,6 +296,12 @@ class WarrantClient:
 
     def verify_ledger_chains(self) -> dict[str, Any]:
         return self._request_json("POST", "/api/v1/ledger/verify", {})
+
+    def list_ledger_checkpoints(self) -> list[dict[str, Any]]:
+        return self._request_json("GET", "/api/v1/ledger/checkpoints")
+
+    def create_ledger_checkpoint(self) -> dict[str, Any]:
+        return self._request_json("POST", "/api/v1/ledger/checkpoints", {})
 
     # ------------------------------------------------------------------
     # Live Threat & Scanner Feeds ($0 CISA KEV, Google OSV.dev, Trivy)

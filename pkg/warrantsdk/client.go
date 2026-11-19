@@ -214,6 +214,20 @@ func (c *Client) ListTraces(ctx context.Context, remediationID string) ([]TraceE
 	return out, nil
 }
 
+// EmergencyRollback executes the atomic 3-step Contain-Before-Unban Quarantined Rollback
+// (re-arming containment bridge FIRST, suspending AdmissionLockout SECOND, and reverting digest THIRD).
+func (c *Client) EmergencyRollback(ctx context.Context, remediationID, actor, reason string) (*RemediationItem, error) {
+	var out RemediationItem
+	body := map[string]string{
+		"actor":  actor,
+		"reason": reason,
+	}
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/pipeline/"+url.PathEscape(remediationID)+"/emergency-rollback", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // IngestSARIF submits an untrusted SARIF 2.1.0 JSON report to /api/v1/intake/sarif
 // (automatically sanitized through the zero-egress warrant-extractor service).
 func (c *Client) IngestSARIF(ctx context.Context, rawSARIF []byte, opts SARIFIntakeOptions) ([]RemediationItem, error) {
@@ -378,10 +392,28 @@ func (c *Client) ListAgentActions(ctx context.Context) ([]AgentLedgerEntry, erro
 	return out, nil
 }
 
-// VerifyLedgerChains triggers genesis-to-tip SHA-256 chain verification across all 3 PostgreSQL WORM tables.
+// VerifyLedgerChains triggers genesis-to-tip SHA-256 chain + External Merkle Checkpoint verification across all 3 ledger tables.
 func (c *Client) VerifyLedgerChains(ctx context.Context) (*LedgerVerificationReport, error) {
 	var out LedgerVerificationReport
 	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/ledger/verify", map[string]any{}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListLedgerCheckpoints returns all DSSE-signed Merkle Root transparency checkpoints.
+func (c *Client) ListLedgerCheckpoints(ctx context.Context) ([]LedgerCheckpoint, error) {
+	var out []LedgerCheckpoint
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/ledger/checkpoints", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// CreateLedgerCheckpoint anchors a new DSSE-signed Merkle Root checkpoint across all 3 ledger tables.
+func (c *Client) CreateLedgerCheckpoint(ctx context.Context) (*LedgerCheckpoint, error) {
+	var out LedgerCheckpoint
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/ledger/checkpoints", map[string]any{}, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
