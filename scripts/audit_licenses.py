@@ -172,8 +172,13 @@ def audit_all() -> int:
             "compliant": spdx in ALLOWED_SPDX,
         })
 
-    # Audit NPM packages
+    # Audit NPM packages (using installed web/node_modules if present, or authoritative web/package-lock.json in clean CI)
     pkg_json = json.loads((WORKSPACE / "web/package.json").read_text(encoding="utf-8"))
+    lock_packages: dict[str, dict] = {}
+    lock_file = WORKSPACE / "web/package-lock.json"
+    if lock_file.exists():
+        lock_packages = json.loads(lock_file.read_text(encoding="utf-8")).get("packages") or {}
+
     npm_inventory = []
     for sec, scope in (("dependencies", "runtime"), ("devDependencies", "build-dev")):
         for name, ver_spec in sorted((pkg_json.get(sec) or {}).items()):
@@ -184,6 +189,10 @@ def audit_all() -> int:
                 pdata = json.loads(installed_pkg.read_text(encoding="utf-8"))
                 spdx = str(pdata.get("license", "UNKNOWN"))
                 resolved_ver = str(pdata.get("version", ver_spec))
+            elif f"node_modules/{name}" in lock_packages:
+                ldata = lock_packages[f"node_modules/{name}"]
+                spdx = str(ldata.get("license", "UNKNOWN"))
+                resolved_ver = str(ldata.get("version", ver_spec))
             npm_inventory.append({
                 "ecosystem": "npm",
                 "name": name,
@@ -248,6 +257,8 @@ def audit_all() -> int:
                     pfile = WORKSPACE / "web/node_modules" / name / "package.json"
                     if pfile.exists():
                         inferred_spdx = json.loads(pfile.read_text(encoding="utf-8")).get("license")
+                    elif f"node_modules/{name}" in lock_packages:
+                        inferred_spdx = lock_packages[f"node_modules/{name}"].get("license")
             elif purl.startswith("pkg:github/actions/"):
                 inferred_spdx = "MIT"
             elif comp.get("type") == "file" or name.startswith("/"):
