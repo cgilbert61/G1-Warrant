@@ -1,15 +1,21 @@
-.PHONY: up up-live down docker-test logs build clean license-check compliance-check sast secrets iac sbom container-scan dast a11y load-test govready
+.PHONY: init-env up up-live down docker-test logs build clean license-check compliance-check sast secrets iac sbom container-scan dast a11y load-test govready
 
-up:
+init-env:
+	@if [ ! -f .env ] && [ -z "$$POSTGRES_PASSWORD" ]; then \
+		python3 -c "import secrets; pw=secrets.token_hex(24); open('.env','w').write(f'POSTGRES_USER=warrant\nPOSTGRES_DB=warrant\nPOSTGRES_PASSWORD={pw}\nDATABASE_URL=postgres://warrant:{pw}@postgres:5432/warrant?sslmode=disable\nTEST_DATABASE_URL=postgres://warrant:{pw}@postgres:5432/postgres?sslmode=disable\n')"; \
+		echo "[init-env] Generated unique per-installation random credentials in .env"; \
+	fi
+
+up: init-env
 	docker compose up --build -d
 
-up-live:
+up-live: init-env
 	WARRANT_FEED_MODE=live WARRANT_TRIVY_ENABLED=true docker compose --profile live-feeds up --build -d
 
 down:
 	docker compose down -v
 
-docker-test:
+docker-test: init-env
 	docker compose --profile test run --rm --build verifier
 
 logs:

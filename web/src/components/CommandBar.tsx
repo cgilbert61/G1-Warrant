@@ -165,8 +165,25 @@ export const CommandBar: React.FC<CommandBarProps> = ({
           </div>
         </div>
 
-        {/* Right Tray: Live Feeds + Smartcard Toggle + Action Inbox Badge + Hold-to-Freeze / Dual-Key Thaw */}
+        {/* Right Tray: Witness Mode + Live Feeds + Smartcard Toggle + Action Inbox Badge + Hold-to-Freeze / Dual-Key Thaw */}
         <div className="flex items-center gap-2">
+          <span
+            role="status"
+            title={
+              scoreboard.witness_mode === 'EXTERNAL_NOTARY'
+                ? 'Ledger Merkle checkpoints are anchored to an external transparency notary (WARRANT_EXTERNAL_ANCHOR_URL).'
+                : 'Ledger Merkle checkpoints are anchored in-process/locally only (configure WARRANT_EXTERNAL_ANCHOR_URL for external notary anchoring).'
+            }
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded border text-[11px] font-mono font-semibold ${
+              scoreboard.witness_mode === 'EXTERNAL_NOTARY'
+                ? 'bg-emerald-50 border-emerald-400 text-emerald-950'
+                : 'bg-amber-50 border-amber-400 text-amber-950'
+            }`}
+          >
+            <Shield className="w-3.5 h-3.5" />
+            <span>Witness: {scoreboard.witness_mode || 'IN_PROCESS_LOCAL'}</span>
+          </span>
+
           <button
             type="button"
             onClick={onOpenLiveFeeds}

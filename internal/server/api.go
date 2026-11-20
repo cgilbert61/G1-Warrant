@@ -69,13 +69,17 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		kernelPK := o.N5Ledger.KernelPublicKey()
 		kernelKeyRing, _ := o.Store.ListKernelPublicKeys(ctx)
 
-		var testPersonas any = []crypto.TestSmartcardPersona{}
+		witnessMode := o.N5Ledger.WitnessMode()
+		sb.WitnessMode = witnessMode
+
+		testPersonas := []crypto.PublicSmartcardPersona{}
 		if os.Getenv("WARRANT_ENABLE_TEST_SMARTCARDS") == "true" {
-			testPersonas = crypto.BuiltinTestPersonas()
+			testPersonas = crypto.BuiltinPublicTestPersonas()
 		}
 
 		writeAPIJSON(w, http.StatusOK, map[string]any{
 			"scoreboard":      sb,
+			"witness_mode":    witnessMode,
 			"bootstrap_state": bootState,
 			"principals":      principals,
 			"test_personas":   testPersonas,
@@ -115,7 +119,17 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			writeAPIError(w, http.StatusInternalServerError, err)
 			return
 		}
+		sb.WitnessMode = o.N5Ledger.WitnessMode()
 		writeAPIJSON(w, http.StatusOK, sb)
+	})
+
+	// Public-only persona metadata endpoint (strictly public keys, KeyIDs, and SHA-256 fingerprints; never private seeds)
+	mux.HandleFunc("GET /api/v1/personas", func(w http.ResponseWriter, r *http.Request) {
+		personas := []crypto.PublicSmartcardPersona{}
+		if os.Getenv("WARRANT_ENABLE_TEST_SMARTCARDS") == "true" {
+			personas = crypto.BuiltinPublicTestPersonas()
+		}
+		writeAPIJSON(w, http.StatusOK, personas)
 	})
 
 	// Principals, Genesis Seal, 2-of-2 DSSE Ed25519/WebAuthn Enrollment, and 1-of-2 DSSE Live Revocation
@@ -1218,12 +1232,29 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		writeAPIJSON(w, http.StatusCreated, cp)
 	})
 
+	mux.HandleFunc("GET /api/v1/ledger/status", func(w http.ResponseWriter, r *http.Request) {
+		witnessMode := o.N5Ledger.WitnessMode()
+		rep, err := o.Store.VerifyAllLedgerChains(r.Context(), o.N5Ledger.Anchor().ExternalWitnessRecords())
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, err)
+			return
+		}
+		rep.WitnessMode = witnessMode
+		writeAPIJSON(w, http.StatusOK, map[string]any{
+			"witness_mode":               witnessMode,
+			"external_notary_configured": witnessMode == models.WitnessModeExternalNotary,
+			"signer_backend":             o.N5Ledger.SignerBackend(),
+			"verification":               rep,
+		})
+	})
+
 	mux.HandleFunc("POST /api/v1/ledger/verify", func(w http.ResponseWriter, r *http.Request) {
 		rep, err := o.Store.VerifyAllLedgerChains(r.Context(), o.N5Ledger.Anchor().ExternalWitnessRecords())
 		if err != nil {
 			writeAPIError(w, http.StatusInternalServerError, err)
 			return
 		}
+		rep.WitnessMode = o.N5Ledger.WitnessMode()
 		writeAPIJSON(w, http.StatusOK, rep)
 	})
 
@@ -1254,11 +1285,16 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 				filtered = append(filtered, a)
 			}
 		}
+		witnessMode := o.N5Ledger.WitnessMode()
 		chainRep, _ := o.Store.VerifyAllLedgerChains(r.Context(), o.N5Ledger.Anchor().ExternalWitnessRecords())
+		if chainRep != nil {
+			chainRep.WitnessMode = witnessMode
+		}
 		kernelPK := o.N5Ledger.KernelPublicKey()
 		kernelKeyRing, _ := o.Store.ListKernelPublicKeys(r.Context())
 		writeAPIJSON(w, http.StatusOK, map[string]any{
 			"token_metadata": tok,
+			"witness_mode":   witnessMode,
 			"attestations":   filtered,
 			"ledger_proof":   chainRep,
 			"kernel_public_key": map[string]string{

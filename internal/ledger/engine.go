@@ -78,6 +78,14 @@ func (e *Engine) Anchor() *TransparencyAnchor {
 	return e.anchor
 }
 
+// WitnessMode returns EXTERNAL_NOTARY when external notary anchoring is active, or IN_PROCESS_LOCAL otherwise.
+func (e *Engine) WitnessMode() string {
+	if e == nil || e.anchor == nil {
+		return models.WitnessModeInProcessLocal
+	}
+	return e.anchor.WitnessMode()
+}
+
 // CreateCheckpoint signs and ships an explicit Merkle Root checkpoint across all 3 ledger tables.
 func (e *Engine) CreateCheckpoint(ctx context.Context) (*models.LedgerCheckpoint, error) {
 	return e.anchor.AnchorCheckpoint(ctx, e.store, e.signer)

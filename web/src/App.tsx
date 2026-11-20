@@ -7,6 +7,7 @@ import {
   buildSinglePrincipalGovernanceEnvelope,
   buildSinglePrincipalGovernanceEnvelopeWebAuthn,
   bytesToBase64,
+  hasLocalPersonaKey,
   sha256HexString,
 } from './lib/crypto';
 import { utf8ToBytes } from '@noble/hashes/utils';
@@ -121,7 +122,8 @@ export const App: React.FC = () => {
   const activePersonas = snapshot.test_personas.filter(
     (tp) =>
       (tp.role === 'SERVICE_OWNER' || tp.role === 'AUTHORIZING_OFFICIAL') &&
-      !revokedIds.has(tp.principal_id)
+      !revokedIds.has(tp.principal_id) &&
+      hasLocalPersonaKey(tp)
   );
   const activeWebAuthnPrincipals = snapshot.principals.filter(
     (p) =>
@@ -419,6 +421,7 @@ export const App: React.FC = () => {
           <View5AuditorLedger
             attestations={snapshot.attestations}
             agentActions={snapshot.agent_actions}
+            witnessMode={snapshot.witness_mode || snapshot.scoreboard.witness_mode}
             kernelPublicKey={snapshot.kernel_public_key}
             onMintAuditorLink={async (label, scopedIds, ttlHours) => {
               return (await postActionJSON(

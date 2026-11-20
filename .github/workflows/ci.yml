@@ -32,4 +32,8 @@ jobs:
 
       - name: Run Embedded OPA Rego Policy & Go -race Invariant Suite
         run: |
+          PG_PW="$(openssl rand -hex 24)"
+          export POSTGRES_PASSWORD="${PG_PW}"
+          export DATABASE_URL="postgres://warrant:${PG_PW}@postgres:5432/warrant?sslmode=disable"
+          export TEST_DATABASE_URL="postgres://warrant:${PG_PW}@postgres:5432/postgres?sslmode=disable"
           docker compose --profile test run --rm --build verifier

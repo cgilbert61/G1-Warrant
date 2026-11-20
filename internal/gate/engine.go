@@ -532,125 +532,47 @@ func (e *Engine) EvaluateAndRollout(ctx context.Context, item *models.Remediatio
 			crypto.SHA256Hex([]byte(stageResp.CanaryHTTPBody)),
 		)
 
-		normBase, normCanary, maskedFields, schemaDiffs, breakingCount, err := NormalizeAndDiffHTTPJSONWithOptions(
-			stageResp.BaselineHTTPBody, stageResp.CanaryHTTPBody, svc.VolatileJSONPaths, svc.UnorderedArrayPaths,
+		report, shadowGate, err := e.EvalStagePromotion(
+			ctx, item.RemediationID, weight, curFreeze.Mode, preGate.AutonomyTier, w, svc, patchMeta, stageResp,
 		)
 		if err != nil {
 			return err
 		}
-
-		shadowGate, err := e.policy.EvalGate(ctx, policy.GateInput{
-			FreezeMode:          curFreeze.Mode,
-			BlastRadiusExceeded: false,
-			AllowGuardedCanary:  w.AllowGuardedCanary,
-			ShadowEvaluated:     true,
-			Service: policy.GateServiceInput{
-				TestCoveragePct:            svc.TestCoveragePct,
-				OtelHealthProbes:           true,
-				ReadonlyShadowReplica:      stageResp.ReadonlyDBBound,
-				ShadowDBMode:               svc.ShadowDBMode,
-				RollbackAutomationVerified: true,
-				ReadOnlyRootFilesystem:     svc.ReadOnlyRootFilesystem,
-				NoExecTmpMounts:            svc.NoExecTmpMounts,
-			},
-			Patch: policy.GatePatchInput{
-				DDLMigrations:         0,
-				ORMModelMutations:     0,
-				SerializationBreaks:   0,
-				APIBackwardCompatible: true,
-			},
-			Shadow: policy.GateShadowInput{
-				SchemaBreakingDiffs: breakingCount,
-				StatusCodeDriftPct:  stageResp.StatusCodeDriftPct,
-				P99LatencyMs:        stageResp.CanaryP99Ms,
-				MaxP99LatencyMs:     w.MaxP99LatencyMs,
-				BaselineSyscalls:    stageResp.BaselineSyscalls,
-				CanarySyscalls:      stageResp.CanarySyscalls,
-			},
-		})
-		if err != nil {
-			return err
-		}
-
-		schemaOK := breakingCount == 0
-		syscallOK := len(shadowGate.UnauthorizedSyscalls) == 0
-		isolationOK := (stageResp.ReadonlyDBBound && stageResp.OutboundMutationSinkActive) || preGate.AutonomyTier == models.AutonomyTier2GuardedCanary
-		passed := shadowGate.ShadowSafe && isolationOK
-
-		failureCode := ""
-		if !passed {
-			if !syscallOK {
-				failureCode = "SHADOW_UNAUTHORIZED_SYSCALL:" + strings.Join(shadowGate.UnauthorizedSyscalls, ",")
-			} else if !schemaOK {
-				failureCode = "SHADOW_BREAKING_HTTP_SCHEMA_DIFF"
-			} else if !isolationOK {
-				failureCode = "SHADOW_ISOLATION_CONTRACT_VIOLATION"
-			} else {
-				failureCode = strings.Join(shadowGate.Reasons, ",")
-			}
-		}
-
-		report := models.ShadowComparisonReport{
-			RunID:                      fmt.Sprintf("shd-%s-%d", item.RemediationID, weight),
-			RemediationID:              item.RemediationID,
-			ServiceID:                  svc.ServiceID,
-			StageWeight:                weight,
-			ShadowIsolationVerified:    isolationOK,
-			ReadonlyDBBound:            stageResp.ReadonlyDBBound,
-			OutboundMutationSinkActive: stageResp.OutboundMutationSinkActive,
-			NormalizedBaselineSample:   normBase,
-			NormalizedCanarySample:     normCanary,
-			VolatileFieldsMasked:       maskedFields,
-			SchemaBreakingDiffs:        breakingCount,
-			SchemaFieldDiffs:           schemaDiffs,
-			StatusCodeDriftPct:         stageResp.StatusCodeDriftPct,
-			BaselineLatency: models.LatencySummary{
-				P50Ms: stageResp.BaselineP50Ms,
-				P95Ms: stageResp.BaselineP95Ms,
-				P99Ms: stageResp.BaselineP99Ms,
-			},
-			CanaryLatency: models.LatencySummary{
-				P50Ms: stageResp.CanaryP50Ms,
-				P95Ms: stageResp.CanaryP95Ms,
-				P99Ms: stageResp.CanaryP99Ms,
-			},
-			MaxP99LatencyMs:      w.MaxP99LatencyMs,
-			BaselineSyscalls:     stageResp.BaselineSyscalls,
-			CanarySyscalls:       stageResp.CanarySyscalls,
-			UnauthorizedSyscalls: shadowGate.UnauthorizedSyscalls,
-			Passed:               passed,
-			FailureCode:          failureCode,
-			EvaluatedAt:          time.Now().UTC(),
-		}
 		_ = e.store.SaveShadowRun(ctx, report)
 
+		schemaOK := report.SchemaBreakingDiffs == 0
+		syscallOK := len(report.UnauthorizedSyscalls) == 0
 		item.CanaryWeight = weight
 		item.SchemaDiffPassed = &schemaOK
 		item.SyscallPassed = &syscallOK
 		item.ShadowReport = &report
 
-		if !passed || shadowGate.TriggerCanaryRollback {
+		if !report.Passed || shadowGate.TriggerCanaryRollback {
 			_ = e.deploy.RollbackCanary(ctx, svc.ServiceID)
 			item.CanaryWeight = 0
 			item.StatusHealth = models.HealthRollbackFailed
-			item.BlockerCode = failureCode
+			item.BlockerCode = report.FailureCode
 			_ = e.store.UpsertRemediation(ctx, item)
 			repHash, _, _ := crypto.CanonicalSHA256Hex(report)
 			_ = e.recordTrace(ctx, item.RemediationID, "N2", fmt.Sprintf("CANARY_ROLLBACK_%d_PCT", weight), "ROLLBACK", "k8s_rollout", repHash, map[string]string{
-				"failure_code":          failureCode,
-				"unauthorized_syscalls": strings.Join(shadowGate.UnauthorizedSyscalls, ","),
-				"active_bridge_kept":    item.BridgeID,
+				"failure_code":           report.FailureCode,
+				"observed_samples":       fmt.Sprintf("%d", report.SampleCount),
+				"observed_dwell_seconds": fmt.Sprintf("%d", report.ObservedDwellSeconds),
+				"unauthorized_syscalls":  strings.Join(report.UnauthorizedSyscalls, ","),
+				"active_bridge_kept":     item.BridgeID,
 			})
 			e.emit("CANARY_ROLLED_BACK", report)
 			e.emit("REMEDIATION_UPDATED", item)
-			return fmt.Errorf("N2_CANARY_SAFETY_ROLLBACK (%s)", failureCode)
+			return fmt.Errorf("N2_CANARY_SAFETY_ROLLBACK (%s)", report.FailureCode)
 		}
 
 		_ = e.store.UpsertRemediation(ctx, item)
 		repHash, _, _ := crypto.CanonicalSHA256Hex(report)
 		_ = e.recordTrace(ctx, item.RemediationID, "N2", fmt.Sprintf("SHADOW_CANARY_%d_PCT", weight), "PASS", "k8s_rollout", repHash, map[string]string{
-			"canary_p99_ms": fmt.Sprintf("%.1f", stageResp.CanaryP99Ms),
-			"masked_fields": fmt.Sprintf("%d", len(maskedFields)),
+			"canary_p99_ms":          fmt.Sprintf("%.1f", stageResp.CanaryP99Ms),
+			"observed_samples":       fmt.Sprintf("%d", report.SampleCount),
+			"observed_dwell_seconds": fmt.Sprintf("%d", report.ObservedDwellSeconds),
+			"masked_fields":          fmt.Sprintf("%d", len(report.VolatileFieldsMasked)),
 		})
 		e.emit("REMEDIATION_UPDATED", item)
 	}
@@ -659,6 +581,185 @@ func (e *Engine) EvaluateAndRollout(ctx context.Context, item *models.Remediatio
 	svc.CurrentDigest = item.PatchedDigest
 	_ = e.store.UpsertEstateService(ctx, *svc)
 	return nil
+}
+
+// EvalStagePromotion enforces Warrant canary sample & dwell-time floors (MinCanarySamples and StageDwellSeconds)
+// and evaluates live stage promotion against real measured service, patch-diff, and shadow/canary telemetry.
+func (e *Engine) EvalStagePromotion(
+	ctx context.Context,
+	remID string,
+	weight int,
+	freezeMode string,
+	autonomyTier string,
+	w *models.WarrantRecord,
+	svc *models.EstateService,
+	patchMeta *models.ExtractedPatchMetadata,
+	stageResp *fleetsim.StageRolloutResponse,
+) (models.ShadowComparisonReport, *policy.GateDecision, error) {
+	if w == nil || svc == nil || stageResp == nil {
+		return models.ShadowComparisonReport{}, nil, fmt.Errorf("CANARY_EVAL_INVALID_INPUT: warrant, service, and stage telemetry are required")
+	}
+	var pm models.ExtractedPatchMetadata
+	if patchMeta != nil {
+		pm = *patchMeta
+	} else {
+		pm.APIBackwardCompatible = true
+	}
+
+	normBase, normCanary, maskedFields, schemaDiffs, breakingCount, err := NormalizeAndDiffHTTPJSONWithOptions(
+		stageResp.BaselineHTTPBody, stageResp.CanaryHTTPBody, svc.VolatileJSONPaths, svc.UnorderedArrayPaths,
+	)
+	if err != nil {
+		return models.ShadowComparisonReport{}, nil, err
+	}
+
+	// Enforce warrant-mandated sample count floor and stage observation dwell duration
+	var floorReasons []string
+	if w.MinCanarySamples > 0 && stageResp.ObservedSamples < w.MinCanarySamples {
+		floorReasons = append(floorReasons, fmt.Sprintf(
+			"CANARY_MIN_SAMPLES_NOT_MET:observed=%d<required=%d",
+			stageResp.ObservedSamples, w.MinCanarySamples,
+		))
+	}
+	if w.StageDwellSeconds > 0 && stageResp.ObservedDwellSeconds < w.StageDwellSeconds {
+		floorReasons = append(floorReasons, fmt.Sprintf(
+			"CANARY_STAGE_DWELL_NOT_MET:observed=%ds<required=%ds",
+			stageResp.ObservedDwellSeconds, w.StageDwellSeconds,
+		))
+	}
+
+	// Consume actual measured service, patch-diff, and runtime telemetry (never hardcoded optimistic zeroes/trues)
+	otelProbes := svc.OtelHealthProbes
+	if stageResp.OtelHealthProbes != nil {
+		otelProbes = *stageResp.OtelHealthProbes
+	}
+	rollbackVerified := svc.RollbackAutomationVerified
+	if stageResp.RollbackAutomationVerified != nil {
+		rollbackVerified = *stageResp.RollbackAutomationVerified
+	}
+	blastExceeded := w.MaxBlastRadiusReplicas > 0 && svc.Replicas > w.MaxBlastRadiusReplicas
+
+	ddlCount := pm.DDLMigrations
+	if stageResp.ObservedDDLMigrations > ddlCount {
+		ddlCount = stageResp.ObservedDDLMigrations
+	}
+	ormCount := pm.ORMModelMutations
+	if stageResp.ObservedORMMutations > ormCount {
+		ormCount = stageResp.ObservedORMMutations
+	}
+	serBreaks := pm.SerializationBreaks
+	if stageResp.ObservedSerializationBreaks > serBreaks {
+		serBreaks = stageResp.ObservedSerializationBreaks
+	}
+	apiBackwardCompat := pm.APIBackwardCompatible && breakingCount == 0
+	if stageResp.ObservedAPIBackwardCompatible != nil && !*stageResp.ObservedAPIBackwardCompatible {
+		apiBackwardCompat = false
+	}
+
+	baselineSyscalls := svc.BaselineSyscalls
+	if len(baselineSyscalls) == 0 {
+		baselineSyscalls = stageResp.BaselineSyscalls
+	}
+
+	shadowGate, err := e.policy.EvalGate(ctx, policy.GateInput{
+		FreezeMode:          freezeMode,
+		BlastRadiusExceeded: blastExceeded,
+		AllowGuardedCanary:  w.AllowGuardedCanary,
+		ShadowEvaluated:     true,
+		Service: policy.GateServiceInput{
+			TestCoveragePct:            svc.TestCoveragePct,
+			OtelHealthProbes:           otelProbes,
+			ReadonlyShadowReplica:      stageResp.ReadonlyDBBound,
+			ShadowDBMode:               svc.ShadowDBMode,
+			RollbackAutomationVerified: rollbackVerified,
+			ReadOnlyRootFilesystem:     svc.ReadOnlyRootFilesystem,
+			NoExecTmpMounts:            svc.NoExecTmpMounts,
+		},
+		Patch: policy.GatePatchInput{
+			DDLMigrations:          ddlCount,
+			ORMModelMutations:      ormCount,
+			SerializationBreaks:    serBreaks,
+			APIBackwardCompatible:  apiBackwardCompat,
+			ForbiddenConfigTouches: pm.ForbiddenConfigTouches,
+		},
+		Shadow: policy.GateShadowInput{
+			SchemaBreakingDiffs:       breakingCount,
+			StatusCodeDriftPct:        stageResp.StatusCodeDriftPct,
+			P99LatencyMs:              stageResp.CanaryP99Ms,
+			MaxP99LatencyMs:           w.MaxP99LatencyMs,
+			BaselineSyscalls:          baselineSyscalls,
+			CanarySyscalls:            stageResp.CanarySyscalls,
+			SensitiveFilesAccessed:    stageResp.SensitiveFilesAccessed,
+			UnexpectedEgressEndpoints: stageResp.UnexpectedEgressEndpoints,
+			HasMutatingTraffic:        stageResp.HasMutatingTraffic,
+		},
+	})
+	if err != nil {
+		return models.ShadowComparisonReport{}, nil, err
+	}
+
+	floorsOK := len(floorReasons) == 0
+	schemaOK := breakingCount == 0
+	syscallOK := len(shadowGate.UnauthorizedSyscalls) == 0
+	isolationOK := (stageResp.ReadonlyDBBound && stageResp.OutboundMutationSinkActive) || autonomyTier == models.AutonomyTier2GuardedCanary
+	statelessOK := shadowGate.PatchStateless || w.AllowStatefulPatches
+	serviceOK := shadowGate.ServiceEligible || (w.AllowGuardedCanary && shadowGate.GuardedCanaryEligible)
+	passed := floorsOK && shadowGate.ShadowSafe && isolationOK && statelessOK && serviceOK && !shadowGate.FreezeBlocked && !blastExceeded
+
+	failureCode := ""
+	if !passed {
+		if !floorsOK {
+			failureCode = strings.Join(floorReasons, ",")
+		} else if !syscallOK {
+			failureCode = "SHADOW_UNAUTHORIZED_SYSCALL:" + strings.Join(shadowGate.UnauthorizedSyscalls, ",")
+		} else if !schemaOK {
+			failureCode = "SHADOW_BREAKING_HTTP_SCHEMA_DIFF"
+		} else if !isolationOK {
+			failureCode = "SHADOW_ISOLATION_CONTRACT_VIOLATION"
+		} else if len(shadowGate.Reasons) > 0 {
+			failureCode = strings.Join(shadowGate.Reasons, ",")
+		} else {
+			failureCode = "CANARY_PROMOTION_GATE_DENIED"
+		}
+	}
+
+	report := models.ShadowComparisonReport{
+		RunID:                      fmt.Sprintf("shd-%s-%d", remID, weight),
+		RemediationID:              remID,
+		ServiceID:                  svc.ServiceID,
+		StageWeight:                weight,
+		ShadowIsolationVerified:    isolationOK,
+		ReadonlyDBBound:            stageResp.ReadonlyDBBound,
+		OutboundMutationSinkActive: stageResp.OutboundMutationSinkActive,
+		NormalizedBaselineSample:   normBase,
+		NormalizedCanarySample:     normCanary,
+		VolatileFieldsMasked:       maskedFields,
+		SchemaBreakingDiffs:        breakingCount,
+		SchemaFieldDiffs:           schemaDiffs,
+		StatusCodeDriftPct:         stageResp.StatusCodeDriftPct,
+		BaselineLatency: models.LatencySummary{
+			P50Ms: stageResp.BaselineP50Ms,
+			P95Ms: stageResp.BaselineP95Ms,
+			P99Ms: stageResp.BaselineP99Ms,
+		},
+		CanaryLatency: models.LatencySummary{
+			P50Ms: stageResp.CanaryP50Ms,
+			P95Ms: stageResp.CanaryP95Ms,
+			P99Ms: stageResp.CanaryP99Ms,
+		},
+		MaxP99LatencyMs:           w.MaxP99LatencyMs,
+		BaselineSyscalls:          baselineSyscalls,
+		CanarySyscalls:            stageResp.CanarySyscalls,
+		UnauthorizedSyscalls:      shadowGate.UnauthorizedSyscalls,
+		SensitiveFilesAccessed:    stageResp.SensitiveFilesAccessed,
+		UnexpectedEgressEndpoints: stageResp.UnexpectedEgressEndpoints,
+		SampleCount:               stageResp.ObservedSamples,
+		ObservedDwellSeconds:      stageResp.ObservedDwellSeconds,
+		Passed:                    passed,
+		FailureCode:               failureCode,
+		EvaluatedAt:               time.Now().UTC(),
+	}
+	return report, shadowGate, nil
 }
 
 // RollbackAllActiveCanaries is invoked by N1 FREEZE_ROLLBACK to immediately roll back all in-flight canaries

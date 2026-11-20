@@ -1,14 +1,27 @@
 package crypto
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"strings"
+)
+
+const (
+	RoleArtifactPublisher = "ARTIFACT_PUBLISHER"
+	RoleRulepackAuthority = "RULEPACK_AUTHORITY"
+
+	// Legacy revoked public string literals from pre-remediation builds.
+	// Any key, seed, envelope, patch artifact, or rulepack derived from these strings is permanently rejected fail-closed.
+	legacyPublisherDomainSeed = "publisher:g1163rt-trusted-build-pipeline-v1"
+	legacyRulepackDomainSeed  = "publisher:g1163rt-signed-rulepack-authority-v1"
 )
 
 // TestSmartcardPersona represents a deterministic PIV/Ed25519 smartcard identity
-// available for out-of-the-box console ceremony testing and automated test suites.
+// available strictly for in-process Go test suites. Private seed and key material
+// are permanently excluded from JSON serialization (json:"-") across all postures.
 type TestSmartcardPersona struct {
 	PrincipalID    string             `json:"principal_id"`
 	Email          string             `json:"email"`
@@ -18,10 +31,49 @@ type TestSmartcardPersona struct {
 	Alg            string             `json:"alg"`
 	PublicKeyB64   string             `json:"public_key_b64"`
 	KeyFingerprint string             `json:"key_fingerprint"`
-	SeedHex        string             `json:"seed_hex"`
+	SeedHex        string             `json:"-"`
 	BadgeLabel     string             `json:"badge_label"`
 	PrivateKey     ed25519.PrivateKey `json:"-"`
 	PublicKey      ed25519.PublicKey  `json:"-"`
+}
+
+// PublicSmartcardPersona contains strictly public identity metadata (public key, KeyID, SHA-256 fingerprint)
+// safe for HTTP serialization without any private key or seed fields on the struct.
+type PublicSmartcardPersona struct {
+	PrincipalID    string `json:"principal_id"`
+	Email          string `json:"email"`
+	DisplayName    string `json:"display_name"`
+	Role           string `json:"role"`
+	KeyID          string `json:"key_id"`
+	Alg            string `json:"alg"`
+	PublicKeyB64   string `json:"public_key_b64"`
+	KeyFingerprint string `json:"key_fingerprint"`
+	BadgeLabel     string `json:"badge_label"`
+}
+
+// PublicView projects a TestSmartcardPersona onto its strictly public HTTP representation.
+func (p TestSmartcardPersona) PublicView() PublicSmartcardPersona {
+	return PublicSmartcardPersona{
+		PrincipalID:    p.PrincipalID,
+		Email:          p.Email,
+		DisplayName:    p.DisplayName,
+		Role:           p.Role,
+		KeyID:          p.KeyID,
+		Alg:            p.Alg,
+		PublicKeyB64:   p.PublicKeyB64,
+		KeyFingerprint: p.KeyFingerprint,
+		BadgeLabel:     p.BadgeLabel,
+	}
+}
+
+// BuiltinPublicTestPersonas returns strictly public metadata for built-in test smartcard personas.
+func BuiltinPublicTestPersonas() []PublicSmartcardPersona {
+	personas := BuiltinTestPersonas()
+	out := make([]PublicSmartcardPersona, 0, len(personas))
+	for _, p := range personas {
+		out = append(out, p.PublicView())
+	}
+	return out
 }
 
 func deriveEd25519FromDomainSeed(domain string) (ed25519.PublicKey, ed25519.PrivateKey, string) {
@@ -134,7 +186,7 @@ func (p TestSmartcardPersona) ToPrincipalKey() PrincipalKey {
 }
 
 // KernelKeypair returns the deterministic or seed-derived Ed25519 keypair used by warrantd
-// solely to mint N4 ephemeral task tokens and co-seal N5 OSCAL attestations.
+// in explicitly seeded local test environments solely to mint N4 ephemeral task tokens and co-seal N5 OSCAL attestations.
 func KernelKeypair(secretSeed string) (PrincipalKey, ed25519.PrivateKey) {
 	if secretSeed == "" {
 		secretSeed = "kernel:warrantd-attestation-seal-v1"
@@ -152,17 +204,56 @@ func KernelKeypair(secretSeed string) (PrincipalKey, ed25519.PrivateKey) {
 	}, priv
 }
 
-// PublisherKeypair returns the trusted upstream OCI/patch artifact publisher keypair.
-func PublisherKeypair() (PrincipalKey, ed25519.PrivateKey) {
-	pub, priv, _ := deriveEd25519FromDomainSeed("publisher:g1163rt-trusted-build-pipeline-v1")
-	return PrincipalKey{
-		PrincipalID:    "pub-g1163rt-ci",
-		Email:          "provenance@g1163rt.sec",
-		DisplayName:    "G1163RT Trusted Build Provenance Signer",
-		Role:           "ARTIFACT_PUBLISHER",
-		KeyID:          "pub-provenance-ed25519-01",
-		Alg:            AlgEd25519,
-		PublicKeyBytes: append([]byte{}, pub...),
-		KeyFingerprint: SHA256Hex(pub),
-	}, priv
+func legacyForbiddenKeyTable() ([]ed25519.PublicKey, []string) {
+	domains := []string{
+		legacyPublisherDomainSeed,
+		legacyRulepackDomainSeed,
+	}
+	pubs := make([]ed25519.PublicKey, 0, len(domains))
+	seeds := make([]string, 0, len(domains))
+	for _, d := range domains {
+		pub, _, seedHex := deriveEd25519FromDomainSeed(d)
+		pubs = append(pubs, pub)
+		seeds = append(seeds, strings.ToLower(seedHex))
+		// Also block raw SHA-256 of the bare domain string itself in case an attacker hashes without prefix
+		rawHash := sha256.Sum256([]byte(d))
+		rawPriv := ed25519.NewKeyFromSeed(rawHash[:])
+		rawPub := rawPriv.Public().(ed25519.PublicKey)
+		pubs = append(pubs, rawPub)
+		seeds = append(seeds, strings.ToLower(hex.EncodeToString(rawHash[:])))
+	}
+	return pubs, seeds
+}
+
+// IsForbiddenLegacyPublicSeedKey returns true if pubBytes matches any revoked public-string-derived
+// publisher or rulepack authority Ed25519 public key.
+func IsForbiddenLegacyPublicSeedKey(pubBytes []byte) bool {
+	if len(pubBytes) == 0 {
+		return false
+	}
+	pubs, _ := legacyForbiddenKeyTable()
+	for _, banned := range pubs {
+		if bytes.Equal(pubBytes, banned) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsForbiddenLegacySeedHex returns true if seedHex matches any revoked public-string-derived seed.
+func IsForbiddenLegacySeedHex(seedHex string) bool {
+	clean := strings.ToLower(strings.TrimSpace(seedHex))
+	if clean == "" {
+		return false
+	}
+	if clean == strings.ToLower(legacyPublisherDomainSeed) || clean == strings.ToLower(legacyRulepackDomainSeed) {
+		return true
+	}
+	_, seeds := legacyForbiddenKeyTable()
+	for _, banned := range seeds {
+		if clean == banned {
+			return true
+		}
+	}
+	return false
 }

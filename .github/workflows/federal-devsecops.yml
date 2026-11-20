@@ -101,6 +101,9 @@ jobs:
 
       - name: Launch Full G1-Warrant Stack
         run: |
+          PG_PW="$(openssl rand -hex 24)"
+          export POSTGRES_PASSWORD="${PG_PW}"
+          export DATABASE_URL="postgres://warrant:${PG_PW}@postgres:5432/warrant?sslmode=disable"
           docker compose up --build -d
           for i in $(seq 1 30); do
             curl -fsS http://localhost:8080/healthz && break

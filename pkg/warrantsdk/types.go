@@ -10,7 +10,7 @@ import (
 )
 
 // Version is the semantic version of the G1-Warrant Go SDK.
-const Version = "1.0.3"
+const Version = "1.0.4"
 
 // Re-exported protocol constants for callers outside internal/.
 const (

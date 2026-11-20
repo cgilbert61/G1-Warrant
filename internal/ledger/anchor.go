@@ -47,6 +47,15 @@ func NewTransparencyAnchor(receiptPath, webhookURL string) *TransparencyAnchor {
 	}
 }
 
+// WitnessMode returns EXTERNAL_NOTARY when WARRANT_EXTERNAL_ANCHOR_URL is configured,
+// and IN_PROCESS_LOCAL when checkpoints are anchored locally/in-process only.
+func (a *TransparencyAnchor) WitnessMode() string {
+	if a != nil && strings.TrimSpace(a.webhookURL) != "" {
+		return models.WitnessModeExternalNotary
+	}
+	return models.WitnessModeInProcessLocal
+}
+
 // AnchorCheckpoint signs a combined 6-chain Merkle root (MerkleVersion=2) over all 6 immutable tables
 // and ships it to the external trust boundary.
 func (a *TransparencyAnchor) AnchorCheckpoint(ctx context.Context, store *db.Store, signer crypto.EnvelopeSigner) (*models.LedgerCheckpoint, error) {
@@ -142,6 +151,7 @@ func (a *TransparencyAnchor) AnchorCheckpoint(ctx context.Context, store *db.Sto
 		KernelKeyRowCount:    kRows,
 		CombinedMerkleRoot:   merkleRoot,
 		DSSEEnvelope:         *env,
+		WitnessMode:          a.WitnessMode(),
 		ExternalAnchorTarget: target,
 		ExternalReceiptHash:  receiptHash,
 		AnchoredAt:           now,

@@ -20,16 +20,23 @@ func main() {
 		log.Printf("%v", err)
 		os.Exit(1)
 	}
+	if warn := server.ExternalAnchorStartupWarning(os.Getenv); warn != "" {
+		log.Printf("================================================================================")
+		log.Printf("%s", warn)
+		log.Printf("================================================================================")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	listenAddr := envOrDefault("WARRANTD_LISTEN_ADDR", ":8080")
-	dbURL := envOrDefault("DATABASE_URL", "postgres://warrant:warrant@postgres:5432/warrant?sslmode=disable")
-	if dbURLFile := strings.TrimSpace(os.Getenv("DATABASE_URL_FILE")); dbURLFile != "" {
-		if b, readErr := os.ReadFile(dbURLFile); readErr == nil && strings.TrimSpace(string(b)) != "" {
-			dbURL = strings.TrimSpace(string(b))
-		}
+	dbURL, err := server.ResolveAndValidateDatabaseURL(os.Getenv)
+	if err != nil {
+		log.Printf("%v", err)
+		os.Exit(1)
+	}
+	if strings.TrimSpace(os.Getenv("DATABASE_URL")) == "" && strings.TrimSpace(os.Getenv("DATABASE_URL_FILE")) == "" {
+		log.Printf("[SANDBOX POSTURE] DATABASE_URL unset — generated ephemeral random per-installation database credentials")
 	}
 	extractorURL := envOrDefault("EXTRACTOR_URL", "http://warrant-extractor:8090")
 	fleetURL := envOrDefault("FLEET_SIM_URL", "http://fleet-sim:8095")
@@ -47,7 +54,6 @@ func main() {
 	}
 
 	var store *db.Store
-	var err error
 	for attempt := 1; attempt <= 30; attempt++ {
 		store, err = db.NewStore(ctx, dbURL)
 		if err == nil {

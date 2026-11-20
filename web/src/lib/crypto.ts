@@ -113,15 +113,51 @@ export function createUnsignedDSSE(payloadType: string, payloadObj: unknown): {
   };
 }
 
+// Ephemeral browser-memory-only map of locally imported Ed25519 32-byte seeds (keyed by SHA-256 public key fingerprint).
+// Private seed material is NEVER received from or transmitted to the warrantd server.
+const localPersonaSeedsByFingerprint = new Map<string, Uint8Array>();
+
+export function importLocalEd25519KeyJSON(jsonText: string): { keyId: string; fingerprint: string } {
+  const parsed = JSON.parse(jsonText) as Record<string, unknown>;
+  let seedBytes: Uint8Array | null = null;
+  if (typeof parsed.private_key_b64 === 'string' && parsed.private_key_b64.trim() !== '') {
+    const raw = base64ToBytes(parsed.private_key_b64);
+    seedBytes = raw.length === 64 ? raw.slice(0, 32) : raw;
+  } else if (typeof parsed.seed_b64 === 'string' && parsed.seed_b64.trim() !== '') {
+    seedBytes = base64ToBytes(parsed.seed_b64);
+  } else if (typeof parsed.seed === 'string' && parsed.seed.trim() !== '') {
+    seedBytes = hexToBytes(parsed.seed.trim());
+  }
+  if (!seedBytes || seedBytes.length !== 32) {
+    throw new Error('Expected a local .priv.json bundle containing a 32-byte Ed25519 private key');
+  }
+  const derivedPub = ed.getPublicKey(seedBytes);
+  const fingerprint = bytesToHex(sha256(derivedPub));
+  localPersonaSeedsByFingerprint.set(fingerprint.toLowerCase(), seedBytes);
+  return {
+    keyId: typeof parsed.key_id === 'string' ? parsed.key_id : `ed25519-${fingerprint.slice(0, 12)}`,
+    fingerprint,
+  };
+}
+
+export function hasLocalPersonaKey(persona: TestSmartcardPersona): boolean {
+  return localPersonaSeedsByFingerprint.has(persona.key_fingerprint.toLowerCase());
+}
+
 /**
- * Signs a DSSE PAE in-browser using a deterministic FIPS/Ed25519 Test Smartcard persona.
+ * Signs a DSSE PAE strictly in-browser using a locally imported operator Ed25519 key matching persona.key_fingerprint.
  */
 export function signPAEWithSmartcardPersona(
   slot: number,
   persona: TestSmartcardPersona,
   paeBytes: Uint8Array
 ): DSSESignature {
-  const seed = hexToBytes(persona.seed_hex);
+  const seed = localPersonaSeedsByFingerprint.get(persona.key_fingerprint.toLowerCase());
+  if (!seed) {
+    throw new Error(
+      `Private key for ${persona.principal_id} (${persona.key_id}) is not disseminated by warrantd; import your local .priv.json key in browser memory or sign with W3C WebAuthn hardware.`
+    );
+  }
   const sigBytes = ed.sign(paeBytes, seed);
   return {
     slot,

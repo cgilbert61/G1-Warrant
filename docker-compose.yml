@@ -2,9 +2,9 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: warrant
-      POSTGRES_PASSWORD: warrant
-      POSTGRES_DB: warrant
+      POSTGRES_USER: "${POSTGRES_USER:-warrant}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env or environment}"
+      POSTGRES_DB: "${POSTGRES_DB:-warrant}"
     volumes:
       - pgdata:/var/lib/postgresql/data
     networks:
@@ -52,16 +52,22 @@ services:
       dockerfile: Dockerfile.warrantd
     environment:
       WARRANTD_LISTEN_ADDR: ":8080"
-      DATABASE_URL: "postgres://warrant:warrant@postgres:5432/warrant?sslmode=disable"
+      DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set in .env or environment}"
       EXTRACTOR_URL: "http://warrant-extractor:8090"
       FLEET_SIM_URL: "http://fleet-sim:8095"
       WEBAUTHN_RP_ID: "localhost"
       WEBAUTHN_RP_ORIGIN: "http://localhost:8080"
+      WARRANT_POSTURE: "${WARRANT_POSTURE:-}"
       WARRANT_ENABLE_TEST_SMARTCARDS: "${WARRANT_ENABLE_TEST_SMARTCARDS:-false}"
       WARRANT_BOOTSTRAP_ADMIN_TOKEN: "${WARRANT_BOOTSTRAP_ADMIN_TOKEN:-}"
       WARRANT_OPERATOR_TOKEN: "${WARRANT_OPERATOR_TOKEN:-}"
       WARRANT_AUTOMATION_TOKEN: "${WARRANT_AUTOMATION_TOKEN:-}"
       WARRANT_INTAKE_TOKEN: "${WARRANT_INTAKE_TOKEN:-}"
+      WARRANT_PUBLISHER_PUBLIC_KEY_B64: "${WARRANT_PUBLISHER_PUBLIC_KEY_B64:-}"
+      WARRANT_PUBLISHER_SEED_HEX: "${WARRANT_PUBLISHER_SEED_HEX:-}"
+      WARRANT_RULEPACK_PUBLIC_KEY_B64: "${WARRANT_RULEPACK_PUBLIC_KEY_B64:-}"
+      WARRANT_RULEPACK_SEED_HEX: "${WARRANT_RULEPACK_SEED_HEX:-}"
+      WARRANT_EXTERNAL_ANCHOR_URL: "${WARRANT_EXTERNAL_ANCHOR_URL:-}"
       WARRANT_KERNEL_KEY_PATH: "/var/lib/warrant-anchor/kernel_signer.json"
       WARRANT_EXTERNAL_ANCHOR_PATH: "/var/lib/warrant-anchor/checkpoints.jsonl"
       WARRANT_FEED_MODE: "${WARRANT_FEED_MODE:-offline}"
@@ -129,7 +135,7 @@ services:
     environment:
       REQUIRE_DB_TESTS: "true"
       WARRANT_FEED_MODE: "offline"
-      TEST_DATABASE_URL: "postgres://warrant:warrant@postgres:5432/postgres?sslmode=disable"
+      TEST_DATABASE_URL: "${TEST_DATABASE_URL:-postgres://${POSTGRES_USER:-warrant}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env or environment}@postgres:5432/postgres?sslmode=disable}"
     depends_on:
       postgres:
         condition: service_healthy

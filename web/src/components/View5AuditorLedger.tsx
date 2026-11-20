@@ -16,6 +16,7 @@ import { shortHash } from '../lib/templates';
 interface View5AuditorLedgerProps {
   attestations: AttestationRecord[];
   agentActions: AgentLedgerEntry[];
+  witnessMode?: 'EXTERNAL_NOTARY' | 'IN_PROCESS_LOCAL';
   kernelPublicKey: {
     key_id: string;
     alg: string;
@@ -32,6 +33,7 @@ interface View5AuditorLedgerProps {
 export const View5AuditorLedger: React.FC<View5AuditorLedgerProps> = ({
   attestations,
   agentActions,
+  witnessMode,
   kernelPublicKey,
   onMintAuditorLink,
 }) => {
@@ -102,29 +104,43 @@ export const View5AuditorLedger: React.FC<View5AuditorLedgerProps> = ({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-2 border-b border-slate-300 pb-2">
-        <button
-          type="button"
-          onClick={() => setActiveTab('VAULT')}
-          className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-t text-xs font-bold uppercase tracking-wider border-b-2 ${
-            activeTab === 'VAULT'
-              ? 'border-slate-900 text-slate-900 bg-white'
-              : 'border-transparent text-slate-600 hover:text-slate-900'
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-300 pb-2">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setActiveTab('VAULT')}
+            className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-t text-xs font-bold uppercase tracking-wider border-b-2 ${
+              activeTab === 'VAULT'
+                ? 'border-slate-900 text-slate-900 bg-white'
+                : 'border-transparent text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <FileKey2 className="w-4 h-4" /> Tab A — NIST OSCAL 1.1.2 POA&amp;M Vault ({attestations.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('LEDGER')}
+            className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-t text-xs font-bold uppercase tracking-wider border-b-2 ${
+              activeTab === 'LEDGER'
+                ? 'border-slate-900 text-slate-900 bg-white'
+                : 'border-transparent text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <ListChecks className="w-4 h-4" /> Tab B — Governed Agent Ledger ({agentActions.length})
+          </button>
+        </div>
+
+        <span
+          role="status"
+          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded border text-[11px] font-mono font-semibold ${
+            (chainReport?.witness_mode || witnessMode) === 'EXTERNAL_NOTARY'
+              ? 'bg-emerald-50 border-emerald-400 text-emerald-950'
+              : 'bg-amber-50 border-amber-400 text-amber-950'
           }`}
         >
-          <FileKey2 className="w-4 h-4" /> Tab A — NIST OSCAL 1.1.2 POA&amp;M Vault ({attestations.length})
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab('LEDGER')}
-          className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-t text-xs font-bold uppercase tracking-wider border-b-2 ${
-            activeTab === 'LEDGER'
-              ? 'border-slate-900 text-slate-900 bg-white'
-              : 'border-transparent text-slate-600 hover:text-slate-900'
-          }`}
-        >
-          <ListChecks className="w-4 h-4" /> Tab B — Governed Agent Ledger ({agentActions.length})
-        </button>
+          <ShieldCheck className="w-3.5 h-3.5" />
+          <span>Ledger Witness: {chainReport?.witness_mode || witnessMode || 'IN_PROCESS_LOCAL'}</span>
+        </span>
       </div>
 
       {activeTab === 'VAULT' ? (

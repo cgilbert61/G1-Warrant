@@ -10,7 +10,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -70,11 +72,108 @@ func isWeakOrPlaceholderSecret(val string) bool {
 	return false
 }
 
-// ValidateStartupSecurityGuards enforces fail-closed startup invariants so built-in test smartcard personas
-// or weak/placeholder registrar/operator secrets can NEVER be enabled alongside live Kubernetes clusters or live threat feeds.
+func extractPasswordFromDatabaseDSN(dsn string) (string, bool) {
+	trimmed := strings.TrimSpace(dsn)
+	if trimmed == "" {
+		return "", false
+	}
+	if strings.Contains(trimmed, "://") {
+		u, err := url.Parse(trimmed)
+		if err != nil || u.User == nil {
+			return "", false
+		}
+		return u.User.Password()
+	}
+	for _, field := range strings.Fields(trimmed) {
+		if strings.HasPrefix(strings.ToLower(field), "password=") {
+			val := strings.Trim(field[len("password="):], `'"`)
+			return val, true
+		}
+	}
+	return "", false
+}
+
+func isForbiddenDefaultDBPassword(pw string) bool {
+	switch strings.ToLower(strings.TrimSpace(pw)) {
+	case "", "warrant", "postgres", "password":
+		return true
+	default:
+		return false
+	}
+}
+
+// ResolveAndValidateDatabaseURL enforces database credential hygiene across postures:
+//   - In live/Kubernetes posture (WARRANT_CLUSTER_DRIVER=kubernetes or WARRANT_POSTURE=live), refuses empty
+//     DATABASE_URL or known default passwords (warrant, postgres, password).
+//   - In demo/sandbox posture, generates a cryptographically random password per installation if DATABASE_URL is unset.
+func ResolveAndValidateDatabaseURL(getenv func(string) string) (string, error) {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	isLive := crypto.IsLiveOrKubernetesPosture(getenv)
+	dsn := strings.TrimSpace(getenv("DATABASE_URL"))
+	if dsnFile := strings.TrimSpace(getenv("DATABASE_URL_FILE")); dsnFile != "" {
+		if b, err := os.ReadFile(dsnFile); err == nil && strings.TrimSpace(string(b)) != "" {
+			dsn = strings.TrimSpace(string(b))
+		}
+	}
+
+	if isLive {
+		if dsn == "" {
+			return "", fmt.Errorf("FATAL_SECURITY_GUARD: DATABASE_URL must be explicitly configured in live/Kubernetes posture")
+		}
+		pw, hasPw := extractPasswordFromDatabaseDSN(dsn)
+		if !hasPw || isForbiddenDefaultDBPassword(pw) {
+			return "", fmt.Errorf("FATAL_SECURITY_GUARD: DATABASE_URL uses an empty or prohibited default password (warrant/postgres/password) in live/Kubernetes posture")
+		}
+		return dsn, nil
+	}
+
+	if dsn != "" {
+		return dsn, nil
+	}
+
+	// Demo/sandbox posture with unset DATABASE_URL: generate a secure random password per installation.
+	persistFile := strings.TrimSpace(getenv("WARRANT_SANDBOX_DB_DSN_FILE"))
+	if persistFile != "" {
+		if b, err := os.ReadFile(persistFile); err == nil && strings.TrimSpace(string(b)) != "" {
+			return strings.TrimSpace(string(b)), nil
+		}
+	}
+	var rnd [24]byte
+	if _, err := rand.Read(rnd[:]); err != nil {
+		return "", fmt.Errorf("generate random sandbox database password: %w", err)
+	}
+	generatedDSN := fmt.Sprintf("postgres://warrant:%s@postgres:5432/warrant?sslmode=disable", hex.EncodeToString(rnd[:]))
+	if persistFile != "" {
+		_ = os.WriteFile(persistFile, []byte(generatedDSN+"\n"), 0o600)
+	}
+	return generatedDSN, nil
+}
+
+// ExternalAnchorStartupWarning returns an explicit high-visibility warning when running in live/Kubernetes posture
+// without an external transparency notary URL (WARRANT_EXTERNAL_ANCHOR_URL).
+func ExternalAnchorStartupWarning(getenv func(string) string) string {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	isLiveOrFeed := crypto.IsLiveOrKubernetesPosture(getenv) || strings.EqualFold(strings.TrimSpace(getenv("WARRANT_FEED_MODE")), "live")
+	if isLiveOrFeed && strings.TrimSpace(getenv("WARRANT_EXTERNAL_ANCHOR_URL")) == "" {
+		return "[SECURITY WARNING] EXTERNAL_ANCHOR_UNCONFIGURED: running in live/Kubernetes posture with WARRANT_EXTERNAL_ANCHOR_URL unset — ledger checkpoints are anchored IN_PROCESS_LOCAL only; configure WARRANT_EXTERNAL_ANCHOR_URL for EXTERNAL_NOTARY tamper-resistance"
+	}
+	return ""
+}
+
+// ValidateStartupSecurityGuards enforces fail-closed startup invariants so built-in test smartcard personas,
+// weak/placeholder registrar/operator secrets, default database passwords, or unconfigured/legacy publisher keys
+// can NEVER be enabled in live or Kubernetes postures.
 func ValidateStartupSecurityGuards(getenv func(string) string) error {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
 	isK8s := strings.EqualFold(strings.TrimSpace(getenv("WARRANT_CLUSTER_DRIVER")), "kubernetes")
 	isLive := strings.EqualFold(strings.TrimSpace(getenv("WARRANT_FEED_MODE")), "live")
+	isLivePosture := crypto.IsLiveOrKubernetesPosture(getenv)
 
 	if strings.EqualFold(strings.TrimSpace(getenv("WARRANT_ENABLE_TEST_SMARTCARDS")), "true") {
 		if isK8s {
@@ -83,9 +182,12 @@ func ValidateStartupSecurityGuards(getenv func(string) string) error {
 		if isLive {
 			return fmt.Errorf("FATAL_SECURITY_GUARD: WARRANT_ENABLE_TEST_SMARTCARDS=true is strictly forbidden when WARRANT_FEED_MODE=live")
 		}
+		if isLivePosture {
+			return fmt.Errorf("FATAL_SECURITY_GUARD: WARRANT_ENABLE_TEST_SMARTCARDS=true is strictly forbidden when WARRANT_POSTURE=live")
+		}
 	}
 
-	if isK8s || isLive {
+	if isLivePosture || isLive {
 		for _, envKey := range []string{
 			"WARRANT_BOOTSTRAP_ADMIN_TOKEN",
 			"WARRANT_OPERATOR_TOKEN",
@@ -99,6 +201,20 @@ func ValidateStartupSecurityGuards(getenv func(string) string) error {
 			}
 		}
 	}
+
+	// Enforce F2: refuse empty or default database credentials (warrant, postgres, password) in live/Kubernetes posture
+	if _, err := ResolveAndValidateDatabaseURL(getenv); err != nil {
+		return err
+	}
+
+	// Enforce F1: require authoritative publisher & rulepack public keys in live/Kubernetes posture and ban legacy string seeds everywhere
+	if _, _, err := crypto.ResolveAuthorityCustody(crypto.DefaultPublisherCustodyConfig(), getenv); err != nil {
+		return err
+	}
+	if _, _, err := crypto.ResolveAuthorityCustody(crypto.DefaultRulepackCustodyConfig(), getenv); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -127,9 +243,9 @@ func (o *ControlPlaneOrchestrator) IntakeToken() string {
 	return o.intakeToken
 }
 
-// IsProductionOrLivePosture returns true whenever WARRANT_CLUSTER_DRIVER=kubernetes or feed mode is live.
+// IsProductionOrLivePosture returns true whenever WARRANT_CLUSTER_DRIVER=kubernetes, WARRANT_POSTURE=live, or feed mode is live.
 func (o *ControlPlaneOrchestrator) IsProductionOrLivePosture(ctx context.Context) bool {
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("WARRANT_CLUSTER_DRIVER")), "kubernetes") {
+	if crypto.IsLiveOrKubernetesPosture(os.Getenv) {
 		return true
 	}
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("WARRANT_FEED_MODE")), "live") {
@@ -503,7 +619,10 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 		return nil, err
 	}
 
-	rulepacks := adapters.NewDefaultRulepackRegistry()
+	rulepacks, err := adapters.NewRulepackRegistryFromEnv(os.Getenv)
+	if err != nil {
+		return nil, fmt.Errorf("configure rulepack authority custody: %w", err)
+	}
 	var shield adapters.ShieldEnforcer
 	var deploy adapters.DeploymentTarget
 	var twin adapters.TwinRunner
@@ -523,13 +642,20 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 		twin = simK8s
 	}
 
-	fixProv := adapters.NewDeterministicFixProvider()
+	fixProv, err := adapters.NewFixProviderFromEnv(os.Getenv)
+	if err != nil {
+		return nil, fmt.Errorf("configure publisher authority custody: %w", err)
+	}
 	sarifIn := adapters.NewSARIFIntakeAdapter(n4)
 
 	n2 := gate.NewEngine(store, pol, n1, n4, deploy, broker.Broadcast)
 	n3 := verify.NewEngine(store, pol, n1, n4, shield, deploy, twin, broker.Broadcast, rulepacks)
 	n5 := ledger.NewEngine(store, pol, n1, signer, broker.Broadcast)
 	store.SetBootstrapSealAnchorFunc(n5.CreateCheckpoint)
+
+	if warn := ExternalAnchorStartupWarning(os.Getenv); warn != "" {
+		log.Printf("%s", warn)
+	}
 
 	// Anchor initial 6-chain Merkle checkpoint covering kernel_public_keys & any migrated authority rows
 	_, _ = n5.CreateCheckpoint(ctx)

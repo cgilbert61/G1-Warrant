@@ -13,11 +13,17 @@ import (
 
 // ImageBehaviorProfile configures how a specific container digest behaves in canary/twin execution.
 type ImageBehaviorProfile struct {
-	Digest            string   `json:"digest"`
-	InjectSyscalls    []string `json:"inject_syscalls,omitempty"`
-	BreakingSchemaKey bool     `json:"breaking_schema_key,omitempty"`
-	P99LatencyMs      float64  `json:"p99_latency_ms,omitempty"`
-	ExploitStillWorks bool     `json:"exploit_still_works,omitempty"`
+	Digest                  string   `json:"digest"`
+	InjectSyscalls          []string `json:"inject_syscalls,omitempty"`
+	BreakingSchemaKey       bool     `json:"breaking_schema_key,omitempty"`
+	P99LatencyMs            float64  `json:"p99_latency_ms,omitempty"`
+	ExploitStillWorks       bool     `json:"exploit_still_works,omitempty"`
+	ObservedSamples         *int     `json:"observed_samples,omitempty"`
+	ObservedDwellSeconds    *int     `json:"observed_dwell_seconds,omitempty"`
+	ObservedDDLMigrations   int      `json:"observed_ddl_migrations,omitempty"`
+	ObservedORMMutations    int      `json:"observed_orm_mutations,omitempty"`
+	SensitiveFilesAccessed  []string `json:"sensitive_files_accessed,omitempty"`
+	UnexpectedEgressTargets []string `json:"unexpected_egress_endpoints,omitempty"`
 }
 
 // PodState represents a simulated Kubernetes Pod in fleet-sim.
@@ -87,31 +93,44 @@ type WorkloadState struct {
 
 // StageRolloutRequest drives shadow/canary traffic progression on fleet-sim.
 type StageRolloutRequest struct {
-	PatchedDigest    string   `json:"patched_digest"`
-	StageWeight      int      `json:"stage_weight"`
-	ClearSymbol      string   `json:"clear_symbol"`
-	InjectSyscalls   []string `json:"inject_syscalls,omitempty"`
-	BreakingSchema   bool     `json:"breaking_schema,omitempty"`
-	SimulatedP99Ms   float64  `json:"simulated_p99_ms,omitempty"`
+	PatchedDigest        string   `json:"patched_digest"`
+	StageWeight          int      `json:"stage_weight"`
+	ClearSymbol          string   `json:"clear_symbol"`
+	InjectSyscalls       []string `json:"inject_syscalls,omitempty"`
+	BreakingSchema       bool     `json:"breaking_schema,omitempty"`
+	SimulatedP99Ms       float64  `json:"simulated_p99_ms,omitempty"`
+	ObservedSamples      *int     `json:"observed_samples,omitempty"`
+	ObservedDwellSeconds *int     `json:"observed_dwell_seconds,omitempty"`
 }
 
 // StageRolloutResponse returns live telemetry from the baseline vs. shadow/canary execution.
 type StageRolloutResponse struct {
-	ServiceID                  string   `json:"service_id"`
-	StageWeight                int      `json:"stage_weight"`
-	ReadonlyDBBound            bool     `json:"readonly_db_bound"`
-	OutboundMutationSinkActive bool     `json:"outbound_mutation_sink_active"`
-	BaselineHTTPBody           string   `json:"baseline_http_body"`
-	CanaryHTTPBody             string   `json:"canary_http_body"`
-	StatusCodeDriftPct         float64  `json:"status_code_drift_pct"`
-	BaselineP50Ms              float64  `json:"baseline_p50_ms"`
-	BaselineP95Ms              float64  `json:"baseline_p95_ms"`
-	BaselineP99Ms              float64  `json:"baseline_p99_ms"`
-	CanaryP50Ms                float64  `json:"canary_p50_ms"`
-	CanaryP95Ms                float64  `json:"canary_p95_ms"`
-	CanaryP99Ms                float64  `json:"canary_p99_ms"`
-	BaselineSyscalls           []string `json:"baseline_syscalls"`
-	CanarySyscalls             []string `json:"canary_syscalls"`
+	ServiceID                     string   `json:"service_id"`
+	StageWeight                   int      `json:"stage_weight"`
+	ObservedSamples               int      `json:"observed_samples"`
+	ObservedDwellSeconds          int      `json:"observed_dwell_seconds"`
+	ReadonlyDBBound               bool     `json:"readonly_db_bound"`
+	OutboundMutationSinkActive    bool     `json:"outbound_mutation_sink_active"`
+	OtelHealthProbes              *bool    `json:"otel_health_probes,omitempty"`
+	RollbackAutomationVerified    *bool    `json:"rollback_automation_verified,omitempty"`
+	ObservedDDLMigrations         int      `json:"observed_ddl_migrations,omitempty"`
+	ObservedORMMutations          int      `json:"observed_orm_mutations,omitempty"`
+	ObservedSerializationBreaks   int      `json:"observed_serialization_breaks,omitempty"`
+	ObservedAPIBackwardCompatible *bool    `json:"observed_api_backward_compatible,omitempty"`
+	BaselineHTTPBody              string   `json:"baseline_http_body"`
+	CanaryHTTPBody                string   `json:"canary_http_body"`
+	StatusCodeDriftPct            float64  `json:"status_code_drift_pct"`
+	BaselineP50Ms                 float64  `json:"baseline_p50_ms"`
+	BaselineP95Ms                 float64  `json:"baseline_p95_ms"`
+	BaselineP99Ms                 float64  `json:"baseline_p99_ms"`
+	CanaryP50Ms                   float64  `json:"canary_p50_ms"`
+	CanaryP95Ms                   float64  `json:"canary_p95_ms"`
+	CanaryP99Ms                   float64  `json:"canary_p99_ms"`
+	BaselineSyscalls              []string `json:"baseline_syscalls"`
+	CanarySyscalls                []string `json:"canary_syscalls"`
+	SensitiveFilesAccessed        []string `json:"sensitive_files_accessed,omitempty"`
+	UnexpectedEgressEndpoints     []string `json:"unexpected_egress_endpoints,omitempty"`
+	HasMutatingTraffic            bool     `json:"has_mutating_traffic,omitempty"`
 }
 
 // TwinReplayRequest executes a differential isolated exploit replay against ephemeral unpatched & patched twin pods.
@@ -439,11 +458,30 @@ func (cs *ClusterSimulator) Handler() http.Handler {
 			}
 		}
 
+		observedSamples := 1200
+		if prof.ObservedSamples != nil {
+			observedSamples = *prof.ObservedSamples
+		}
+		if req.ObservedSamples != nil {
+			observedSamples = *req.ObservedSamples
+		}
+		observedDwellSec := 360
+		if prof.ObservedDwellSeconds != nil {
+			observedDwellSec = *prof.ObservedDwellSeconds
+		}
+		if req.ObservedDwellSeconds != nil {
+			observedDwellSec = *req.ObservedDwellSeconds
+		}
+
 		writeSimJSON(w, http.StatusOK, StageRolloutResponse{
 			ServiceID:                  svcID,
 			StageWeight:                req.StageWeight,
+			ObservedSamples:            observedSamples,
+			ObservedDwellSeconds:       observedDwellSec,
 			ReadonlyDBBound:            wl.ReadonlyShadowBound,
 			OutboundMutationSinkActive: wl.OutboundMutationSinkActive,
+			ObservedDDLMigrations:      prof.ObservedDDLMigrations,
+			ObservedORMMutations:       prof.ObservedORMMutations,
 			BaselineHTTPBody:           string(baseJSON),
 			CanaryHTTPBody:             string(canaryJSON),
 			StatusCodeDriftPct:         0.02,
@@ -455,6 +493,8 @@ func (cs *ClusterSimulator) Handler() http.Handler {
 			CanaryP99Ms:                canaryP99,
 			BaselineSyscalls:           wl.BaselineSyscalls,
 			CanarySyscalls:             canarySyscalls,
+			SensitiveFilesAccessed:     prof.SensitiveFilesAccessed,
+			UnexpectedEgressEndpoints:  prof.UnexpectedEgressTargets,
 		})
 	})
 

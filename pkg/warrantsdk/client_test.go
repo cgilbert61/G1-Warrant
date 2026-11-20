@@ -178,8 +178,8 @@ func TestSplitKeygenHygieneAndPrivateKeyClientRejection(t *testing.T) {
 }
 
 func TestRequestScopedGovernanceHeadersAndEpochThawDrafts(t *testing.T) {
-	if warrantsdk.Version != "1.0.3" {
-		t.Fatalf("expected warrantsdk.Version == 1.0.3, got %s", warrantsdk.Version)
+	if warrantsdk.Version != "1.0.4" {
+		t.Fatalf("expected warrantsdk.Version == 1.0.4, got %s", warrantsdk.Version)
 	}
 	so, err := warrantsdk.GenerateEd25519SignerBundle("usr-so-scope", "so-scope@agency.gov", "Scope SO", warrantsdk.RoleServiceOwner)
 	if err != nil {

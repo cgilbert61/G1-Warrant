@@ -458,6 +458,7 @@ type ShadowComparisonReport struct {
 	SensitiveFilesAccessed     []string          `json:"sensitive_files_accessed,omitempty"`
 	UnexpectedEgressEndpoints  []string          `json:"unexpected_egress_endpoints,omitempty"`
 	SampleCount                int               `json:"sample_count,omitempty"`
+	ObservedDwellSeconds       int               `json:"observed_dwell_seconds,omitempty"`
 	Passed                     bool              `json:"passed"`
 	FailureCode                string            `json:"failure_code,omitempty"`
 	EvaluatedAt                time.Time         `json:"evaluated_at"`
@@ -716,10 +717,17 @@ type ChainTableStatus struct {
 	FailureDetail    string `json:"failure_detail,omitempty"`
 }
 
-// LedgerVerificationReport summarizes hash-chain integrity across all 3 append-only tables
+// Transparency Witness Modes (N5 External Anchoring)
+const (
+	WitnessModeExternalNotary = "EXTERNAL_NOTARY"
+	WitnessModeInProcessLocal = "IN_PROCESS_LOCAL"
+)
+
+// LedgerVerificationReport summarizes hash-chain integrity across all 6 append-only tables
 // and cross-verifies against External Transparency Checkpoints to detect DB superuser tampering.
 type LedgerVerificationReport struct {
 	AllValid                bool               `json:"all_valid"`
+	WitnessMode             string             `json:"witness_mode,omitempty"`
 	ExternalAnchorVerified  bool               `json:"external_anchor_verified"`
 	LatestCheckpointID      string             `json:"latest_checkpoint_id,omitempty"`
 	LatestCombinedMerkleHex string             `json:"latest_combined_merkle_root,omitempty"`
@@ -747,6 +755,7 @@ type LedgerCheckpoint struct {
 	KernelKeyRowCount    int             `json:"kernel_key_row_count"`
 	CombinedMerkleRoot   string          `json:"combined_merkle_root"`
 	DSSEEnvelope         crypto.Envelope `json:"dsse_envelope"`
+	WitnessMode          string          `json:"witness_mode,omitempty"`
 	ExternalAnchorTarget string          `json:"external_anchor_target"`
 	ExternalReceiptHash  string          `json:"external_receipt_hash"`
 	AnchoredAt           time.Time       `json:"anchored_at"`
@@ -755,6 +764,7 @@ type LedgerCheckpoint struct {
 // GlobalScoreboard aggregates the persistent Global Command Bar KPIs.
 type GlobalScoreboard struct {
 	FreezeState                FreezeState `json:"freeze_state"`
+	WitnessMode                string      `json:"witness_mode,omitempty"`
 	ActiveWarrantsCount        int         `json:"active_warrants_count"`
 	FleetMedianTTVRSeconds     int64       `json:"fleet_median_ttvr_seconds"`
 	ActiveBridgesArmed         int         `json:"active_bridges_armed"`

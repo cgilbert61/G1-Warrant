@@ -2566,6 +2566,100 @@ func TestInvariant12_V103BackupAssassinationBlockKernelPersistenceAndWebAuthnFre
 	}
 }
 
+func TestInvariant13_SecurityRemediationF1ToF6_HTTPSeedRedactionCanaryFloorsAndWitnessMode(t *testing.T) {
+	t.Setenv("WARRANT_ENABLE_TEST_SMARTCARDS", "true")
+	t.Setenv("WARRANT_EXTERNAL_ANCHOR_URL", "")
+	h := setupIsolatedHarness(t)
+
+	// 1. F5: Verify /api/v1/bootstrap, /api/v1/personas, and /api/v1/principals NEVER expose seed_hex or raw persona seeds
+	personas := crypto.BuiltinTestPersonas()
+	for _, ep := range []string{"/api/v1/bootstrap", "/api/v1/personas", "/api/v1/principals"} {
+		resp, err := http.Get(h.httpSrv.URL + ep)
+		if err != nil {
+			t.Fatalf("GET %s failed: %v", ep, err)
+		}
+		rawBytes, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		bodyStr := string(rawBytes)
+		if strings.Contains(bodyStr, "seed_hex") || strings.Contains(bodyStr, "private_key") {
+			t.Fatalf("endpoint %s leaked private key field in HTTP body", ep)
+		}
+		for _, p := range personas {
+			if p.SeedHex != "" && strings.Contains(bodyStr, p.SeedHex) {
+				t.Fatalf("endpoint %s leaked raw seed hex for %s", ep, p.PrincipalID)
+			}
+		}
+	}
+
+	// 2. F6: Verify IN_PROCESS_LOCAL witness mode in /api/v1/scoreboard, /api/v1/ledger/status, and /api/v1/ledger/verify
+	sbResp, err := http.Get(h.httpSrv.URL + "/api/v1/scoreboard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sb models.GlobalScoreboard
+	_ = json.NewDecoder(sbResp.Body).Decode(&sb)
+	_ = sbResp.Body.Close()
+	if sb.WitnessMode != models.WitnessModeInProcessLocal {
+		t.Fatalf("expected scoreboard witness_mode=%s, got %q", models.WitnessModeInProcessLocal, sb.WitnessMode)
+	}
+
+	verResp, err := http.Post(h.httpSrv.URL+"/api/v1/ledger/verify", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lrep models.LedgerVerificationReport
+	_ = json.NewDecoder(verResp.Body).Decode(&lrep)
+	_ = verResp.Body.Close()
+	if lrep.WitnessMode != models.WitnessModeInProcessLocal {
+		t.Fatalf("expected ledger verify witness_mode=%s, got %q", models.WitnessModeInProcessLocal, lrep.WitnessMode)
+	}
+
+	// Verify EXTERNAL_NOTARY witness mode when WARRANT_EXTERNAL_ANCHOR_URL is configured
+	notarySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"receipt":"notary-ok"}`))
+	}))
+	defer notarySrv.Close()
+	t.Setenv("WARRANT_EXTERNAL_ANCHOR_URL", notarySrv.URL)
+	extOrch, err := server.NewOrchestrator(h.ctx, h.store, h.httpSrv.URL, h.httpSrv.URL, "test-kernel-seed", crypto.DefaultWebAuthnConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	extAPISrv := httptest.NewServer(extOrch.BuildHTTPHandler())
+	defer extAPISrv.Close()
+	stResp, err := http.Get(extAPISrv.URL + "/api/v1/ledger/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stDoc map[string]any
+	_ = json.NewDecoder(stResp.Body).Decode(&stDoc)
+	_ = stResp.Body.Close()
+	if stDoc["witness_mode"] != models.WitnessModeExternalNotary {
+		t.Fatalf("expected ledger status witness_mode=EXTERNAL_NOTARY when WARRANT_EXTERNAL_ANCHOR_URL is set, got %v", stDoc["witness_mode"])
+	}
+
+	// 3. F4: Verify end-to-end canary rollout halts and rolls back when ObservedSamples < MinCanarySamples
+	mintDualWarrant(t, h, "wrt-f4-floor", []string{"payments-ledger-api"}, h.alice, h.bob)
+	lowSampleDigest := "sha256:9999000000000000000000000000000000000000000000000000000000000099"
+	lowSamples := 40 // Standing Warrant MinCanarySamples defaults to 500
+	if err := h.orch.Deploy.RegisterImageProfile(h.ctx, fleetsim.ImageBehaviorProfile{
+		Digest:          lowSampleDigest,
+		ObservedSamples: &lowSamples,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sarifLowSamples := server.BuildDeterministicSARIF(
+		"CVE-2026-88401", "CWE-787", 9.1, true, "payments-ledger-api",
+		"sha256:a100000000000000000000000000000000000000000000000000000000000001",
+		lowSampleDigest,
+		"tls_heartbeat_ext_parse_vuln", "TLS_HEARTBEAT", 8080,
+	)
+	items, _ := h.orch.ExecuteSARIFRemediation(h.ctx, sarifLowSamples, "STATELESS_CLEAN")
+	if len(items) != 1 || items[0].StatusHealth != models.HealthRollbackFailed || !strings.Contains(items[0].BlockerCode, "CANARY_MIN_SAMPLES_NOT_MET") {
+		t.Fatalf("expected E2E canary rollout to block and roll back with CANARY_MIN_SAMPLES_NOT_MET, got %+v", items)
+	}
+}
+
 func replaceDBName(dsn, newDB string) string {
 	qIdx := strings.Index(dsn, "?")
 	query := ""

@@ -45,6 +45,7 @@ export interface BootstrapState {
 
 export interface GlobalScoreboard {
   freeze_state: FreezeState;
+  witness_mode?: 'EXTERNAL_NOTARY' | 'IN_PROCESS_LOCAL';
   active_warrants_count: number;
   fleet_median_ttvr_seconds: number;
   active_bridges_armed: number;
@@ -82,7 +83,6 @@ export interface TestSmartcardPersona {
   alg: string;
   public_key_b64: string;
   key_fingerprint: string;
-  seed_hex: string;
   badge_label: string;
 }
 
@@ -388,6 +388,7 @@ export interface AgentLedgerEntry {
 
 export interface LedgerVerificationReport {
   all_valid: boolean;
+  witness_mode?: 'EXTERNAL_NOTARY' | 'IN_PROCESS_LOCAL';
   external_anchor_verified?: boolean;
   latest_checkpoint_id?: string;
   latest_combined_merkle_root?: string;
@@ -448,6 +449,7 @@ export interface LiveFeedStatus {
 
 export interface BootstrapSnapshot {
   scoreboard: GlobalScoreboard;
+  witness_mode?: 'EXTERNAL_NOTARY' | 'IN_PROCESS_LOCAL';
   bootstrap_state?: BootstrapState;
   principals: Principal[];
   test_personas: TestSmartcardPersona[];

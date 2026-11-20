@@ -202,6 +202,9 @@ func VerifySingleSignature(payloadType string, rawPayload []byte, sig Signature,
 	if pk == nil {
 		return errors.New("nil principal key")
 	}
+	if IsForbiddenLegacyPublicSeedKey(pk.PublicKeyBytes) {
+		return fmt.Errorf("FORBIDDEN_LEGACY_PUBLIC_SEED_KEY: signature uses revoked public-string-derived key %s", pk.KeyID)
+	}
 	if pk.Revoked {
 		return fmt.Errorf("REVOKED_PRINCIPAL_OR_KEY: principal %s (%s) key %s is revoked (%s)", pk.PrincipalID, pk.Email, pk.KeyID, pk.RevokeReason)
 	}

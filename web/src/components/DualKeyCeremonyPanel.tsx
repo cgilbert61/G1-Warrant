@@ -1,7 +1,13 @@
 import React, { useState } from 'react';
-import { KeyRound, ShieldAlert, CheckCircle2, Fingerprint, Usb } from 'lucide-react';
+import { KeyRound, ShieldAlert, CheckCircle2, Fingerprint, Usb, Upload } from 'lucide-react';
 import type { DSSEEnvelope, DSSESignature, Principal, TestSmartcardPersona } from '../types';
-import { createUnsignedDSSE, signPAEWithSmartcardPersona, signPAEWithWebAuthn } from '../lib/crypto';
+import {
+  createUnsignedDSSE,
+  hasLocalPersonaKey,
+  importLocalEd25519KeyJSON,
+  signPAEWithSmartcardPersona,
+  signPAEWithWebAuthn,
+} from '../lib/crypto';
 
 interface DualKeyCeremonyPanelProps {
   title: string;
@@ -39,7 +45,23 @@ export const DualKeyCeremonyPanel: React.FC<DualKeyCeremonyPanelProps> = ({
     paeBytes: Uint8Array;
   } | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [loadedKeyNotice, setLoadedKeyNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  const handleLocalKeyFile = async (e: React.ChangeEvent<{ files: FileList | null; value: string }>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setErrorMsg(null);
+    try {
+      const text = await file.text();
+      const imported = importLocalEd25519KeyJSON(text);
+      setLoadedKeyNotice(`Loaded local key ${imported.keyId} (fp:${imported.fingerprint.slice(0, 12)}) in browser memory`);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to parse local .priv.json key');
+    } finally {
+      e.target.value = '';
+    }
+  };
 
   const ensureUnsigned = () => {
     if (lockedEnvelope) return lockedEnvelope;
@@ -107,21 +129,39 @@ export const DualKeyCeremonyPanel: React.FC<DualKeyCeremonyPanelProps> = ({
 
   return (
     <div className="border border-slate-300 bg-slate-50 rounded p-4 space-y-3">
-      <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
         <div className="flex items-center gap-2">
           <KeyRound className="w-4 h-4 text-slate-700" />
           <span className="text-xs font-bold uppercase tracking-wider text-slate-800">{title}</span>
         </div>
-        {(slot1Sig || slot2Sig) && (
-          <button
-            type="button"
-            onClick={resetCeremony}
-            className="text-xs text-slate-600 hover:text-slate-900 underline"
-          >
-            Reset Slots
-          </button>
-        )}
+        <div className="flex items-center gap-3">
+          <label className="inline-flex items-center gap-1 text-[11px] font-mono text-slate-700 hover:text-slate-950 cursor-pointer border border-slate-300 bg-white px-2 py-0.5 rounded">
+            <Upload className="w-3 h-3" />
+            <span>Load Local .priv.json</span>
+            <input
+              type="file"
+              aria-label="Load local Ed25519 key JSON file"
+              accept=".json,application/json"
+              onChange={handleLocalKeyFile}
+              className="sr-only"
+            />
+          </label>
+          {(slot1Sig || slot2Sig) && (
+            <button
+              type="button"
+              onClick={resetCeremony}
+              className="text-xs text-slate-600 hover:text-slate-900 underline"
+            >
+              Reset Slots
+            </button>
+          )}
+        </div>
       </div>
+      {loadedKeyNotice && (
+        <div role="status" className="text-[11px] font-mono text-emerald-900 bg-emerald-50 border border-emerald-300 px-2.5 py-1.5 rounded">
+          {loadedKeyNotice} ({testPersonas.filter(hasLocalPersonaKey).length} matching persona key(s) unlocked locally)
+        </div>
+      )}
 
       {isMobileViewport && (
         <div
