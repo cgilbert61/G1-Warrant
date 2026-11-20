@@ -6,8 +6,11 @@ import base64
 import dataclasses
 import hashlib
 import json
+import os
+import stat
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 ROLE_SERVICE_OWNER = "SERVICE_OWNER"
@@ -17,6 +20,7 @@ PAYLOAD_TYPE_WARRANT = "application/vnd.g1163rt.warrant.v1+json"
 PAYLOAD_TYPE_THAW = "application/vnd.g1163rt.freeze-thaw.v1+json"
 PAYLOAD_TYPE_EXCEPTION = "application/vnd.g1163rt.exception-resolution.v1+json"
 PAYLOAD_TYPE_ATTESTATION = "application/vnd.g1163rt.oscal-attestation.v1+json"
+PAYLOAD_TYPE_PRINCIPAL_GOVERNANCE = "application/vnd.g1163rt.principal-governance.v1+json"
 
 
 def sha256_hex(data: bytes) -> str:
@@ -47,7 +51,6 @@ def _jcs_str(val: Any) -> str:
     if isinstance(val, (list, tuple)):
         return "[" + ",".join(_jcs_str(item) for item in val) + "]"
     if isinstance(val, dict):
-        # RFC 8785 lexicographical sort by UTF-16 code units
         sorted_keys = sorted(val.keys(), key=lambda k: str(k).encode("utf-16-be"))
         members = [f"{json.dumps(str(k), ensure_ascii=False)}:{_jcs_str(val[k])}" for k in sorted_keys]
         return "{" + ",".join(members) + "}"
@@ -72,6 +75,44 @@ def _decode_b64_any(s: str) -> bytes:
 
 
 @dataclasses.dataclass
+class PublicIdentityBundle:
+    """Non-custodial public identity manifest (<name>.pub.json) with zero private key material."""
+
+    principal_id: str
+    email: str
+    display_name: str
+    role: str
+    key_id: str
+    alg: str
+    public_key_b64: str
+    key_fingerprint: str
+    created_at: str
+
+    def to_dict(self) -> dict[str, str]:
+        return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> PublicIdentityBundle:
+        for k in d:
+            lk = str(k).lower().strip()
+            if "private_key" in lk or "priv_key" in lk or lk == "seed_hex" or "secret_key" in lk:
+                raise ValueError(
+                    f"PRIVATE_KEY_REJECTED_CLIENT_SIDE: field {k!r} found; pass <name>.pub.json instead of <name>.priv.json"
+                )
+        return cls(
+            principal_id=str(d["principal_id"]),
+            email=str(d["email"]),
+            display_name=str(d.get("display_name", d["principal_id"])),
+            role=str(d["role"]),
+            key_id=str(d.get("key_id", "")),
+            alg=str(d.get("alg", "Ed25519")),
+            public_key_b64=str(d["public_key_b64"]),
+            key_fingerprint=str(d.get("key_fingerprint", "")),
+            created_at=str(d.get("created_at", "")),
+        )
+
+
+@dataclasses.dataclass
 class SignerKeyBundle:
     """Portable Ed25519 AC-5 signing identity compatible with Go's warrantsdk.SignerKeyBundle."""
 
@@ -88,6 +129,19 @@ class SignerKeyBundle:
 
     def to_dict(self) -> dict[str, str]:
         return dataclasses.asdict(self)
+
+    def to_public_identity(self) -> PublicIdentityBundle:
+        return PublicIdentityBundle(
+            principal_id=self.principal_id,
+            email=self.email,
+            display_name=self.display_name,
+            role=self.role,
+            key_id=self.key_id,
+            alg=self.alg,
+            public_key_b64=self.public_key_b64,
+            key_fingerprint=self.key_fingerprint,
+            created_at=self.created_at,
+        )
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> SignerKeyBundle:
@@ -111,7 +165,7 @@ class SignerKeyBundle:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
         raw_priv = _decode_b64_any(self.private_key_b64)
-        seed = raw_priv[:32]  # Go ed25519.PrivateKey stores 64 bytes (32-byte seed || 32-byte pubkey)
+        seed = raw_priv[:32]
         priv_key = Ed25519PrivateKey.from_private_bytes(seed)
 
         raw_payload = _decode_b64_any(envelope["payload"])
@@ -134,6 +188,56 @@ class SignerKeyBundle:
         )
         envelope["signatures"] = sigs
         return envelope
+
+
+def resolve_split_key_paths(out_prefix: str | Path) -> tuple[Path, Path]:
+    base = str(out_prefix).strip()
+    for suf in (".priv.json", ".pub.json", ".json"):
+        if base.lower().endswith(suf):
+            base = base[: -len(suf)]
+            break
+    if not base:
+        base = "signer"
+    return Path(f"{base}.priv.json"), Path(f"{base}.pub.json")
+
+
+def write_split_keypair_files(out_prefix: str | Path, bundle: SignerKeyBundle) -> tuple[Path, Path]:
+    """Write <name>.priv.json (0600 on POSIX) and <name>.pub.json (0644, public-only)."""
+    priv_path, pub_path = resolve_split_key_paths(out_prefix)
+    priv_text = json.dumps(bundle.to_dict(), indent=2)
+    pub_text = json.dumps(bundle.to_public_identity().to_dict(), indent=2)
+
+    if os.name != "nt":
+        fd = os.open(str(priv_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, priv_text.encode("utf-8"))
+        finally:
+            os.close(fd)
+        os.chmod(priv_path, 0o600)
+        mode = stat.S_IMODE(priv_path.stat().st_mode)
+        if mode != 0o600:
+            raise PermissionError(f"Expected 0600 permissions on {priv_path}, got {oct(mode)}")
+    else:
+        priv_path.write_text(priv_text, encoding="utf-8")
+
+    pub_path.write_text(pub_text, encoding="utf-8")
+    if os.name != "nt":
+        os.chmod(pub_path, 0o644)
+    return priv_path, pub_path
+
+
+def load_public_identity_file(path_or_text: str | Path | bytes) -> PublicIdentityBundle:
+    """Load <name>.pub.json and strictly reject any file containing private_key* fields."""
+    if isinstance(path_or_text, Path):
+        raw_str = path_or_text.read_text(encoding="utf-8")
+    elif isinstance(path_or_text, bytes):
+        raw_str = path_or_text.decode("utf-8")
+    else:
+        raw_str = path_or_text
+    data = json.loads(raw_str)
+    if not isinstance(data, dict):
+        raise ValueError("Expected JSON object in public identity file")
+    return PublicIdentityBundle.from_dict(data)
 
 
 def generate_ed25519_signer_bundle(
@@ -182,6 +286,65 @@ def draft_unsigned_envelope(payload_type: str, payload_obj: Any) -> dict[str, An
         "payload": base64.b64encode(canon).decode("ascii"),
         "signatures": [],
     }
+
+
+def draft_governance_envelope(
+    action: str,
+    fields: dict[str, Any] | None = None,
+    ttl_seconds: int = 300,
+) -> dict[str, Any]:
+    """Create an unsigned Principal Governance DSSEv1 envelope with single-use envelope_id and <=15m TTL."""
+    if ttl_seconds <= 0 or ttl_seconds > 900:
+        ttl_seconds = 300
+    now = datetime.now(timezone.utc)
+    exp = now + timedelta(seconds=ttl_seconds)
+    payload: dict[str, Any] = dict(fields or {})
+    payload.setdefault("envelope_id", f"gov-{uuid.uuid4()}")
+    payload["action"] = action
+    payload["issued_at"] = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    payload["expires_at"] = exp.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return draft_unsigned_envelope(PAYLOAD_TYPE_PRINCIPAL_GOVERNANCE, payload)
+
+
+def draft_principal_enroll_envelope(
+    public_identity: PublicIdentityBundle | SignerKeyBundle | dict[str, Any],
+    ttl_seconds: int = 300,
+) -> dict[str, Any]:
+    """Create an unsigned 2-of-2 DSSE Principal Governance envelope (ENROLL_PRINCIPAL) for post-seal enrollment."""
+    if isinstance(public_identity, SignerKeyBundle):
+        pub = public_identity.to_public_identity().to_dict()
+    elif isinstance(public_identity, PublicIdentityBundle):
+        pub = public_identity.to_dict()
+    else:
+        pub = PublicIdentityBundle.from_dict(dict(public_identity)).to_dict()
+    return draft_governance_envelope(
+        "ENROLL_PRINCIPAL",
+        {
+            "principal_id": pub["principal_id"],
+            "email": pub["email"],
+            "display_name": pub.get("display_name", ""),
+            "role": pub["role"],
+            "key_id": pub.get("key_id", ""),
+            "alg": pub.get("alg", "Ed25519"),
+            "public_key_b64": pub["public_key_b64"],
+        },
+        ttl_seconds=ttl_seconds,
+    )
+
+
+def draft_principal_revoke_envelope(
+    target_principal_id: str = "",
+    target_key_fingerprint: str = "",
+    reason_code: str = "SDK_KEY_REVOCATION",
+    ttl_seconds: int = 300,
+) -> dict[str, Any]:
+    """Create an unsigned 1-of-2 DSSE Principal Governance envelope (REVOKE_PRINCIPAL)."""
+    fields: dict[str, Any] = {"reason_code": reason_code or "SDK_KEY_REVOCATION"}
+    if target_principal_id:
+        fields["target_principal_id"] = target_principal_id
+    if target_key_fingerprint:
+        fields["target_key_fingerprint"] = target_key_fingerprint
+    return draft_governance_envelope("REVOKE_PRINCIPAL", fields, ttl_seconds=ttl_seconds)
 
 
 def draft_warrant_envelope(
@@ -254,11 +417,7 @@ def verify_oscal_bundle_offline(bundle: bytes | str | dict[str, Any], kernel_pub
     from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-    if isinstance(bundle, (bytes, str)):
-        doc = json.loads(bundle)
-    else:
-        doc = bundle
-
+    doc = json.loads(bundle) if isinstance(bundle, (bytes, str)) else bundle
     env = doc["dsse_envelope"]
     raw_payload = _decode_b64_any(env["payload"])
     parsed_payload = json.loads(raw_payload.decode("utf-8"))

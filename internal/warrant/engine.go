@@ -176,8 +176,88 @@ func (e *Engine) SubmitDualSignedWarrant(ctx context.Context, env crypto.Envelop
 	if err := e.store.AppendWarrantEnvelope(ctx, rec); err != nil {
 		return nil, err
 	}
+	// Automatically seal genesis bootstrap upon the first valid 2-of-2 Standing Warrant submission
+	_, _ = e.store.SealBootstrap(ctx, dualRes.Slot1.PrincipalID+"+"+dualRes.Slot2.PrincipalID, "AUTO_SEALED_ON_FIRST_STANDING_WARRANT")
 	e.emit("WARRANT_MINTED", rec)
 	return rec, nil
+}
+
+// MaxGovernanceTTL bounds Principal Governance and Emergency DSSE envelopes to prevent replay/pre-signing hoarding.
+const MaxGovernanceTTL = 15 * time.Minute
+
+func validateGovernanceTiming(gp models.PrincipalGovernancePayload, expectedAction string) (time.Time, error) {
+	if strings.TrimSpace(gp.EnvelopeID) == "" {
+		return time.Time{}, errors.New("GOVERNANCE_MISSING_ENVELOPE_ID: single-use envelope_id is required")
+	}
+	if gp.Action != expectedAction {
+		return time.Time{}, fmt.Errorf("GOVERNANCE_ACTION_MISMATCH: got %q want %q", gp.Action, expectedAction)
+	}
+	now := time.Now().UTC()
+	exp, err := time.Parse(time.RFC3339, strings.TrimSpace(gp.ExpiresAt))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("GOVERNANCE_INVALID_EXPIRES_AT: valid RFC3339 expires_at is required: %w", err)
+	}
+	if !now.Before(exp) {
+		return time.Time{}, fmt.Errorf("GOVERNANCE_ENVELOPE_EXPIRED: envelope expired at %s", exp.Format(time.RFC3339))
+	}
+	if exp.Sub(now) > MaxGovernanceTTL {
+		return time.Time{}, fmt.Errorf("GOVERNANCE_ENVELOPE_TTL_EXCEEDED: expires_at exceeds maximum 15m TTL ceiling")
+	}
+	if strings.TrimSpace(gp.IssuedAt) != "" {
+		iss, iErr := time.Parse(time.RFC3339, strings.TrimSpace(gp.IssuedAt))
+		if iErr != nil {
+			return time.Time{}, fmt.Errorf("GOVERNANCE_INVALID_ISSUED_AT: %w", iErr)
+		}
+		if exp.Sub(iss) > MaxGovernanceTTL || iss.After(now.Add(2*time.Minute)) {
+			return time.Time{}, errors.New("GOVERNANCE_ENVELOPE_TTL_EXCEEDED: envelope lifetime must be <= 15m")
+		}
+	}
+	return exp, nil
+}
+
+// VerifyDualGovernanceEnvelope verifies a 2-of-2 DSSE Principal Governance envelope (e.g. ENROLL_PRINCIPAL)
+// signed by active SERVICE_OWNER + AUTHORIZING_OFFICIAL principals, enforces <=15m TTL, and consumes single-use envelope_id.
+func (e *Engine) VerifyDualGovernanceEnvelope(ctx context.Context, env crypto.Envelope, expectedAction string) (*models.PrincipalGovernancePayload, *crypto.DualHumanVerificationResult, error) {
+	resolver := db.StoreKeyResolver{Store: e.store, Ctx: ctx}
+	dualRes, err := crypto.VerifyDualHumanCeremony(&env, crypto.PayloadTypePrincipalGovernance, resolver, e.webauthnCfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	var gp models.PrincipalGovernancePayload
+	if err := json.Unmarshal(dualRes.CanonicalPayload, &gp); err != nil {
+		return nil, nil, fmt.Errorf("parse governance payload: %w", err)
+	}
+	exp, err := validateGovernanceTiming(gp, expectedAction)
+	if err != nil {
+		return nil, nil, err
+	}
+	signerSummary := dualRes.Slot1.PrincipalID + "+" + dualRes.Slot2.PrincipalID
+	if err := e.store.ConsumeGovernanceEnvelopeNonce(ctx, gp.EnvelopeID, expectedAction, dualRes.PayloadSHA256, signerSummary, exp); err != nil {
+		return nil, nil, err
+	}
+	return &gp, dualRes, nil
+}
+
+// VerifySingleGovernanceEnvelope verifies a 1-of-2 DSSE Principal Governance envelope (e.g. REVOKE_PRINCIPAL, EMERGENCY_FREEZE)
+// signed by ANY single active SERVICE_OWNER or AUTHORIZING_OFFICIAL principal, enforces <=15m TTL, and consumes single-use envelope_id.
+func (e *Engine) VerifySingleGovernanceEnvelope(ctx context.Context, env crypto.Envelope, expectedAction string) (*models.PrincipalGovernancePayload, *crypto.SinglePrincipalVerificationResult, error) {
+	resolver := db.StoreKeyResolver{Store: e.store, Ctx: ctx}
+	singleRes, err := crypto.VerifySingleActivePrincipalCeremony(&env, crypto.PayloadTypePrincipalGovernance, resolver, e.webauthnCfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	var gp models.PrincipalGovernancePayload
+	if err := json.Unmarshal(singleRes.CanonicalPayload, &gp); err != nil {
+		return nil, nil, fmt.Errorf("parse governance payload: %w", err)
+	}
+	exp, err := validateGovernanceTiming(gp, expectedAction)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := e.store.ConsumeGovernanceEnvelopeNonce(ctx, gp.EnvelopeID, expectedAction, singleRes.PayloadSHA256, singleRes.Signer.PrincipalID, exp); err != nil {
+		return nil, nil, err
+	}
+	return &gp, singleRes, nil
 }
 
 // ReverifyWarrantForExecution cryptographically re-verifies both Standing Warrant signatures

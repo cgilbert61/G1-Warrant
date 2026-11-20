@@ -251,6 +251,62 @@ export interface BrowserDSSEVerificationResult {
 }
 
 /**
+ * Builds and signs a 1-of-2 DSSEv1 Principal Governance envelope in-browser
+ * using an active FIPS/Ed25519 Test Smartcard persona (when sandbox demo mode is enabled).
+ */
+export function buildSinglePrincipalGovernanceEnvelope(
+  action: string,
+  fields: Record<string, unknown>,
+  persona: TestSmartcardPersona
+): DSSEEnvelope {
+  const now = new Date();
+  const exp = new Date(now.getTime() + 5 * 60 * 1000);
+  const randSuffix = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+  const payloadObj: Record<string, unknown> = {
+    ...fields,
+    envelope_id: `gov-ui-${randSuffix}`,
+    action,
+    issued_at: now.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+    expires_at: exp.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+  };
+  const { envelope, paeBytes } = createUnsignedDSSE(
+    'application/vnd.g1163rt.principal-governance.v1+json',
+    payloadObj
+  );
+  envelope.signatures.push(signPAEWithSmartcardPersona(1, persona, paeBytes));
+  return envelope;
+}
+
+/**
+ * Builds and signs a 2-of-2 DSSEv1 Principal Governance envelope (ENROLL_PRINCIPAL) in-browser
+ * using active Slot 1 (SERVICE_OWNER) and Slot 2 (AUTHORIZING_OFFICIAL) sandbox personas.
+ */
+export function buildDualPrincipalGovernanceEnvelope(
+  action: string,
+  fields: Record<string, unknown>,
+  soPersona: TestSmartcardPersona,
+  aoPersona: TestSmartcardPersona
+): DSSEEnvelope {
+  const now = new Date();
+  const exp = new Date(now.getTime() + 5 * 60 * 1000);
+  const randSuffix = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+  const payloadObj: Record<string, unknown> = {
+    ...fields,
+    envelope_id: `gov-ui2-${randSuffix}`,
+    action,
+    issued_at: now.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+    expires_at: exp.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+  };
+  const { envelope, paeBytes } = createUnsignedDSSE(
+    'application/vnd.g1163rt.principal-governance.v1+json',
+    payloadObj
+  );
+  envelope.signatures.push(signPAEWithSmartcardPersona(1, soPersona, paeBytes));
+  envelope.signatures.push(signPAEWithSmartcardPersona(2, aoPersona, paeBytes));
+  return envelope;
+}
+
+/**
  * In-Browser DSSE + RFC 8785 JCS Cryptographic Verifier (View 5 & External /auditor Vault).
  * Performs real client-side JCS canonicalization, PAE reconstruction, SHA-256 hashing,
  * and Ed25519 mathematical signature verification.

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,12 +17,15 @@ import (
 
 // Client is a thread-safe Go SDK client for the G1-Warrant Control Plane (warrantd).
 type Client struct {
-	baseURL      string
-	httpClient   *http.Client
-	auditorToken string
-	sensorToken  string
-	adminToken   string
-	userAgent    string
+	baseURL       string
+	httpClient    *http.Client
+	auditorToken  string
+	sensorToken   string
+	adminToken    string
+	operatorToken string
+	intakeToken   string
+	signerBundle  *SignerKeyBundle
+	userAgent     string
 }
 
 // Option configures a Client instance.
@@ -59,11 +63,36 @@ func WithSensorToken(token string) Option {
 	}
 }
 
-// WithAdminToken attaches the out-of-band IAM registrar token (WARRANT_BOOTSTRAP_ADMIN_TOKEN)
-// required to enroll new AC-5 principal public keys via POST /api/v1/principals/register.
+// WithAdminToken attaches the one-shot genesis registrar token (WARRANT_BOOTSTRAP_ADMIN_TOKEN)
+// accepted by POST /api/v1/principals/register prior to bootstrap sealing.
 func WithAdminToken(token string) Option {
 	return func(c *Client) {
 		c.adminToken = strings.TrimSpace(token)
+	}
+}
+
+// WithOperatorToken attaches a dedicated operator credential (WARRANT_OPERATOR_TOKEN)
+// for emergency freeze, quarantined rollback, auditor-token minting, and feed operations.
+func WithOperatorToken(token string) Option {
+	return func(c *Client) {
+		c.operatorToken = strings.TrimSpace(token)
+	}
+}
+
+// WithIntakeToken attaches a dedicated scanner intake credential (WARRANT_INTAKE_TOKEN)
+// for /api/v1/intake/sarif and /api/v1/intake/secrets.
+func WithIntakeToken(token string) Option {
+	return func(c *Client) {
+		c.intakeToken = strings.TrimSpace(token)
+	}
+}
+
+// WithSignerBundle configures an active enrolled Principal SignerKeyBundle so 1-of-2
+// asymmetric governance & emergency operations (RevokePrincipal, TriggerFreeze, EmergencyRollback,
+// MintAuditorToken, SealBootstrap) are automatically signed with single-use DSSE envelopes.
+func WithSignerBundle(bundle *SignerKeyBundle) Option {
+	return func(c *Client) {
+		c.signerBundle = bundle
 	}
 }
 
@@ -160,7 +189,7 @@ func (c *Client) ListPrincipals(ctx context.Context) ([]Principal, error) {
 }
 
 // RegisterPrincipal enrolls a public Ed25519 AC-5 signing identity (Slot 1 SERVICE_OWNER or Slot 2 AUTHORIZING_OFFICIAL)
-// into N1 via POST /api/v1/principals/register (requires WithAdminToken matching WARRANT_BOOTSTRAP_ADMIN_TOKEN).
+// into N1 via POST /api/v1/principals/register (requires WithAdminToken prior to bootstrap sealing; once sealed, use RegisterPrincipalDualSigned).
 func (c *Client) RegisterPrincipal(ctx context.Context, req RegisterPrincipalRequest) (*Principal, error) {
 	var out Principal
 	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/principals/register", req, &out); err != nil {
@@ -169,10 +198,60 @@ func (c *Client) RegisterPrincipal(ctx context.Context, req RegisterPrincipalReq
 	return &out, nil
 }
 
-// RevokePrincipal revokes a principal or hardware key fingerprint in N1, immediately invalidating associated warrants.
+// RegisterPrincipalDualSigned enrolls a new or rotated principal public key after genesis bootstrap has been sealed,
+// submitting a 2-of-2 DSSE Principal Governance envelope (ENROLL_PRINCIPAL) signed by active SO + AO principals.
+func (c *Client) RegisterPrincipalDualSigned(ctx context.Context, env Envelope) (*Principal, error) {
+	var out Principal
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/principals/register", env, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SealBootstrap permanently seals one-shot genesis bootstrap enrollment via POST /api/v1/bootstrap/seal
+// (requires >=1 active SERVICE_OWNER and >=1 active AUTHORIZING_OFFICIAL).
+func (c *Client) SealBootstrap(ctx context.Context) (*BootstrapState, error) {
+	var out BootstrapState
+	if err := c.doActionJSON(ctx, http.MethodPost, "/api/v1/bootstrap/seal", GovActionSealBootstrap, PrincipalGovernancePayload{}, map[string]any{}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SealBootstrapSigned permanently seals genesis bootstrap using an explicit DSSE Principal Governance envelope.
+func (c *Client) SealBootstrapSigned(ctx context.Context, env Envelope) (*BootstrapState, error) {
+	var out BootstrapState
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/bootstrap/seal", env, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RevokePrincipal revokes a principal or hardware key fingerprint in N1 using a 1-of-2 DSSE Principal Governance signature
+// (automatically signed when WithSignerBundle is configured on Client).
 func (c *Client) RevokePrincipal(ctx context.Context, req RevokePrincipalRequest) (*PrincipalRevocation, error) {
+	if c.signerBundle != nil {
+		env, _, err := DraftPrincipalRevokeEnvelope(req.PrincipalID, req.KeyFingerprint, req.ReasonCode, 5*time.Minute)
+		if err != nil {
+			return nil, err
+		}
+		if err := c.signerBundle.SignEnvelope(1, env); err != nil {
+			return nil, err
+		}
+		return c.RevokePrincipalSigned(ctx, *env)
+	}
 	var out PrincipalRevocation
 	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/principals/revoke", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RevokePrincipalSigned submits a pre-signed 1-of-2 DSSE Principal Governance envelope (REVOKE_PRINCIPAL)
+// signed by any single active enrolled principal to POST /api/v1/principals/revoke.
+func (c *Client) RevokePrincipalSigned(ctx context.Context, env Envelope) (*PrincipalRevocation, error) {
+	var out PrincipalRevocation
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/principals/revoke", env, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -218,7 +297,10 @@ func (c *Client) TriggerFreeze(ctx context.Context, mode, actor, reasonCode stri
 		"actor":       actor,
 		"reason_code": reasonCode,
 	}
-	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/freeze", body, &out); err != nil {
+	if err := c.doActionJSON(ctx, http.MethodPost, "/api/v1/freeze", GovActionEmergencyFreeze, PrincipalGovernancePayload{
+		FreezeMode: mode,
+		ReasonCode: reasonCode,
+	}, body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -259,7 +341,10 @@ func (c *Client) EmergencyRollback(ctx context.Context, remediationID, actor, re
 		"actor":  actor,
 		"reason": reason,
 	}
-	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/pipeline/"+url.PathEscape(remediationID)+"/emergency-rollback", body, &out); err != nil {
+	if err := c.doActionJSON(ctx, http.MethodPost, "/api/v1/pipeline/"+url.PathEscape(remediationID)+"/emergency-rollback", GovActionEmergencyRollback, PrincipalGovernancePayload{
+		RemediationID: remediationID,
+		ReasonCode:    reason,
+	}, body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -332,7 +417,9 @@ func (c *Client) SendTetragonEvent(ctx context.Context, ev TetragonDriftEvent) (
 // "inject-kev", "bad-syscall", "stateful-ddl", "runtime-drift", "secret-exposure", "in-pod-webshell", or "poisoned-config".
 func (c *Client) SimulateScenario(ctx context.Context, scenario string) (map[string]any, error) {
 	var out map[string]any
-	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/simulate/"+url.PathEscape(scenario), map[string]any{}, &out); err != nil {
+	if err := c.doActionJSON(ctx, http.MethodPost, "/api/v1/simulate/"+url.PathEscape(scenario), GovActionSimulationDrill, PrincipalGovernancePayload{
+		Scenario: scenario,
+	}, map[string]any{}, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -433,7 +520,11 @@ func (c *Client) MintAuditorToken(ctx context.Context, label string, scopedAttes
 		"scoped_attestation_ids": scopedAttestationIDs,
 		"ttl_hours":              ttlHours,
 	}
-	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/auditor-tokens", body, &out); err != nil {
+	if err := c.doActionJSON(ctx, http.MethodPost, "/api/v1/auditor-tokens", GovActionMintAuditorToken, PrincipalGovernancePayload{
+		AuditorLabel:         label,
+		ScopedAttestationIDs: scopedAttestationIDs,
+		TTLHours:             ttlHours,
+	}, body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -479,10 +570,10 @@ func (c *Client) ListLedgerCheckpoints(ctx context.Context) ([]LedgerCheckpoint,
 	return out, nil
 }
 
-// CreateLedgerCheckpoint anchors a new DSSE-signed Merkle Root checkpoint across all 3 ledger tables.
+// CreateLedgerCheckpoint anchors a new DSSE-signed Merkle Root checkpoint across all 6 immutable tables.
 func (c *Client) CreateLedgerCheckpoint(ctx context.Context) (*LedgerCheckpoint, error) {
 	var out LedgerCheckpoint
-	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/ledger/checkpoints", map[string]any{}, &out); err != nil {
+	if err := c.doActionJSON(ctx, http.MethodPost, "/api/v1/ledger/checkpoints", GovActionCreateCheckpoint, PrincipalGovernancePayload{}, map[string]any{}, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -500,7 +591,7 @@ func (c *Client) GetFeedStatus(ctx context.Context) (*LiveFeedStatus, error) {
 // UpdateFeedConfig updates runtime threat feed settings (e.g. toggling "offline" vs "live" mode).
 func (c *Client) UpdateFeedConfig(ctx context.Context, cfg FeedRuntimeConfig) (*FeedRuntimeConfig, error) {
 	var out FeedRuntimeConfig
-	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/feeds/config", cfg, &out); err != nil {
+	if err := c.doActionJSON(ctx, http.MethodPost, "/api/v1/feeds/config", GovActionFeedMutation, PrincipalGovernancePayload{}, cfg, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -509,7 +600,7 @@ func (c *Client) UpdateFeedConfig(ctx context.Context, cfg FeedRuntimeConfig) (*
 // SyncCISAKEV triggers an immediate CISA Known Exploited Vulnerabilities pull sanitized via warrant-extractor.
 func (c *Client) SyncCISAKEV(ctx context.Context) (*FeedSyncRun, error) {
 	var out FeedSyncRun
-	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/feeds/sync/kev", map[string]any{}, &out); err != nil {
+	if err := c.doActionJSON(ctx, http.MethodPost, "/api/v1/feeds/sync/kev", GovActionFeedMutation, PrincipalGovernancePayload{}, map[string]any{}, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -522,7 +613,7 @@ func (c *Client) SyncOSV(ctx context.Context, autoIngestFirst bool) (*OSVSyncRes
 		path += "?ingest=true"
 	}
 	var out OSVSyncResponse
-	if err := c.doJSON(ctx, http.MethodPost, path, map[string]any{}, &out); err != nil {
+	if err := c.doActionJSON(ctx, http.MethodPost, path, GovActionFeedMutation, PrincipalGovernancePayload{}, map[string]any{}, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -535,7 +626,7 @@ func (c *Client) IngestOSVAdvisory(ctx context.Context, osvID, serviceID string)
 		"osv_id":     osvID,
 		"service_id": serviceID,
 	}
-	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/feeds/osv/ingest", body, &out); err != nil {
+	if err := c.doActionJSON(ctx, http.MethodPost, "/api/v1/feeds/osv/ingest", GovActionFeedMutation, PrincipalGovernancePayload{}, body, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -599,7 +690,32 @@ func (c *Client) StreamEvents(ctx context.Context, handler func(SSEEvent) error)
 	return scanner.Err()
 }
 
+func (c *Client) doActionJSON(ctx context.Context, method, path, govAction string, govFields PrincipalGovernancePayload, reqBody any, dst any) error {
+	var extraHeaders map[string]string
+	if c.signerBundle != nil && govAction != "" {
+		env, _, err := DraftGovernanceEnvelope(govAction, govFields, 5*time.Minute)
+		if err != nil {
+			return err
+		}
+		if err := c.signerBundle.SignEnvelope(1, env); err != nil {
+			return err
+		}
+		envRaw, err := json.Marshal(env)
+		if err != nil {
+			return err
+		}
+		extraHeaders = map[string]string{
+			"X-Warrant-Governance-DSSE": base64.StdEncoding.EncodeToString(envRaw),
+		}
+	}
+	return c.doJSONWithHeaders(ctx, method, path, reqBody, dst, extraHeaders)
+}
+
 func (c *Client) doJSON(ctx context.Context, method, path string, reqBody any, dst any) error {
+	return c.doJSONWithHeaders(ctx, method, path, reqBody, dst, nil)
+}
+
+func (c *Client) doJSONWithHeaders(ctx context.Context, method, path string, reqBody any, dst any, extraHeaders map[string]string) error {
 	var payload []byte
 	var contentType string
 	if reqBody != nil {
@@ -610,7 +726,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, reqBody any, d
 		payload = raw
 		contentType = "application/json"
 	}
-	respBytes, err := c.doRaw(ctx, method, path, contentType, payload)
+	respBytes, err := c.doRawWithHeaders(ctx, method, path, contentType, payload, extraHeaders)
 	if err != nil {
 		return err
 	}
@@ -623,6 +739,10 @@ func (c *Client) doJSON(ctx context.Context, method, path string, reqBody any, d
 }
 
 func (c *Client) doRaw(ctx context.Context, method, path, contentType string, body []byte) ([]byte, error) {
+	return c.doRawWithHeaders(ctx, method, path, contentType, body, nil)
+}
+
+func (c *Client) doRawWithHeaders(ctx context.Context, method, path, contentType string, body []byte, extraHeaders map[string]string) ([]byte, error) {
 	var bodyReader io.Reader
 	if body != nil {
 		bodyReader = bytes.NewReader(body)
@@ -643,6 +763,15 @@ func (c *Client) doRaw(ctx context.Context, method, path, contentType string, bo
 	}
 	if c.adminToken != "" {
 		req.Header.Set("X-Warrant-Admin-Token", c.adminToken)
+	}
+	if c.operatorToken != "" {
+		req.Header.Set("X-Warrant-Operator-Token", c.operatorToken)
+	}
+	if c.intakeToken != "" {
+		req.Header.Set("X-Warrant-Intake-Token", c.intakeToken)
+	}
+	for k, v := range extraHeaders {
+		req.Header.Set(k, v)
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

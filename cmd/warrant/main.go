@@ -23,9 +23,12 @@ func main() {
 	if baseURL == "" {
 		baseURL = "http://localhost:8080"
 	}
+	opToken := strings.TrimSpace(os.Getenv("WARRANT_OPERATOR_TOKEN"))
+	inToken := strings.TrimSpace(os.Getenv("WARRANT_INTAKE_TOKEN"))
+	globalSignerPath := strings.TrimSpace(os.Getenv("WARRANT_SIGNER_KEY"))
 	jsonOutput := false
 
-	// Extract global leading/trailing flags (--url, --json) while preserving positional args
+	// Extract global leading/trailing flags (--url, --json, --operator-token, --signer-key) while preserving positional args
 	args := make([]string, 0, len(os.Args)-1)
 	rawArgs := os.Args[1:]
 	for i := 0; i < len(rawArgs); i++ {
@@ -38,6 +41,16 @@ func main() {
 			i++
 		case strings.HasPrefix(a, "--url="):
 			baseURL = strings.TrimRight(strings.TrimPrefix(a, "--url="), "/")
+		case a == "--operator-token" && i+1 < len(rawArgs):
+			opToken = strings.TrimSpace(rawArgs[i+1])
+			i++
+		case strings.HasPrefix(a, "--operator-token="):
+			opToken = strings.TrimSpace(strings.TrimPrefix(a, "--operator-token="))
+		case a == "--signer-key" && i+1 < len(rawArgs):
+			globalSignerPath = strings.TrimSpace(rawArgs[i+1])
+			i++
+		case strings.HasPrefix(a, "--signer-key="):
+			globalSignerPath = strings.TrimSpace(strings.TrimPrefix(a, "--signer-key="))
 		case a == "-h" || a == "--help" || a == "help":
 			printUsage()
 			return
@@ -54,7 +67,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	cli := warrantsdk.NewClient(baseURL)
+	clientOpts := []warrantsdk.Option{}
+	if opToken != "" {
+		clientOpts = append(clientOpts, warrantsdk.WithOperatorToken(opToken))
+	}
+	if inToken != "" {
+		clientOpts = append(clientOpts, warrantsdk.WithIntakeToken(inToken))
+	}
+	if globalSignerPath != "" {
+		sb, sErr := loadPrivateSignerFile(globalSignerPath)
+		must(sErr)
+		clientOpts = append(clientOpts, warrantsdk.WithSignerBundle(sb))
+	}
+	cli := warrantsdk.NewClient(baseURL, clientOpts...)
 	cmd := args[0]
 
 	switch cmd {
@@ -81,17 +106,19 @@ func main() {
 		email := fs.String("email", "so@agency.gov", "Principal institutional email")
 		name := fs.String("name", "Service Owner", "Display name")
 		role := fs.String("role", warrantsdk.RoleServiceOwner, "AC-5 role: SERVICE_OWNER or AUTHORIZING_OFFICIAL")
-		outFile := fs.String("out", "", "Optional output file for SignerKeyBundle JSON")
+		outPrefix := fs.String("out", "", "Output prefix (writes <name>.priv.json [0600] and <name>.pub.json [0644])")
 		_ = fs.Parse(args[1:])
 
 		bundle, err := warrantsdk.GenerateEd25519SignerBundle(*id, *email, *name, *role)
 		must(err)
-		raw, _ := json.MarshalIndent(bundle, "", "  ")
-		if *outFile != "" {
-			must(os.WriteFile(*outFile, raw, 0600))
-			fmt.Printf("Generated Ed25519 AC-5 key bundle (%s | key_id=%s) -> %s\n", bundle.Role, bundle.KeyID, *outFile)
+		if *outPrefix != "" {
+			privPath, pubPath, wErr := warrantsdk.WriteSplitKeyPairFiles(*outPrefix, bundle)
+			must(wErr)
+			fmt.Printf("Generated split Ed25519 AC-5 keypair (%s | key_id=%s):\n  Private Signing Key (0600): %s\n  Public Identity   (0644): %s\n",
+				bundle.Role, bundle.KeyID, privPath, pubPath)
 			return
 		}
+		raw, _ := json.MarshalIndent(bundle.ToPublicIdentity(), "", "  ")
 		fmt.Println(string(raw))
 
 	case "principals":
@@ -113,43 +140,97 @@ func main() {
 			_ = tw.Flush()
 		case "register":
 			fs := flag.NewFlagSet("principals register", flag.ExitOnError)
-			keyFile := fs.String("key", "", "Path to SignerKeyBundle JSON (only public key fields are transmitted)")
-			adminTok := fs.String("admin-token", os.Getenv("WARRANT_BOOTSTRAP_ADMIN_TOKEN"), "Bootstrap IAM admin token (or $WARRANT_BOOTSTRAP_ADMIN_TOKEN)")
+			pubFile := fs.String("pub", "", "Path to <name>.pub.json public identity file (private keys rejected)")
+			adminTok := fs.String("admin-token", os.Getenv("WARRANT_BOOTSTRAP_ADMIN_TOKEN"), "One-shot genesis bootstrap token (before seal)")
+			slot1Key := fs.String("slot1-key", "", "Post-seal Slot 1 (SERVICE_OWNER) .priv.json for 2-of-2 DSSE enrollment")
+			slot2Key := fs.String("slot2-key", "", "Post-seal Slot 2 (AUTHORIZING_OFFICIAL) .priv.json for 2-of-2 DSSE enrollment")
 			_ = fs.Parse(args[2:])
-			if *keyFile == "" {
-				fatalf("--key <bundle.json> is required")
+			if *pubFile == "" {
+				fatalf("--pub <name.pub.json> is required (never pass a private-key file to network registration)")
 			}
-			if strings.TrimSpace(*adminTok) == "" {
-				fatalf("--admin-token (or WARRANT_BOOTSTRAP_ADMIN_TOKEN) is required for AC-5 principal enrollment")
-			}
-			kb, kErr := os.ReadFile(*keyFile)
-			must(kErr)
-			bundle, bErr := warrantsdk.LoadSignerBundleFile(kb)
+			pb, pErr := os.ReadFile(*pubFile)
+			must(pErr)
+			pubBundle, bErr := warrantsdk.LoadPublicIdentityFile(pb)
 			must(bErr)
-			adminCli := warrantsdk.NewClient(baseURL, warrantsdk.WithAdminToken(*adminTok))
-			enrolled, rErr := adminCli.RegisterPrincipal(ctx, bundle.ToRegisterRequest())
-			must(rErr)
+
+			var enrolled *warrantsdk.Principal
+			if *slot1Key != "" || *slot2Key != "" {
+				if *slot1Key == "" || *slot2Key == "" {
+					fatalf("both --slot1-key <so.priv.json> and --slot2-key <ao.priv.json> are required for post-seal 2-of-2 DSSE enrollment")
+				}
+				s1, err1 := loadPrivateSignerFile(*slot1Key)
+				must(err1)
+				s2, err2 := loadPrivateSignerFile(*slot2Key)
+				must(err2)
+				env, _, dErr := warrantsdk.DraftPrincipalEnrollEnvelope(pubBundle.ToRegisterRequest(), 5*time.Minute)
+				must(dErr)
+				must(s1.SignEnvelope(1, env))
+				must(s2.SignEnvelope(2, env))
+				var rErr error
+				enrolled, rErr = cli.RegisterPrincipalDualSigned(ctx, *env)
+				must(rErr)
+			} else {
+				if strings.TrimSpace(*adminTok) == "" {
+					fatalf("--admin-token (genesis unsealed) OR --slot1-key + --slot2-key (2-of-2 DSSE) is required")
+				}
+				adminCli := warrantsdk.NewClient(baseURL, warrantsdk.WithAdminToken(*adminTok))
+				var rErr error
+				enrolled, rErr = adminCli.RegisterPrincipal(ctx, pubBundle.ToRegisterRequest())
+				must(rErr)
+			}
 			if jsonOutput {
 				printJSON(enrolled)
 				return
 			}
 			fmt.Printf("Enrolled AC-5 Principal %s (%s | %s | key_id=%s)\n",
 				enrolled.PrincipalID, enrolled.Role, enrolled.Email, enrolled.KeyID)
+		case "seal":
+			fs := flag.NewFlagSet("principals seal", flag.ExitOnError)
+			adminTok := fs.String("admin-token", os.Getenv("WARRANT_BOOTSTRAP_ADMIN_TOKEN"), "Genesis bootstrap admin token")
+			keyFile := fs.String("key", globalSignerPath, "Active principal .priv.json key to sign SEAL_BOOTSTRAP DSSE")
+			_ = fs.Parse(args[2:])
+			var st *warrantsdk.BootstrapState
+			if strings.TrimSpace(*keyFile) != "" {
+				signer, sErr := loadPrivateSignerFile(*keyFile)
+				must(sErr)
+				sealCli := warrantsdk.NewClient(baseURL, warrantsdk.WithSignerBundle(signer))
+				var err error
+				st, err = sealCli.SealBootstrap(ctx)
+				must(err)
+			} else {
+				if strings.TrimSpace(*adminTok) == "" {
+					fatalf("--admin-token or --key <active.priv.json> is required to seal genesis bootstrap")
+				}
+				sealCli := warrantsdk.NewClient(baseURL, warrantsdk.WithAdminToken(*adminTok))
+				var err error
+				st, err = sealCli.SealBootstrap(ctx)
+				must(err)
+			}
+			if jsonOutput {
+				printJSON(st)
+				return
+			}
+			fmt.Printf("Genesis Bootstrap Sealed: sealed=%t by=%s reason=%s\n", st.Sealed, st.SealedBy, st.SealedReason)
 		case "revoke":
 			fs := flag.NewFlagSet("principals revoke", flag.ExitOnError)
-			pid := fs.String("principal", "", "Principal ID to revoke")
-			fp := fs.String("fingerprint", "", "Optional SHA-256 key fingerprint")
+			pid := fs.String("principal", "", "Target Principal ID to revoke")
+			fp := fs.String("fingerprint", "", "Optional target SHA-256 key fingerprint")
 			reason := fs.String("reason", "CLI_KEY_REVOCATION", "Revocation reason code")
-			by := fs.String("actor", "warrant-cli", "Actor recording revocation")
+			keyFile := fs.String("key", globalSignerPath, "Active enrolled principal .priv.json signing 1-of-2 REVOKE_PRINCIPAL DSSE")
 			_ = fs.Parse(args[2:])
 			if *pid == "" && *fp == "" {
 				fatalf("--principal or --fingerprint is required")
 			}
-			rev, err := cli.RevokePrincipal(ctx, warrantsdk.RevokePrincipalRequest{
+			if strings.TrimSpace(*keyFile) == "" {
+				fatalf("--key <active.priv.json> (1-of-2 DSSE active principal signature) is required to revoke a principal")
+			}
+			signer, sErr := loadPrivateSignerFile(*keyFile)
+			must(sErr)
+			revCli := warrantsdk.NewClient(baseURL, warrantsdk.WithSignerBundle(signer))
+			rev, err := revCli.RevokePrincipal(ctx, warrantsdk.RevokePrincipalRequest{
 				PrincipalID:    *pid,
 				KeyFingerprint: *fp,
 				ReasonCode:     *reason,
-				RevokedBy:      *by,
 			})
 			must(err)
 			printJSON(rev)
@@ -376,16 +457,23 @@ func main() {
 			}
 		case "rollback":
 			if len(args) < 3 {
-				fatalf("usage: warrant pipeline rollback <remediation-id> [--actor <id>] [--reason <code>]")
+				fatalf("usage: warrant pipeline rollback <remediation-id> [--key <active.priv.json>] [--reason <code>]")
 			}
 			remID := args[2]
 			fs := flag.NewFlagSet("pipeline rollback", flag.ExitOnError)
-			actor := fs.String("actor", "cli-incident-commander", "Actor invoking emergency quarantined rollback")
+			actor := fs.String("actor", "cli-incident-commander", "Actor label")
 			reason := fs.String("reason", "POST_PROMOTION_REGRESSION", "Rollback reason")
+			keyFile := fs.String("key", globalSignerPath, "Active principal .priv.json signing 1-of-2 EMERGENCY_ROLLBACK DSSE")
 			if len(args) > 3 {
 				_ = fs.Parse(args[3:])
 			}
-			rem, err := cli.EmergencyRollback(ctx, remID, *actor, *reason)
+			rbCli := cli
+			if strings.TrimSpace(*keyFile) != "" {
+				signer, sErr := loadPrivateSignerFile(*keyFile)
+				must(sErr)
+				rbCli = warrantsdk.NewClient(baseURL, warrantsdk.WithSignerBundle(signer), warrantsdk.WithOperatorToken(opToken))
+			}
+			rem, err := rbCli.EmergencyRollback(ctx, remID, *actor, *reason)
 			must(err)
 			printJSON(rem)
 		default:
@@ -479,10 +567,11 @@ func main() {
 	case "freeze":
 		sub := argOrDefault(args, 1, "")
 		fs := flag.NewFlagSet("freeze", flag.ExitOnError)
-		actor := fs.String("actor", "cli-operator", "Actor triggering emergency freeze")
+		actor := fs.String("actor", "cli-operator", "Actor label")
 		reason := fs.String("reason", "CLI_EMERGENCY_ACTION", "Reason code")
-		slot1Key := fs.String("slot1-key", "", "Slot 1 (SERVICE_OWNER) SignerKeyBundle JSON for thaw")
-		slot2Key := fs.String("slot2-key", "", "Slot 2 (AUTHORIZING_OFFICIAL) SignerKeyBundle JSON for thaw")
+		keyFile := fs.String("key", globalSignerPath, "Active principal .priv.json signing 1-of-2 EMERGENCY_FREEZE DSSE")
+		slot1Key := fs.String("slot1-key", "", "Slot 1 (SERVICE_OWNER) .priv.json for thaw")
+		slot2Key := fs.String("slot2-key", "", "Slot 2 (AUTHORIZING_OFFICIAL) .priv.json for thaw")
 		envFile := fs.String("envelope", "", "Optional pre-signed 2-of-2 DSSE Thaw envelope JSON")
 		if len(args) > 2 {
 			_ = fs.Parse(args[2:])
@@ -493,7 +582,13 @@ func main() {
 			if sub == "rollback" {
 				mode = warrantsdk.FreezeModeRollback
 			}
-			out, err := cli.TriggerFreeze(ctx, mode, *actor, *reason)
+			frCli := cli
+			if strings.TrimSpace(*keyFile) != "" {
+				signer, sErr := loadPrivateSignerFile(*keyFile)
+				must(sErr)
+				frCli = warrantsdk.NewClient(baseURL, warrantsdk.WithSignerBundle(signer), warrantsdk.WithOperatorToken(opToken))
+			}
+			out, err := frCli.TriggerFreeze(ctx, mode, *actor, *reason)
 			must(err)
 			if jsonOutput {
 				printJSON(out)
@@ -633,12 +728,19 @@ func main() {
 			label := fs.String("label", "FedRAMP 3PAO Quarterly Review", "Engagement label")
 			ttl := fs.Int("ttl-hours", 24, "Token TTL in hours")
 			attIDs := fs.String("attestations", "", "Optional comma-separated attestation IDs (empty = all)")
+			keyFile := fs.String("key", globalSignerPath, "Active principal .priv.json signing 1-of-2 MINT_AUDITOR_TOKEN DSSE")
 			_ = fs.Parse(args[2:])
 			var ids []string
 			if strings.TrimSpace(*attIDs) != "" {
 				ids = splitCSV(*attIDs)
 			}
-			minted, err := cli.MintAuditorToken(ctx, *label, ids, *ttl)
+			audCli := cli
+			if strings.TrimSpace(*keyFile) != "" {
+				signer, sErr := loadPrivateSignerFile(*keyFile)
+				must(sErr)
+				audCli = warrantsdk.NewClient(baseURL, warrantsdk.WithSignerBundle(signer), warrantsdk.WithOperatorToken(opToken))
+			}
+			minted, err := audCli.MintAuditorToken(ctx, *label, ids, *ttl)
 			must(err)
 			printJSON(minted)
 
@@ -772,16 +874,18 @@ func main() {
 func printUsage() {
 	fmt.Printf(`G1-Warrant CLI (warrant v%s) — G1163RT Security Labs, Inc.
 Global Flags:
-  --url <http://host:8080>   Override WARRANT_API_URL (default: http://localhost:8080)
-  --json                     Emit machine-readable JSON output
+  --url <http://host:8080>       Override WARRANT_API_URL (default: http://localhost:8080)
+  --signer-key <name.priv.json>  Active principal key for 1-of-2 DSSE emergency/governance actions
+  --operator-token <tok>         Optional WARRANT_OPERATOR_TOKEN for automated operator actions
+  --json                         Emit machine-readable JSON output
 
 Commands:
   warrant status
-  warrant keygen --id <id> --email <email> --role <SERVICE_OWNER|AUTHORIZING_OFFICIAL> [--out <key.json>]
-  warrant principals [list | register --key <key.json> [--admin-token <tok>] | revoke --principal <id> --reason <code>]
-  warrant warrants [list | verify <id> | draft | sign --key <key.json> | submit <file.dsse.json>]
-  warrant exceptions [list | approve <id> --slot1-key <so.json> --slot2-key <ao.json> | reject <id> ...]
-  warrant pipeline [list | trace <remediation-id> | rollback <remediation-id>]
+  warrant keygen --id <id> --email <email> --role <SERVICE_OWNER|AUTHORIZING_OFFICIAL> --out <prefix>
+  warrant principals [list | register --pub <name.pub.json> [--admin-token <tok> | --slot1-key <so.priv.json> --slot2-key <ao.priv.json>] | seal | revoke --principal <id> --key <active.priv.json>]
+  warrant warrants [list | verify <id> | draft | sign --key <name.priv.json> | submit <file.dsse.json>]
+  warrant exceptions [list | approve <id> --slot1-key <so.priv.json> --slot2-key <ao.priv.json> | reject <id> ...]
+  warrant pipeline [list | trace <remediation-id> | rollback <remediation-id> --key <active.priv.json>]
   warrant estate
   warrant shadow
   warrant bridges
@@ -790,14 +894,22 @@ Commands:
   warrant simulate [inject-kev | bad-syscall | stateful-ddl | runtime-drift | secret-exposure | in-pod-webshell | poisoned-config]
   warrant intake [sarif|secrets] <file.json> [--service <id>] [--profile <STATELESS_CLEAN|STATEFUL_DDL|BAD_SYSCALL_EXECVE|POISONED_BUILD_CONFIG>]
   warrant feeds [status | mode <offline|live> | sync-kev | sync-osv | ingest-osv <osv-id> <service-id>]
-  warrant freeze [hold | rollback] [--actor <id>] [--reason <code>]
-  warrant freeze thaw --slot1-key <so.json> --slot2-key <ao.json>
+  warrant freeze [hold | rollback] --key <active.priv.json> [--reason <code>]
+  warrant freeze thaw --slot1-key <so.priv.json> --slot2-key <ao.priv.json>
   warrant attestations
   warrant oscal [export <id> [out.json] | verify-offline <bundle.json> [--pubkey <b64>]]
-  warrant auditor [mint-token --label <str> --ttl-hours <n> | inspect --token <g1aud_...>]
+  warrant auditor [mint-token --key <active.priv.json> --label <str> --ttl-hours <n> | inspect --token <g1aud_...>]
   warrant ledger [verify | actions | checkpoints | anchor]
   warrant events
 `, warrantsdk.Version)
+}
+
+func loadPrivateSignerFile(path string) (*warrantsdk.SignerKeyBundle, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return warrantsdk.LoadSignerBundleFile(raw)
 }
 
 func argOrDefault(args []string, idx int, def string) string {

@@ -10,7 +10,7 @@ import (
 )
 
 // Version is the semantic version of the G1-Warrant Go SDK.
-const Version = "1.0.0"
+const Version = "1.0.1"
 
 // Re-exported protocol constants for callers outside internal/.
 const (
@@ -24,23 +24,36 @@ const (
 	FeedModeOffline = models.FeedModeOffline
 	FeedModeLive    = models.FeedModeLive
 
-	PayloadTypeWarrant     = crypto.PayloadTypeWarrant
-	PayloadTypeThaw        = crypto.PayloadTypeThaw
-	PayloadTypeException   = crypto.PayloadTypeException
-	PayloadTypeAttestation = crypto.PayloadTypeAttestation
+	PayloadTypeWarrant             = crypto.PayloadTypeWarrant
+	PayloadTypeThaw                = crypto.PayloadTypeThaw
+	PayloadTypeException           = crypto.PayloadTypeException
+	PayloadTypeAttestation         = crypto.PayloadTypeAttestation
+	PayloadTypePrincipalGovernance = crypto.PayloadTypePrincipalGovernance
 
 	WarrantClassSecretRotation = models.WarrantClassSecretRotation
 	AssuranceTierSecretRotated = models.AssuranceTierSecretRotated
+
+	GovActionEnrollPrincipal   = models.GovActionEnrollPrincipal
+	GovActionRevokePrincipal   = models.GovActionRevokePrincipal
+	GovActionSealBootstrap     = models.GovActionSealBootstrap
+	GovActionEmergencyFreeze   = models.GovActionEmergencyFreeze
+	GovActionEmergencyRollback = models.GovActionEmergencyRollback
+	GovActionMintAuditorToken  = models.GovActionMintAuditorToken
+	GovActionFeedMutation      = models.GovActionFeedMutation
+	GovActionCreateCheckpoint  = models.GovActionCreateCheckpoint
+	GovActionSimulationDrill   = models.GovActionSimulationDrill
 )
 
 // Public type aliases re-exported cleanly for external Go SDK consumers.
 type (
-	Envelope                 = crypto.Envelope
-	Signature                = crypto.Signature
-	PrincipalKey             = crypto.PrincipalKey
-	GlobalScoreboard         = models.GlobalScoreboard
-	Principal                = models.Principal
-	PrincipalRevocation      = models.PrincipalRevocation
+	Envelope                   = crypto.Envelope
+	Signature                  = crypto.Signature
+	PrincipalKey               = crypto.PrincipalKey
+	GlobalScoreboard           = models.GlobalScoreboard
+	BootstrapState             = models.BootstrapState
+	Principal                  = models.Principal
+	PrincipalRevocation        = models.PrincipalRevocation
+	PrincipalGovernancePayload = models.PrincipalGovernancePayload
 	WarrantPayload           = models.WarrantPayload
 	WarrantRecord            = models.WarrantRecord
 	FreezeState              = models.FreezeState

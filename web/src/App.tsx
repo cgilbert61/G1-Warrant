@@ -1,6 +1,12 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Activity, FileSignature, GitCompare, ShieldAlert, Vault } from 'lucide-react';
 import type { BootstrapSnapshot, DSSEEnvelope } from './types';
+import {
+  buildDualPrincipalGovernanceEnvelope,
+  buildSinglePrincipalGovernanceEnvelope,
+  bytesToBase64,
+} from './lib/crypto';
+import { utf8ToBytes } from '@noble/hashes/utils';
 import { CommandBar } from './components/CommandBar';
 import { View1RacePipeline } from './components/View1RacePipeline';
 import { View2WarrantDesk } from './components/View2WarrantDesk';
@@ -58,10 +64,10 @@ export const App: React.FC = () => {
     return <AuditorPortal />;
   }
 
-  const postJSON = async (url: string, body: unknown) => {
+  const postJSON = async (url: string, body: unknown, extraHeaders?: Record<string, string>) => {
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(extraHeaders || {}) },
       body: JSON.stringify(body),
     });
     const data = await res.json();
@@ -81,6 +87,21 @@ export const App: React.FC = () => {
   }
 
   const pendingExceptionsCount = snapshot.exceptions.filter((e) => e.status === 'PENDING_DUAL_KEY').length;
+
+  const revokedIds = new Set(
+    snapshot.principals.filter((p) => p.revoked).map((p) => p.principal_id)
+  );
+  const activePersonas = snapshot.test_personas.filter(
+    (tp) =>
+      (tp.role === 'SERVICE_OWNER' || tp.role === 'AUTHORIZING_OFFICIAL') &&
+      !revokedIds.has(tp.principal_id)
+  );
+  const buildGovHeaders = (action: string, fields: Record<string, unknown> = {}): Record<string, string> => {
+    if (activePersonas.length === 0) return {};
+    const env = buildSinglePrincipalGovernanceEnvelope(action, fields, activePersonas[0]);
+    const b64 = bytesToBase64(utf8ToBytes(JSON.stringify(env)));
+    return { 'X-Warrant-Governance-DSSE': b64 };
+  };
 
   const navItems: Array<{ key: ViewKey; label: string; badge?: number; icon: React.ReactNode }> = [
     {
@@ -128,7 +149,11 @@ export const App: React.FC = () => {
         isMobileViewport={isMobileViewport}
         onOpenInbox={() => setActiveView('VIEW2_WARRANTS')}
         onTriggerFreeze={async (mode, actor, reason) => {
-          await postJSON('/api/v1/freeze', { mode, actor, reason_code: reason });
+          await postJSON(
+            '/api/v1/freeze',
+            { mode, actor, reason_code: reason },
+            buildGovHeaders('EMERGENCY_FREEZE', { freeze_mode: mode, reason_code: reason })
+          );
         }}
         onThawFreeze={async (env: DSSEEnvelope) => {
           await postJSON('/api/v1/freeze/thaw', env);
@@ -192,7 +217,7 @@ export const App: React.FC = () => {
             pendingExceptionsCount={pendingExceptionsCount}
             nowMs={nowMs}
             onSimulate={async (sc) => {
-              await postJSON(`/api/v1/simulate/${sc}`, {});
+              await postJSON(`/api/v1/simulate/${sc}`, {}, buildGovHeaders('SIMULATION_DRILL', { scenario: sc }));
             }}
             onJumpToExceptions={() => setActiveView('VIEW2_WARRANTS')}
           />
@@ -213,11 +238,21 @@ export const App: React.FC = () => {
               await postJSON('/api/v1/warrants', env);
             }}
             onRevokeSigner={async (principalId, keyFp) => {
-              await postJSON('/api/v1/principals/revoke', {
-                principal_id: principalId,
-                key_fingerprint: keyFp,
-                reason_code: 'OPERATOR_KEY_REVOCATION_DRILL',
-              });
+              const signer =
+                activePersonas.find((p) => p.principal_id !== principalId) || activePersonas[0];
+              if (!signer) {
+                throw new Error('Revoking a principal requires a 1-of-2 DSSE active principal signature (use warrant principals revoke --key <active.priv.json>)');
+              }
+              const env = buildSinglePrincipalGovernanceEnvelope(
+                'REVOKE_PRINCIPAL',
+                {
+                  target_principal_id: principalId,
+                  target_key_fingerprint: keyFp,
+                  reason_code: 'OPERATOR_KEY_REVOCATION_DRILL',
+                },
+                signer
+              );
+              await postJSON('/api/v1/principals/revoke', env);
             }}
             onResolveException={async (exceptionId, decision, env) => {
               await postJSON(`/api/v1/exceptions/${exceptionId}/resolve`, {
@@ -226,7 +261,14 @@ export const App: React.FC = () => {
               });
             }}
             onEnrollWebAuthn={async (payload) => {
-              await postJSON('/api/v1/principals/webauthn/register', payload);
+              const so = activePersonas.find((p) => p.role === 'SERVICE_OWNER');
+              const ao = activePersonas.find((p) => p.role === 'AUTHORIZING_OFFICIAL');
+              if (so && ao) {
+                const env = buildDualPrincipalGovernanceEnvelope('ENROLL_PRINCIPAL', payload, so, ao);
+                await postJSON('/api/v1/principals/webauthn/register', env);
+              } else {
+                await postJSON('/api/v1/principals/webauthn/register', payload);
+              }
             }}
           />
         )}
@@ -253,6 +295,17 @@ export const App: React.FC = () => {
             attestations={snapshot.attestations}
             agentActions={snapshot.agent_actions}
             kernelPublicKey={snapshot.kernel_public_key}
+            onMintAuditorLink={async (label, scopedIds, ttlHours) => {
+              return postJSON(
+                '/api/v1/auditor-tokens',
+                { label, scoped_attestation_ids: scopedIds, ttl_hours: ttlHours },
+                buildGovHeaders('MINT_AUDITOR_TOKEN', {
+                  auditor_label: label,
+                  scoped_attestation_ids: scopedIds,
+                  ttl_hours: ttlHours,
+                })
+              );
+            }}
           />
         )}
       </main>
@@ -262,16 +315,20 @@ export const App: React.FC = () => {
           feedStatus={snapshot.feed_status}
           onClose={() => setShowFeedsModal(false)}
           onSaveConfig={async (cfg) => {
-            await postJSON('/api/v1/feeds/config', cfg);
+            await postJSON('/api/v1/feeds/config', cfg, buildGovHeaders('FEED_MUTATION'));
           }}
           onSyncKEV={async () => {
-            await postJSON('/api/v1/feeds/sync/kev', {});
+            await postJSON('/api/v1/feeds/sync/kev', {}, buildGovHeaders('FEED_MUTATION'));
           }}
           onSyncOSV={async () => {
-            await postJSON('/api/v1/feeds/sync/osv', {});
+            await postJSON('/api/v1/feeds/sync/osv', {}, buildGovHeaders('FEED_MUTATION'));
           }}
           onIngestOSV={async (osvId, serviceId) => {
-            await postJSON('/api/v1/feeds/osv/ingest', { osv_id: osvId, service_id: serviceId });
+            await postJSON(
+              '/api/v1/feeds/osv/ingest',
+              { osv_id: osvId, service_id: serviceId },
+              buildGovHeaders('FEED_MUTATION')
+            );
             setShowFeedsModal(false);
             setActiveView('VIEW1_RACE');
           }}

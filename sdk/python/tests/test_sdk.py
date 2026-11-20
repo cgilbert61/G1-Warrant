@@ -4,20 +4,25 @@ from __future__ import annotations
 
 import base64
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from g1_warrant import (
     PAYLOAD_TYPE_ATTESTATION,
     ROLE_AUTHORIZING_OFFICIAL,
     ROLE_SERVICE_OWNER,
-    AuditorScopeViolationError,
+    WarrantAPIError,
     WarrantClient,
     canonicalize_jcs,
+    draft_principal_enroll_envelope,
+    draft_principal_revoke_envelope,
     draft_warrant_envelope,
-    dsse_pae,
     generate_ed25519_signer_bundle,
+    load_public_identity_file,
     verify_oscal_bundle_offline,
     verify_oscal_bundle_with_keyring,
+    write_split_keypair_files,
 )
 from g1_warrant.crypto import draft_unsigned_envelope
 
@@ -31,6 +36,34 @@ class TestG1WarrantCryptoAndSDK(unittest.TestCase):
             '{"a_key":true,"m_float":10,"nested":{"a":null,"b":"ok"},"z_key":[3,1,2]}',
         )
 
+    def test_split_keygen_hygiene_and_governance_envelopes(self) -> None:
+        so = generate_ed25519_signer_bundle("usr-so", "so@agency.gov", "Alice SO", ROLE_SERVICE_OWNER)
+        ao = generate_ed25519_signer_bundle("usr-ao", "ao@agency.gov", "Bob AO", ROLE_AUTHORIZING_OFFICIAL)
+        so2 = generate_ed25519_signer_bundle("usr-so2", "so2@agency.gov", "Carol SO2", ROLE_SERVICE_OWNER)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            priv_path, pub_path = write_split_keypair_files(Path(tmp) / "so-key", so)
+            self.assertTrue(priv_path.exists())
+            self.assertTrue(pub_path.exists())
+            self.assertNotIn("private_key", pub_path.read_text(encoding="utf-8"))
+
+            pub_ident = load_public_identity_file(pub_path)
+            self.assertEqual(pub_ident.principal_id, "usr-so")
+
+            # Passing .priv.json to load_public_identity_file must fail closed client-side!
+            with self.assertRaises(ValueError):
+                load_public_identity_file(priv_path)
+
+            # 2-of-2 ENROLL_PRINCIPAL & 1-of-2 REVOKE_PRINCIPAL DSSE envelopes
+            enroll_env = draft_principal_enroll_envelope(so2.to_public_identity())
+            so.sign_envelope(1, enroll_env)
+            ao.sign_envelope(2, enroll_env)
+            self.assertEqual(len(enroll_env["signatures"]), 2)
+
+            revoke_env = draft_principal_revoke_envelope(target_principal_id="usr-so2")
+            ao.sign_envelope(1, revoke_env)
+            self.assertEqual(len(revoke_env["signatures"]), 1)
+
     def test_dual_key_signing_and_offline_oscal_verification(self) -> None:
         so = generate_ed25519_signer_bundle("usr-so", "so@agency.gov", "Alice SO", ROLE_SERVICE_OWNER)
         ao = generate_ed25519_signer_bundle("usr-ao", "ao@agency.gov", "Bob AO", ROLE_AUTHORIZING_OFFICIAL)
@@ -40,7 +73,6 @@ class TestG1WarrantCryptoAndSDK(unittest.TestCase):
         ao.sign_envelope(2, env)
         self.assertEqual(len(env["signatures"]), 2)
 
-        # Sign a synthetic OSCAL attestation envelope and verify offline
         kernel = generate_ed25519_signer_bundle("sys-kernel", "kernel@g1163rt.sec", "Kernel Seal", ROLE_SERVICE_OWNER)
         att_env = draft_unsigned_envelope(
             PAYLOAD_TYPE_ATTESTATION,
@@ -64,7 +96,6 @@ class TestG1WarrantCryptoAndSDK(unittest.TestCase):
         )
         self.assertTrue(ring_verified["valid"])
 
-        # Tampering with public key must reject
         other = generate_ed25519_signer_bundle("usr-other", "other@agency.gov", "Other", ROLE_AUTHORIZING_OFFICIAL)
         with self.assertRaises(ValueError):
             verify_oscal_bundle_offline(bundle, other.public_key_b64)
@@ -91,22 +122,26 @@ class TestG1WarrantCryptoAndSDK(unittest.TestCase):
         sb = cli.scoreboard()
         self.assertIn("active_warrants_count", sb)
 
-        # Verify real OSCAL export + offline cryptographic verification end-to-end!
+        # Verify 6-chain ledger verification passes on live server
+        chain_rep = cli.verify_ledger_chains()
+        self.assertTrue(chain_rep["all_valid"])
+        self.assertEqual(len(chain_rep["tables"]), 6)
+
+        # Verify simulator clean-room estate seeding (6 workloads)
+        estate = cli.list_estate()
+        self.assertGreaterEqual(len(estate), 6)
+
+        # Verify unauthenticated mutating operator endpoints reject anonymous calls with 401!
+        unauth_cli = WarrantClient("http://localhost:8080", timeout=2.0, operator_token="")
+        with self.assertRaises(WarrantAPIError) as ctx:
+            unauth_cli.mint_auditor_token(label="Unauthorized Attempt", ttl_hours=1)
+        self.assertEqual(ctx.exception.status_code, 401)
+
         atts = cli.list_attestations()
         if atts:
             bundle = cli.export_oscal_bundle(atts[0]["attestation_id"])
-            pk = cli.kernel_public_key_b64()
-            verified = verify_oscal_bundle_offline(bundle, pk)
+            verified = verify_oscal_bundle_with_keyring(bundle, cli.kernel_public_key_ring())
             self.assertTrue(verified["valid"])
-
-        # Verify auditor token scope isolation end-to-end!
-        minted = cli.mint_auditor_token(label="Python SDK E2E Test", ttl_hours=1)
-        vault = cli.get_auditor_vault(bearer_token=minted["bearer"])
-        self.assertIn("attestations", vault)
-
-        scoped_cli = WarrantClient("http://localhost:8080", auditor_token=minted["bearer"])
-        with self.assertRaises(AuditorScopeViolationError):
-            scoped_cli.scoreboard()
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ import (
 
 	"github.com/cgilbert61/G1-Warrant/internal/crypto"
 	"github.com/cgilbert61/G1-Warrant/internal/models"
+	"github.com/jackc/pgx/v5"
 )
 
 // ListWarrants returns all Standing Warrants annotated with live revocation/expiration status.
@@ -1097,23 +1098,55 @@ func (s *Store) ComputeScoreboard(ctx context.Context) (*models.GlobalScoreboard
 	}, nil
 }
 
-// RegisterKernelPublicKey appends the active kernel attestation public key into the immutable kernel_public_keys ring.
+// RegisterKernelPublicKey appends the active kernel attestation public key into the immutable, hash-chained kernel_public_keys ring.
 func (s *Store) RegisterKernelPublicKey(ctx context.Context, pk crypto.PrincipalKey, backendMode string) error {
 	pubB64 := base64.StdEncoding.EncodeToString(pk.PublicKeyBytes)
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO kernel_public_keys (key_id, alg, public_key_b64, key_fingerprint, backend_mode, registered_at)
-		VALUES ($1,$2,$3,$4,$5,$6)
-		ON CONFLICT (key_id) DO NOTHING
-	`, pk.KeyID, pk.Alg, pubB64, pk.KeyFingerprint, backendMode, time.Now().UTC())
-	return err
+
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, lockKernelKeyChain); err != nil {
+		return err
+	}
+
+	var existPubB64 string
+	err = tx.QueryRow(ctx, `SELECT public_key_b64 FROM kernel_public_keys WHERE key_id = $1`, pk.KeyID).Scan(&existPubB64)
+	if err == nil {
+		if existPubB64 == pubB64 {
+			return nil
+		}
+		return fmt.Errorf("KERNEL_KEY_CONFLICT: key_id %q already registered with different public key", pk.KeyID)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+
+	prevHash := GenesisHash
+	err = tx.QueryRow(ctx, `SELECT entry_hash FROM kernel_public_keys ORDER BY seq_no DESC LIMIT 1`).Scan(&prevHash)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	entryHash := ComputeKernelKeyEntryHash(prevHash, pk.KeyID, pk.Alg, pubB64, pk.KeyFingerprint, backendMode)
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO kernel_public_keys (key_id, alg, public_key_b64, key_fingerprint, backend_mode, prev_hash, entry_hash, registered_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+	`, pk.KeyID, pk.Alg, pubB64, pk.KeyFingerprint, backendMode, prevHash, entryHash, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // ListKernelPublicKeys returns all historical and active kernel verification public keys newest first.
 func (s *Store) ListKernelPublicKeys(ctx context.Context) ([]models.KernelPublicKeyRecord, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT key_id, alg, public_key_b64, key_fingerprint, backend_mode, registered_at
+		SELECT key_id, alg, public_key_b64, key_fingerprint, backend_mode, prev_hash, entry_hash, registered_at
 		FROM kernel_public_keys
-		ORDER BY registered_at DESC
+		ORDER BY seq_no DESC
 	`)
 	if err != nil {
 		return nil, err
@@ -1122,7 +1155,7 @@ func (s *Store) ListKernelPublicKeys(ctx context.Context) ([]models.KernelPublic
 	out := []models.KernelPublicKeyRecord{}
 	for rows.Next() {
 		var r models.KernelPublicKeyRecord
-		if err := rows.Scan(&r.KeyID, &r.Alg, &r.PublicKeyB64, &r.KeyFingerprint, &r.BackendMode, &r.RegisteredAt); err != nil {
+		if err := rows.Scan(&r.KeyID, &r.Alg, &r.PublicKeyB64, &r.KeyFingerprint, &r.BackendMode, &r.PrevHash, &r.EntryHash, &r.RegisteredAt); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

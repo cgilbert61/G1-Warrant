@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/cgilbert61/G1-Warrant/internal/crypto"
@@ -71,15 +72,57 @@ func BuildDeterministicSARIF(cveID, cweID string, cvss float64, isKEV bool, serv
 	return raw
 }
 
-// SeedEnterpriseEstate idempotently seeds principals, dual-signed Standing Warrants,
-// the 6-service enterprise estate, historical OSCAL closures, an aging containment bridge,
-// and an active Four-Eyes stateful patch exception.
+// SeedEnterpriseEstate idempotently seeds the 6 simulated enterprise workloads when running against fleet-sim,
+// and ONLY when WARRANT_ENABLE_TEST_SMARTCARDS=true (docker-compose.demo.yml) seeds sandbox PIV personas,
+// demo Standing Warrants, and historical KEV closures/exceptions.
 func (o *ControlPlaneOrchestrator) SeedEnterpriseEstate(ctx context.Context) error {
+	defaultSBOMMap := map[string][]string{
+		"payments-ledger-api":     {"pkg:golang/golang.org/x/net@0.16.0", "pkg:golang/golang.org/x/crypto@0.14.0"},
+		"identity-sso-gateway":    {"pkg:golang/google.golang.org/grpc@1.56.2"},
+		"fedramp-audit-ingestor":  {"pkg:golang/github.com/open-policy-agent/opa@0.55.0"},
+		"checkout-cart-svc":       {"pkg:npm/express@4.18.2"},
+		"fulfillment-worker":      {"pkg:pypi/urllib3@2.0.5"},
+		"legacy-billing-monolith": {"pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1"},
+	}
+
+	// 1. In simulator mode (WARRANT_CLUSTER_DRIVER != "kubernetes"), always seed/sync the 6 fleet-sim workload definitions
+	//    so clean-room evaluators immediately see the 5-Gate Estate Readiness Scorecard (4/6 eligible) without demo smartcards.
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("WARRANT_CLUSTER_DRIVER")), "kubernetes") {
+		existingServices, err := o.Store.ListEstateServices(ctx)
+		if err != nil {
+			return err
+		}
+		if len(existingServices) > 0 {
+			for _, svc := range existingServices {
+				if len(svc.SBOMPURLs) == 0 {
+					if sbom, ok := defaultSBOMMap[svc.ServiceID]; ok {
+						svc.SBOMPURLs = sbom
+						_ = o.Store.UpsertEstateService(ctx, svc)
+					}
+				}
+			}
+		} else {
+			if err := o.seedSimulatorEstateWorkloads(ctx, defaultSBOMMap); err != nil {
+				return err
+			}
+		}
+	}
+
 	if os.Getenv("WARRANT_ENABLE_TEST_SMARTCARDS") != "true" {
-		log.Printf("WARRANT_ENABLE_TEST_SMARTCARDS is not enabled; skipping built-in sandbox smartcard seed.")
+		log.Printf("WARRANT_ENABLE_TEST_SMARTCARDS is false; clean-room AC-5 posture active (zero demo personas or pre-signed warrants seeded).")
 		return nil
 	}
-	// 1. Register local sandbox PIV/Smartcard principals + Kernel + Publisher (only when WARRANT_ENABLE_TEST_SMARTCARDS=true)
+
+	existingWarrants, err := o.Store.ListWarrants(ctx)
+	if err != nil {
+		return err
+	}
+	if len(existingWarrants) > 0 {
+		log.Printf("G1-Warrant demo Standing Warrants already seeded (%d warrants); skipping demo seed.", len(existingWarrants))
+		return nil
+	}
+
+	// 2. Register local sandbox PIV/Smartcard principals (strictly gated behind WARRANT_ENABLE_TEST_SMARTCARDS=true)
 	personas := crypto.BuiltinTestPersonas()
 	var alice, bob, elena, marcus crypto.TestSmartcardPersona
 	for _, p := range personas {
@@ -105,161 +148,6 @@ func (o *ControlPlaneOrchestrator) SeedEnterpriseEstate(ctx context.Context) err
 			elena = p
 		case "usr-marcus-ao":
 			marcus = p
-		}
-	}
-
-	defaultSBOMMap := map[string][]string{
-		"payments-ledger-api":     {"pkg:golang/golang.org/x/net@0.16.0", "pkg:golang/golang.org/x/crypto@0.14.0"},
-		"identity-sso-gateway":    {"pkg:golang/google.golang.org/grpc@1.56.2"},
-		"fedramp-audit-ingestor":  {"pkg:golang/github.com/open-policy-agent/opa@0.55.0"},
-		"checkout-cart-svc":       {"pkg:npm/express@4.18.2"},
-		"fulfillment-worker":      {"pkg:pypi/urllib3@2.0.5"},
-		"legacy-billing-monolith": {"pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1"},
-	}
-
-	existingServices, err := o.Store.ListEstateServices(ctx)
-	if err != nil {
-		return err
-	}
-	if len(existingServices) > 0 {
-		for _, svc := range existingServices {
-			if len(svc.SBOMPURLs) == 0 {
-				if sbom, ok := defaultSBOMMap[svc.ServiceID]; ok {
-					svc.SBOMPURLs = sbom
-					_ = o.Store.UpsertEstateService(ctx, svc)
-				}
-			}
-		}
-		log.Printf("G1-Warrant estate already seeded (%d workloads); skipping initial seed.", len(existingServices))
-		return nil
-	}
-
-	// 2. Register the 6 Enterprise Estate Workloads (4 Autonomous-Eligible, 2 Unready)
-	stdSyscalls := []string{"accept4", "close", "epoll_ctl", "epoll_wait", "fcntl", "fstat", "futex", "getsockopt", "mmap", "munmap", "nanosleep", "openat", "read", "recvfrom", "rt_sigaction", "rt_sigprocmask", "sendto", "setsockopt", "socket", "write"}
-	estate := []models.EstateService{
-		{
-			ServiceID:                  "payments-ledger-api",
-			DisplayName:                "Payments Settlement & Core Ledger API",
-			Namespace:                  "fin-core",
-			Tier:                       "TIER_1_CRITICAL",
-			WarrantClass:               "KEV-TIER1-STATELESS",
-			CurrentDigest:              "sha256:a100000000000000000000000000000000000000000000000000000000000001",
-			CurrentPURL:                "pkg:oci/payments-ledger-api@sha256:a100000000000000000000000000000000000000000000000000000000000001",
-			SBOMPURLs:                  defaultSBOMMap["payments-ledger-api"],
-			Replicas:                   6,
-			TestCoveragePct:            94.2,
-			OtelHealthProbes:           true,
-			ReadonlyShadowReplica:      true,
-			RollbackAutomationVerified: true,
-			ReadOnlyRootFilesystem:     true,
-			NoExecTmpMounts:            true,
-			AllowedEgressServices:      []string{"postgres-ledger.fin-core.svc.cluster.local", "kube-dns.kube-system.svc.cluster.local"},
-			BaselineSyscalls:           stdSyscalls,
-		},
-		{
-			ServiceID:                  "identity-sso-gateway",
-			DisplayName:                "Federal PIV / OIDC SSO Federation Gateway",
-			Namespace:                  "sec-authn",
-			Tier:                       "TIER_1_CRITICAL",
-			WarrantClass:               "KEV-TIER1-STATELESS",
-			CurrentDigest:              "sha256:b200000000000000000000000000000000000000000000000000000000000002",
-			CurrentPURL:                "pkg:oci/identity-sso-gateway@sha256:b200000000000000000000000000000000000000000000000000000000000002",
-			SBOMPURLs:                  defaultSBOMMap["identity-sso-gateway"],
-			Replicas:                   4,
-			TestCoveragePct:            91.8,
-			OtelHealthProbes:           true,
-			ReadonlyShadowReplica:      true,
-			RollbackAutomationVerified: true,
-			ReadOnlyRootFilesystem:     true,
-			NoExecTmpMounts:            true,
-			AllowedEgressServices:      []string{"piv-ocsp.sec-authn.svc.cluster.local", "kube-dns.kube-system.svc.cluster.local"},
-			BaselineSyscalls:           stdSyscalls,
-		},
-		{
-			ServiceID:                  "fedramp-audit-ingestor",
-			DisplayName:                "FedRAMP High Telemetry & Audit Stream Ingestor",
-			Namespace:                  "gov-audit",
-			Tier:                       "TIER_1_CRITICAL",
-			WarrantClass:               "KEV-TIER1-STATELESS",
-			CurrentDigest:              "sha256:c300000000000000000000000000000000000000000000000000000000000003",
-			CurrentPURL:                "pkg:oci/fedramp-audit-ingestor@sha256:c300000000000000000000000000000000000000000000000000000000000003",
-			SBOMPURLs:                  defaultSBOMMap["fedramp-audit-ingestor"],
-			Replicas:                   4,
-			TestCoveragePct:            89.5,
-			OtelHealthProbes:           true,
-			ReadonlyShadowReplica:      true,
-			RollbackAutomationVerified: true,
-			ReadOnlyRootFilesystem:     true,
-			NoExecTmpMounts:            true,
-			AllowedEgressServices:      []string{"audit-worm-sink.gov-audit.svc.cluster.local", "kube-dns.kube-system.svc.cluster.local"},
-			BaselineSyscalls:           stdSyscalls,
-		},
-		{
-			ServiceID:                  "checkout-cart-svc",
-			DisplayName:                "Checkout & Order Orchestration Service",
-			Namespace:                  "commerce-edge",
-			Tier:                       "TIER_2_PRODUCTION",
-			WarrantClass:               "KEV-TIER2-COMMERCE",
-			CurrentDigest:              "sha256:d400000000000000000000000000000000000000000000000000000000000004",
-			CurrentPURL:                "pkg:oci/checkout-cart-svc@sha256:d400000000000000000000000000000000000000000000000000000000000004",
-			SBOMPURLs:                  defaultSBOMMap["checkout-cart-svc"],
-			Replicas:                   6,
-			TestCoveragePct:            86.0,
-			OtelHealthProbes:           true,
-			ReadonlyShadowReplica:      true,
-			RollbackAutomationVerified: true,
-			ReadOnlyRootFilesystem:     true,
-			NoExecTmpMounts:            true,
-			AllowedEgressServices:      []string{"payments-ledger-api.fin-core.svc.cluster.local", "kube-dns.kube-system.svc.cluster.local"},
-			BaselineSyscalls:           stdSyscalls,
-		},
-		{
-			ServiceID:                  "fulfillment-worker",
-			DisplayName:                "Warehouse Fulfillment Async Queue Worker",
-			Namespace:                  "ops-fulfill",
-			Tier:                       "TIER_2_PRODUCTION",
-			WarrantClass:               "KEV-TIER2-COMMERCE",
-			CurrentDigest:              "sha256:e500000000000000000000000000000000000000000000000000000000000005",
-			CurrentPURL:                "pkg:oci/fulfillment-worker@sha256:e500000000000000000000000000000000000000000000000000000000000005",
-			SBOMPURLs:                  defaultSBOMMap["fulfillment-worker"],
-			Replicas:                   3,
-			TestCoveragePct:            71.4,
-			OtelHealthProbes:           true,
-			ReadonlyShadowReplica:      false,
-			RollbackAutomationVerified: true,
-			ReadOnlyRootFilesystem:     true,
-			NoExecTmpMounts:            true,
-			AllowedEgressServices:      []string{"queue-broker.ops-fulfill.svc.cluster.local", "kube-dns.kube-system.svc.cluster.local"},
-			BaselineSyscalls:           stdSyscalls,
-		},
-		{
-			ServiceID:                  "legacy-billing-monolith",
-			DisplayName:                "Legacy Batch Invoice & Billing Monolith",
-			Namespace:                  "fin-legacy",
-			Tier:                       "TIER_3_LEGACY",
-			WarrantClass:               "LEGACY-CONTAINMENT-ONLY",
-			CurrentDigest:              "sha256:f600000000000000000000000000000000000000000000000000000000000006",
-			CurrentPURL:                "pkg:oci/legacy-billing-monolith@sha256:f600000000000000000000000000000000000000000000000000000000000006",
-			SBOMPURLs:                  defaultSBOMMap["legacy-billing-monolith"],
-			Replicas:                   2,
-			TestCoveragePct:            54.0,
-			OtelHealthProbes:           false,
-			ReadonlyShadowReplica:      false,
-			RollbackAutomationVerified: false,
-			ReadOnlyRootFilesystem:     false,
-			NoExecTmpMounts:            false,
-			AllowedEgressServices:      []string{"kube-dns.kube-system.svc.cluster.local"},
-			BaselineSyscalls:           stdSyscalls,
-		},
-	}
-
-	for i := range estate {
-		if len(estate[i].UnorderedArrayPaths) == 0 {
-			estate[i].UnorderedArrayPaths = []string{"$.shard_nodes"}
-		}
-		gate.GradeServiceReadiness(&estate[i])
-		if err := o.Store.UpsertEstateService(ctx, estate[i]); err != nil {
-			return err
 		}
 	}
 
@@ -387,6 +275,139 @@ func (o *ControlPlaneOrchestrator) SeedEnterpriseEstate(ctx context.Context) err
 		log.Printf("seed stateful exception note: %v", err)
 	}
 
-	log.Printf("G1-Warrant 6-service enterprise estate seeded deterministically.")
+	_, _ = o.N5Ledger.CreateCheckpoint(ctx)
+	log.Printf("G1-Warrant 6-service enterprise demo estate seeded deterministically.")
+	return nil
+}
+
+func (o *ControlPlaneOrchestrator) seedSimulatorEstateWorkloads(ctx context.Context, defaultSBOMMap map[string][]string) error {
+	stdSyscalls := []string{"accept4", "close", "epoll_ctl", "epoll_wait", "fcntl", "fstat", "futex", "getsockopt", "mmap", "munmap", "nanosleep", "openat", "read", "recvfrom", "rt_sigaction", "rt_sigprocmask", "sendto", "setsockopt", "socket", "write"}
+	estate := []models.EstateService{
+		{
+			ServiceID:                  "payments-ledger-api",
+			DisplayName:                "Payments Settlement & Core Ledger API",
+			Namespace:                  "fin-core",
+			Tier:                       "TIER_1_CRITICAL",
+			WarrantClass:               "KEV-TIER1-STATELESS",
+			CurrentDigest:              "sha256:a100000000000000000000000000000000000000000000000000000000000001",
+			CurrentPURL:                "pkg:oci/payments-ledger-api@sha256:a100000000000000000000000000000000000000000000000000000000000001",
+			SBOMPURLs:                  defaultSBOMMap["payments-ledger-api"],
+			Replicas:                   6,
+			TestCoveragePct:            94.2,
+			OtelHealthProbes:           true,
+			ReadonlyShadowReplica:      true,
+			RollbackAutomationVerified: true,
+			ReadOnlyRootFilesystem:     true,
+			NoExecTmpMounts:            true,
+			AllowedEgressServices:      []string{"postgres-ledger.fin-core.svc.cluster.local", "kube-dns.kube-system.svc.cluster.local"},
+			BaselineSyscalls:           stdSyscalls,
+		},
+		{
+			ServiceID:                  "identity-sso-gateway",
+			DisplayName:                "Federal PIV / OIDC SSO Federation Gateway",
+			Namespace:                  "sec-authn",
+			Tier:                       "TIER_1_CRITICAL",
+			WarrantClass:               "KEV-TIER1-STATELESS",
+			CurrentDigest:              "sha256:b200000000000000000000000000000000000000000000000000000000000002",
+			CurrentPURL:                "pkg:oci/identity-sso-gateway@sha256:b200000000000000000000000000000000000000000000000000000000000002",
+			SBOMPURLs:                  defaultSBOMMap["identity-sso-gateway"],
+			Replicas:                   4,
+			TestCoveragePct:            91.8,
+			OtelHealthProbes:           true,
+			ReadonlyShadowReplica:      true,
+			RollbackAutomationVerified: true,
+			ReadOnlyRootFilesystem:     true,
+			NoExecTmpMounts:            true,
+			AllowedEgressServices:      []string{"piv-ocsp.sec-authn.svc.cluster.local", "kube-dns.kube-system.svc.cluster.local"},
+			BaselineSyscalls:           stdSyscalls,
+		},
+		{
+			ServiceID:                  "fedramp-audit-ingestor",
+			DisplayName:                "FedRAMP High Telemetry & Audit Stream Ingestor",
+			Namespace:                  "gov-audit",
+			Tier:                       "TIER_1_CRITICAL",
+			WarrantClass:               "KEV-TIER1-STATELESS",
+			CurrentDigest:              "sha256:c300000000000000000000000000000000000000000000000000000000000003",
+			CurrentPURL:                "pkg:oci/fedramp-audit-ingestor@sha256:c300000000000000000000000000000000000000000000000000000000000003",
+			SBOMPURLs:                  defaultSBOMMap["fedramp-audit-ingestor"],
+			Replicas:                   4,
+			TestCoveragePct:            89.5,
+			OtelHealthProbes:           true,
+			ReadonlyShadowReplica:      true,
+			RollbackAutomationVerified: true,
+			ReadOnlyRootFilesystem:     true,
+			NoExecTmpMounts:            true,
+			AllowedEgressServices:      []string{"audit-worm-sink.gov-audit.svc.cluster.local", "kube-dns.kube-system.svc.cluster.local"},
+			BaselineSyscalls:           stdSyscalls,
+		},
+		{
+			ServiceID:                  "checkout-cart-svc",
+			DisplayName:                "Checkout & Order Orchestration Service",
+			Namespace:                  "commerce-edge",
+			Tier:                       "TIER_2_PRODUCTION",
+			WarrantClass:               "KEV-TIER2-COMMERCE",
+			CurrentDigest:              "sha256:d400000000000000000000000000000000000000000000000000000000000004",
+			CurrentPURL:                "pkg:oci/checkout-cart-svc@sha256:d400000000000000000000000000000000000000000000000000000000000004",
+			SBOMPURLs:                  defaultSBOMMap["checkout-cart-svc"],
+			Replicas:                   6,
+			TestCoveragePct:            86.0,
+			OtelHealthProbes:           true,
+			ReadonlyShadowReplica:      true,
+			RollbackAutomationVerified: true,
+			ReadOnlyRootFilesystem:     true,
+			NoExecTmpMounts:            true,
+			AllowedEgressServices:      []string{"payments-ledger-api.fin-core.svc.cluster.local", "kube-dns.kube-system.svc.cluster.local"},
+			BaselineSyscalls:           stdSyscalls,
+		},
+		{
+			ServiceID:                  "fulfillment-worker",
+			DisplayName:                "Warehouse Fulfillment Async Queue Worker",
+			Namespace:                  "ops-fulfill",
+			Tier:                       "TIER_2_PRODUCTION",
+			WarrantClass:               "KEV-TIER2-COMMERCE",
+			CurrentDigest:              "sha256:e500000000000000000000000000000000000000000000000000000000000005",
+			CurrentPURL:                "pkg:oci/fulfillment-worker@sha256:e500000000000000000000000000000000000000000000000000000000000005",
+			SBOMPURLs:                  defaultSBOMMap["fulfillment-worker"],
+			Replicas:                   3,
+			TestCoveragePct:            71.4,
+			OtelHealthProbes:           true,
+			ReadonlyShadowReplica:      false,
+			RollbackAutomationVerified: true,
+			ReadOnlyRootFilesystem:     true,
+			NoExecTmpMounts:            true,
+			AllowedEgressServices:      []string{"queue-broker.ops-fulfill.svc.cluster.local", "kube-dns.kube-system.svc.cluster.local"},
+			BaselineSyscalls:           stdSyscalls,
+		},
+		{
+			ServiceID:                  "legacy-billing-monolith",
+			DisplayName:                "Legacy Batch Invoice & Billing Monolith",
+			Namespace:                  "fin-legacy",
+			Tier:                       "TIER_3_LEGACY",
+			WarrantClass:               "LEGACY-CONTAINMENT-ONLY",
+			CurrentDigest:              "sha256:f600000000000000000000000000000000000000000000000000000000000006",
+			CurrentPURL:                "pkg:oci/legacy-billing-monolith@sha256:f600000000000000000000000000000000000000000000000000000000000006",
+			SBOMPURLs:                  defaultSBOMMap["legacy-billing-monolith"],
+			Replicas:                   2,
+			TestCoveragePct:            54.0,
+			OtelHealthProbes:           false,
+			ReadonlyShadowReplica:      false,
+			RollbackAutomationVerified: false,
+			ReadOnlyRootFilesystem:     false,
+			NoExecTmpMounts:            false,
+			AllowedEgressServices:      []string{"kube-dns.kube-system.svc.cluster.local"},
+			BaselineSyscalls:           stdSyscalls,
+		},
+	}
+
+	for i := range estate {
+		if len(estate[i].UnorderedArrayPaths) == 0 {
+			estate[i].UnorderedArrayPaths = []string{"$.shard_nodes"}
+		}
+		gate.GradeServiceReadiness(&estate[i])
+		if err := o.Store.UpsertEstateService(ctx, estate[i]); err != nil {
+			return err
+		}
+	}
+	log.Printf("G1-Warrant 6-service simulator estate workload definitions registered.")
 	return nil
 }

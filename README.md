@@ -85,7 +85,10 @@ flowchart LR
 ### Non-Negotiable Architectural & Production SRE Invariants
 
 1. **100% Deterministic Safety Kernel (`Zero LLM Inference` in `N1–N5` or Console):** Policy evaluation (`OPA Rego v1`), statistical canary gating, differential twin verification, OSCAL attestation minting, and Console rendering are strictly deterministic state machines and cryptographic verifiers. External AI/LLM fix generators operate solely outside the kernel as untrusted workers governed by `N4`.
-2. **Dual-Key Standing Warrants & Zero Demo Signers (`N1` — `NIST SP 800-53 Rev 5 AC-5`):** Every automated rollout or containment action executes under a **Standing Warrant** carrying **`2-of-2` human cryptographic signatures** (`Slot 1: SERVICE_OWNER` + `Slot 2: AUTHORIZING_OFFICIAL`) over `RFC 8785 JCS` canonicalized `DSSEv1` envelopes via `Ed25519` or **W3C WebAuthn hardware authenticators** (`FIDO2` / `PIV`). Production SDKs and CLIs ship **zero hardcoded demo signers**, `warrantd` redacts sandbox personas by default (`WARRANT_ENABLE_TEST_SMARTCARDS=false`), and startup fails closed (`os.Exit(1)`) if `WARRANT_ENABLE_TEST_SMARTCARDS=true` is set alongside `WARRANT_CLUSTER_DRIVER=kubernetes` or `WARRANT_FEED_MODE=live`.
+2. **Dual-Key Standing Warrants, One-Shot Genesis Seal & Asymmetric Revocation (`N1` — `NIST SP 800-53 Rev 5 AC-5`):**
+   - Every automated rollout or containment action executes under a **Standing Warrant** carrying **`2-of-2` human cryptographic signatures** (`Slot 1: SERVICE_OWNER` + `Slot 2: AUTHORIZING_OFFICIAL`) over `RFC 8785 JCS` canonicalized `DSSEv1` envelopes via `Ed25519` or **W3C WebAuthn hardware authenticators** (`FIDO2` / `PIV`), enforcing unique public-key SHA-256 fingerprints across `principals` and blocking re-enrollment of revoked keys.
+   - `WARRANT_BOOTSTRAP_ADMIN_TOKEN` is **strictly genesis-only (one-shot)**: once sealed via `POST /api/v1/bootstrap/seal` (`warrant principals seal`) or automatically upon the first `POST /api/v1/warrants` submission, single-token enrollment is permanently rejected (`HTTP 403 BOOTSTRAP_SEALED_REQUIRES_DUAL_KEY_DSSE`) and future principal enrollments (`ENROLL_PRINCIPAL` across Ed25519 and WebAuthn) require a **`2-of-2` DSSE Principal Governance envelope** (`<= 15m` TTL + single-use `envelope_id`), while fail-closed principal revocation (`REVOKE_PRINCIPAL`) accepts a **`1-of-2` DSSE signature** from any single active enrolled principal.
+   - Production SDKs and CLIs ship **zero hardcoded demo signers**, emit split `<name>.priv.json` (`0600`) and `<name>.pub.json` (`0644`) key files, redact sandbox personas by default (`WARRANT_ENABLE_TEST_SMARTCARDS=false`), and fail closed (`os.Exit(1)`) at startup if test smartcards or weak/placeholder secrets are configured alongside `WARRANT_CLUSTER_DRIVER=kubernetes` or `WARRANT_FEED_MODE=live`.
 3. **Zero-Prose Quarantine vs. Publisher-Signed L7 Rulepacks (`N3` & `N4` — `SC-7(5)`):**
    - `warrant-extractor` strips untrusted `SARIF`/`KEV`/`OSV` prose inside a zero-egress container. Because stripped telemetry lacks custom application route semantics, `N3` **never guesses HTTP routes**.
    - By default, `N3` enforces **`ZERO_PROSE_EGRESS_MESH_QUARANTINE`**—cutting external world egress and Kubernetes API access (`toEntities: ["world", "kube-apiserver"]`, unless Kubernetes API egress is explicitly declared via `allow_kube_apiserver_egress`) to block reverse shells, JNDI callbacks, and in-cluster API pivoting while preserving authenticated internal mTLS mesh traffic without causing blind L7 outages.
@@ -99,9 +102,9 @@ flowchart LR
 6. **Atomic 3-Step `QUARANTINED_ROLLBACK` (`Contain-Before-Unban`) & Resilient Streaming K8s `WATCH` (`N3` — `CA-7`):**
    - Resolves the post-closure latent regression vs. `ValidatingAdmissionPolicy` lockout collision via `POST /api/v1/pipeline/{id}/emergency-rollback`: **(1)** re-arms the `N3` containment bridge *first*, **(2)** suspends the `ValidatingAdmissionPolicy` (`SUSPENDED_FOR_QUARANTINED_ROLLBACK`), and **(3)** rolls pods back to the previous digest under active quarantine.
    - `LiveKubernetesAdapter` (`WARRANT_CLUSTER_DRIVER=kubernetes`) uses chunked **`kube-apiserver` `WATCH` streams** (`?watch=true&allowWatchBookmarks=true&resourceVersion=...`) with idle read timeouts and automatic full `LIST` catch-up re-syncs upon `HTTP 410 Gone` (`Expired` `resourceVersion`) instead of high-frequency polling.
-7. **Non-Exportable KMS Signing, Persistent Kernel Key Ring & External Merkle Anchor (`N5` — `AU-9(3)`, `SR-11`):**
+7. **Non-Exportable KMS Signing, 6-Chain Immutability & External Merkle Anchor (`N5` — `AU-9(3)`, `SR-11`):**
    - Abstracts attestation and task signing behind `crypto.EnvelopeSigner` (`RemoteKMSSigner` via `WARRANT_KMS_SIGN_URL` for Vault Transit / Cloud KMS / HSM, or ephemeral in-memory keys), while persisting an append-only `kernel_public_keys` verification ring in PostgreSQL (`GET /api/v1/kernel-keys`) so `warrantd` restarts never invalidate previously exported OSCAL `1.1.2` POA&M bundles.
-   - Pairs PostgreSQL `BEFORE UPDATE OR DELETE` immutability triggers with **`TransparencyAnchor`**, shipping DSSE-signed binary Merkle Root checkpoints to an external transparency webhook in production (`WARRANT_EXTERNAL_ANCHOR_URL`, with `WARRANT_EXTERNAL_ANCHOR_PATH` provided for local dev/sandbox environments) so even a rogue DB superuser who disables triggers and rewrites rows is caught during `VerifyAllLedgerChains`.
+   - Enforces PostgreSQL `BEFORE UPDATE OR DELETE` immutability triggers, transaction-locked SHA-256 hash chaining, and **`TransparencyAnchor` 6-Chain Combined Merkle Root checkpoints** across all 6 security-critical tables (`warrant_envelopes`, `agent_action_ledger`, `attestation_records`, `principals`, `principal_revocations`, and `kernel_public_keys`), shipping DSSE-signed checkpoints to `WARRANT_EXTERNAL_ANCHOR_URL` (with `WARRANT_EXTERNAL_ANCHOR_PATH` for local sandboxes) so a rogue DB superuser who disables triggers, rewrites rows, or injects unanchored signing keys is caught immediately during `VerifyAllLedgerChains`.
 8. **Workload Containment, Credential Rotation & Internal Patch-Pipeline Hygiene (`N1–N4`):**
    - *Note on Scope:* G1-Warrant is a deterministic remediation, workload containment, and attestation kernel—it is **not** a SIEM or cloud IAM behavioral log-detection engine.
    - **`SECRET-ROTATION-STATELESS` Standing Warrant (`N1`, `N3` & `N4`):** `warrant-extractor` (`POST /extract/secrets`) ingests Gitleaks (JSON & SARIF 2.1.0) and GitGuardian secret-exposure findings, irreversibly hashes exposed credentials into SHA-256 fingerprints while stripping all plaintext secrets, rotates Kubernetes `ExternalSecret` / `ServiceAccount` credentials + triggers rolling restarts (`POST /api/v1/intake/secrets`), and enforces a cryptographic non-equivalence check (`rotated_secret_sha256 != exposed_secret_sha256` and non-empty) before minting `ASSURANCE_TIER_SECRET_ROTATED`—failing closed under quarantine if the upstream secret manager has not yet rotated the underlying secret value.
@@ -114,23 +117,24 @@ flowchart LR
 ## Quick Start (Zero Host Toolchains Required)
 
 ```bash
-# 1. Start PostgreSQL 16 ledger store, zero-egress warrant-extractor, fleet-sim, and warrantd
-docker compose up --build -d
+# Option A — Interactive Evaluation Sandbox (seeds 6 workloads, sandbox PIV personas, Standing Warrants & Console drills)
+docker compose -f docker-compose.yml -f docker-compose.demo.yml up --build -d
 
-#    (Optional: enable seeded sandbox PIV personas for interactive local Console demos)
-#    docker compose -f docker-compose.yml -f docker-compose.demo.yml up --build -d
+# Option B — Clean-Room AC-5 Mode (6 simulator workloads seeded; 0 demo signers/warrants; one-shot genesis token)
+WARRANT_BOOTSTRAP_ADMIN_TOKEN="$(openssl rand -hex 24)" docker compose up --build -d
 
-# 2. Open the embedded 5-View G1-Warrant Console (W3C WebAuthn localhost enabled)
-#    -> http://localhost:8080
+# Open the embedded 5-View G1-Warrant Console (W3C WebAuthn localhost enabled)
+#   -> http://localhost:8080
 
-# 3. Inspect live control-plane posture via the embedded Go CLI
+# Inspect live control-plane posture & 6-chain cryptographic ledger health via the embedded Go CLI
 docker compose exec warrantd /warrant status
+docker compose exec warrantd /warrant ledger verify
 ```
 
-> **Production Kubernetes Cluster Handoff (`k8s/`):** To point `warrantd` at a live Kubernetes + Cilium cluster instead of `fleet-sim`, configure:
-> - `WARRANT_CLUSTER_DRIVER=kubernetes` (uses in-cluster SA mounts or `WARRANT_KUBE_API_URL`) and `WARRANT_TETRAGON_SENSOR_TOKEN=<sensor-secret>`
+> **Production Kubernetes Cluster Handoff (`k8s/`):** To point `warrantd` at a live Kubernetes + Cilium cluster instead of `fleet-sim` (`/api/v1/simulate/*` fault-injection drills are automatically disabled in `kubernetes` and `live` feed modes):
+> - `WARRANT_CLUSTER_DRIVER=kubernetes` (uses in-cluster SA mounts or `WARRANT_KUBE_API_URL`), `WARRANT_TETRAGON_SENSOR_TOKEN=<sensor-secret>`, and `WARRANT_INTAKE_TOKEN=<scanner-intake-secret>`
 > - `WARRANT_KMS_SIGN_URL=https://<vault-or-kms-proxy>/v1/sign` and `WARRANT_KMS_PUBLIC_KEY_B64=<ed25519-pub-b64>`
-> - `WARRANT_EXTERNAL_ANCHOR_URL=https://<rekor-or-s3-object-lock-webhook>/anchor` and `WARRANT_BOOTSTRAP_ADMIN_TOKEN=<iam-registrar-token>`
+> - `WARRANT_EXTERNAL_ANCHOR_URL=https://<rekor-or-s3-object-lock-webhook>/anchor` and one-shot `WARRANT_BOOTSTRAP_ADMIN_TOKEN=<genesis-registrar-secret>` (auto-disabled after seal)
 
 ### Optional Zero-Cost Live Threat & Scanner Feeds (`offline` Enclave Default vs. `live`)
 
@@ -164,24 +168,27 @@ go build -o warrant ./cmd/warrant
 ./warrant pipeline list
 ./warrant estate
 
-# Generate explicit AC-5 Ed25519 key bundles (Slot 1 Service Owner + Slot 2 Authorizing Official)
-./warrant keygen --id usr-so-01 --email so@agency.gov --role SERVICE_OWNER --out so-key.json
-./warrant keygen --id usr-ao-01 --email ao@agency.gov --role AUTHORIZING_OFFICIAL --out ao-key.json
+# Generate split AC-5 Ed25519 keypairs (<name>.priv.json [0600] + <name>.pub.json [0644 public-only])
+./warrant keygen --id usr-so-01 --email so@agency.gov --role SERVICE_OWNER --out so-key
+./warrant keygen --id usr-ao-01 --email ao@agency.gov --role AUTHORIZING_OFFICIAL --out ao-key
 
-# Enroll public keys in N1 (private keys never leave disk; requires out-of-band WARRANT_BOOTSTRAP_ADMIN_TOKEN)
-./warrant principals register --key so-key.json --admin-token "$WARRANT_BOOTSTRAP_ADMIN_TOKEN"
-./warrant principals register --key ao-key.json --admin-token "$WARRANT_BOOTSTRAP_ADMIN_TOKEN"
+# One-shot genesis enrollment using ONLY .pub.json (private keys never touch network subcommands)
+./warrant principals register --pub so-key.pub.json --admin-token "$WARRANT_BOOTSTRAP_ADMIN_TOKEN"
+./warrant principals register --pub ao-key.pub.json --admin-token "$WARRANT_BOOTSTRAP_ADMIN_TOKEN"
+./warrant principals seal --admin-token "$WARRANT_BOOTSTRAP_ADMIN_TOKEN"
 
-# Draft, 2-of-2 co-sign, and submit an RFC 8785 JCS Standing Warrant DSSE envelope
+# Draft, 2-of-2 co-sign, and submit an RFC 8785 JCS Standing Warrant DSSE envelope (also auto-seals bootstrap)
 ./warrant warrants draft --class KEV-TIER1-STATELESS --services payments-ledger-api --out warrant.dsse.json
-./warrant warrants sign --in warrant.dsse.json --slot 1 --key so-key.json
-./warrant warrants sign --in warrant.dsse.json --slot 2 --key ao-key.json
+./warrant warrants sign --in warrant.dsse.json --slot 1 --key so-key.priv.json
+./warrant warrants sign --in warrant.dsse.json --slot 2 --key ao-key.priv.json
 ./warrant warrants submit warrant.dsse.json
 
-# Execute atomic 3-step Quarantined Rollback (Contain-Before-Unban) if a post-closure regression occurs
-./warrant pipeline rollback <remediation-id> --actor sre-oncall --reason LATENT_POOL_LEAK
+# Post-seal enrollment requires 2-of-2 DSSE co-signatures; emergency rollback & revocation use 1-of-2 active principal DSSE
+./warrant principals register --pub ao-backup.pub.json --slot1-key so-key.priv.json --slot2-key ao-key.priv.json
+./warrant pipeline rollback <remediation-id> --key so-key.priv.json --reason LATENT_POOL_LEAK
+./warrant principals revoke --principal usr-so-01 --key ao-key.priv.json --reason KEY_ROTATED
 
-# Verify all 3 ledger hash chains + External Merkle Checkpoints & verify OSCAL 1.1.2 POA&M via kernel key ring
+# Verify all 6 immutable hash chains + External Merkle Checkpoints & verify OSCAL 1.1.2 POA&M via kernel key ring
 ./warrant ledger verify
 ./warrant ledger checkpoints
 ./warrant oscal export <attestation-id> poam-bundle.json
@@ -210,17 +217,18 @@ from g1_warrant import (
 client = WarrantClient("http://localhost:8080")
 admin_tok = os.environ["WARRANT_BOOTSTRAP_ADMIN_TOKEN"]
 
-# 1. Generate, enroll public keys in N1, and 2-of-2 co-sign + submit a Standing Warrant
+# 1. Generate keys, enroll public-only identities during genesis, and 2-of-2 co-sign + submit a Standing Warrant
+#    (submitting the first Standing Warrant automatically seals genesis bootstrap!)
 so = generate_ed25519_signer_bundle("usr-so-01", "so@agency.gov", "Service Owner", ROLE_SERVICE_OWNER)
 ao = generate_ed25519_signer_bundle("usr-ao-01", "ao@agency.gov", "Authorizing Official", ROLE_AUTHORIZING_OFFICIAL)
-client.register_principal(so, admin_token=admin_tok)
-client.register_principal(ao, admin_token=admin_tok)
+client.register_principal(so.to_public_identity(), admin_token=admin_tok)
+client.register_principal(ao.to_public_identity(), admin_token=admin_tok)
 
 env = draft_warrant_envelope(scope_services=["payments-ledger-api"], max_cvss=10.0)
 so.sign_envelope(1, env)
 ao.sign_envelope(2, env)
 warrant = client.create_warrant(env)
-print("Minted Standing Warrant:", warrant["warrant_id"], warrant["live_status"])
+print("Minted Standing Warrant (bootstrap auto-sealed):", warrant["warrant_id"], warrant["live_status"])
 
 # 2. Export a closed NIST OSCAL 1.1.2 POA&M bundle & verify against the append-only kernel public-key ring
 atts = client.list_attestations()
@@ -233,7 +241,7 @@ if atts:
 ### 3. Go Client SDK (`pkg/warrantsdk`)
 
 ```bash
-go get github.com/cgilbert61/G1-Warrant/pkg/warrantsdk@v1.0.0
+go get github.com/cgilbert61/G1-Warrant/pkg/warrantsdk@v1.0.1
 ```
 
 ```go
@@ -255,7 +263,7 @@ rep, err := cli.VerifyLedgerChains(ctx)
 | **View 2 — Warrant Desk** | `N1` Approval Pressure Analytics, Four-Eyes Ceiling Exception Cockpit, `2-of-2` Standing Warrant DSSE Composer, W3C WebAuthn hardware key enrollment, and live signer key revocation. |
 | **View 3 — Shadow & Estate** | Split-pane Differential Shadow Inspector (order-sensitive JSON diff with per-service `unordered_array_paths` opt-ins, `p50/p95/p99` latency bars, eBPF syscall/file/egress diff) and 5-Gate 3-Tier Graduated Autonomy Scorecard. |
 | **View 4 — Containment & Drift** | Active `ZERO_PROSE_EGRESS_MESH_QUARANTINE` & `SIGNED_RULEPACK_L7_SHIELD` bridges, YAML/Rego inspector, `ValidatingAdmissionPolicy` digest lockouts, and streaming runtime drift monitor. |
-| **View 5 — OSCAL Vault & Ledger** | Dual-tier DSSE-signed NIST OSCAL `1.1.2` POA&M Vault with in-browser verification, Scoped 3PAO `/auditor` bearer link generator, and 3-table SHA-256 + External Merkle Checkpoint verifier. |
+| **View 5 — OSCAL Vault & Ledger** | Dual-tier DSSE-signed NIST OSCAL `1.1.2` POA&M Vault with in-browser verification, Scoped 3PAO `/auditor` bearer link generator, and 6-table SHA-256 + External Merkle Checkpoint verifier. |
 
 ---
 
@@ -282,7 +290,7 @@ make license-check
 # Run all 9 Federal DevSecOps compliance gates locally
 make compliance-check
 
-# Run embedded OPA Rego policy tests (22/22) + Go -race 9-invariant & live-feed E2E suite
+# Run embedded OPA Rego policy tests (22/22) + Go -race 10-invariant & live-feed E2E suite
 make docker-test
 ```
 
@@ -293,7 +301,7 @@ make docker-test
 - [`cmd/`](cmd/) — `warrantd` control plane, `warrant` native Go CLI, `warrant-extractor` zero-egress parser, and `fleet-sim` simulator
 - [`internal/`](internal/) — Deterministic Pure-Go engines (`warrant`, `gate`, `verify`, `agentcp`, `ledger`, `crypto`, `policy`, `adapters`, `db`, `e2e`)
 - [`policies/`](policies/) — Embedded OPA Rego v1 policies & unit tests (`warrant_ac5.rego`, `gate_eligibility.rego`, `verify_closure.rego`)
-- [`db/migrations/`](db/migrations/) — PostgreSQL 16 schema & `BEFORE UPDATE OR DELETE` append-only immutability triggers (`001`–`005`)
+- [`db/migrations/`](db/migrations/) — PostgreSQL 16 schema & `BEFORE UPDATE OR DELETE` append-only immutability triggers (`001`–`006`)
 - [`pkg/warrantsdk/`](pkg/warrantsdk/) & [`sdk/python/`](sdk/python/) — Official Go & Python Client SDKs and offline DSSE/OSCAL verifiers
 - [`k8s/`](k8s/) — Production Kubernetes Deployment, `NetworkPolicy` zero-egress isolation, and RBAC manifests
 - [`web/`](web/) — Embedded React 19 + TypeScript Section 508 / WCAG 2.1 AA 5-View Operator Console

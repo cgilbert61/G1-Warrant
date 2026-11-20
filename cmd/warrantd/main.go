@@ -75,7 +75,7 @@ func main() {
 		log.Fatalf("initialize control-plane orchestrator: %v", err)
 	}
 
-	if os.Getenv("WARRANT_ENABLE_TEST_SMARTCARDS") == "true" && os.Getenv("SKIP_SEED") != "true" {
+	if os.Getenv("SKIP_SEED") != "true" {
 		if err := orch.SeedEnterpriseEstate(ctx); err != nil {
 			log.Printf("seed warning: %v", err)
 		}

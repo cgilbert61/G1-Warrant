@@ -19,11 +19,12 @@ const (
 	AlgWebAuthnES256 = "WebAuthn-ES256"
 	AlgWebAuthnEdDSA = "WebAuthn-EdDSA"
 
-	PayloadTypeWarrant     = "application/vnd.g1163rt.warrant.v1+json"
-	PayloadTypeThaw        = "application/vnd.g1163rt.freeze-thaw.v1+json"
-	PayloadTypeException   = "application/vnd.g1163rt.exception-resolution.v1+json"
-	PayloadTypeAttestation = "application/vnd.g1163rt.oscal-attestation.v1+json"
-	PayloadTypeTaskWarrant = "application/vnd.g1163rt.task-warrant.v1+json"
+	PayloadTypeWarrant             = "application/vnd.g1163rt.warrant.v1+json"
+	PayloadTypeThaw                = "application/vnd.g1163rt.freeze-thaw.v1+json"
+	PayloadTypeException           = "application/vnd.g1163rt.exception-resolution.v1+json"
+	PayloadTypeAttestation         = "application/vnd.g1163rt.oscal-attestation.v1+json"
+	PayloadTypeTaskWarrant         = "application/vnd.g1163rt.task-warrant.v1+json"
+	PayloadTypePrincipalGovernance = "application/vnd.g1163rt.principal-governance.v1+json"
 
 	RoleServiceOwner        = "SERVICE_OWNER"
 	RoleAuthorizingOfficial = "AUTHORIZING_OFFICIAL"
@@ -263,7 +264,9 @@ func VerifyDualHumanCeremony(env *Envelope, expectedPayloadType string, resolver
 	}
 
 	var slot1Key, slot2Key *PrincipalKey
+	var slot1Sig, slot2Sig *Signature
 	for idx, sig := range env.Signatures {
+		sigCopy := sig
 		pk, err := resolver.ResolveKey(sig.KeyID)
 		if err != nil {
 			return nil, fmt.Errorf("AC5_UNKNOWN_SIGNER (sig %d): %w", idx, err)
@@ -280,11 +283,13 @@ func VerifyDualHumanCeremony(env *Envelope, expectedPayloadType string, resolver
 				return nil, fmt.Errorf("AC5_SLOT1_ROLE_MISMATCH: Slot 1 requires SERVICE_OWNER, got %s (%s)", pk.Role, pk.PrincipalID)
 			}
 			slot1Key = pk
+			slot1Sig = &sigCopy
 		case (sig.Slot == 2 || (sig.Slot == 0 && slot2Key == nil && pk.Role == RoleAuthorizingOfficial)):
 			if pk.Role != RoleAuthorizingOfficial {
 				return nil, fmt.Errorf("AC5_SLOT2_ROLE_MISMATCH: Slot 2 requires AUTHORIZING_OFFICIAL, got %s (%s)", pk.Role, pk.PrincipalID)
 			}
 			slot2Key = pk
+			slot2Sig = &sigCopy
 		}
 	}
 
@@ -300,7 +305,12 @@ func VerifyDualHumanCeremony(env *Envelope, expectedPayloadType string, resolver
 	if strings.EqualFold(slot1Key.Email, slot2Key.Email) {
 		return nil, fmt.Errorf("AC5_SAME_EMAIL_REJECTED: identical email %q across Slot 1 and Slot 2", slot1Key.Email)
 	}
-	if strings.EqualFold(slot1Key.KeyFingerprint, slot2Key.KeyFingerprint) {
+	if slot1Sig != nil && slot2Sig != nil && slot1Sig.KeyFingerprint != "" && slot2Sig.KeyFingerprint != "" &&
+		strings.EqualFold(slot1Sig.KeyFingerprint, slot2Sig.KeyFingerprint) {
+		return nil, fmt.Errorf("AC5_SAME_KEY_REJECTED: identical envelope signature key_fingerprint %q across Slot 1 and Slot 2", slot1Sig.KeyFingerprint)
+	}
+	if strings.EqualFold(slot1Key.KeyFingerprint, slot2Key.KeyFingerprint) ||
+		SHA256Hex(slot1Key.PublicKeyBytes) == SHA256Hex(slot2Key.PublicKeyBytes) {
 		return nil, fmt.Errorf("AC5_SAME_KEY_REJECTED: identical public key fingerprint %q across Slot 1 and Slot 2", slot1Key.KeyFingerprint)
 	}
 
@@ -309,5 +319,55 @@ func VerifyDualHumanCeremony(env *Envelope, expectedPayloadType string, resolver
 		PayloadSHA256:    SHA256Hex(canon),
 		Slot1:            slot1Key,
 		Slot2:            slot2Key,
+	}, nil
+}
+
+// SinglePrincipalVerificationResult captures a verified 1-of-2 active human principal signature
+// for fail-closed asymmetric actions (e.g. REVOKE_PRINCIPAL, EMERGENCY_FREEZE, EMERGENCY_ROLLBACK).
+type SinglePrincipalVerificationResult struct {
+	CanonicalPayload []byte
+	PayloadSHA256    string
+	Signer           *PrincipalKey
+}
+
+// VerifySingleActivePrincipalCeremony verifies a 1-of-2 DSSE envelope signed by ANY single active
+// (unrevoked) SERVICE_OWNER or AUTHORIZING_OFFICIAL principal.
+func VerifySingleActivePrincipalCeremony(env *Envelope, expectedPayloadType string, resolver KeyResolver, webauthnCfg WebAuthnConfig) (*SinglePrincipalVerificationResult, error) {
+	if env == nil {
+		return nil, errors.New("DSSE_MISSING_ENVELOPE: nil DSSE envelope")
+	}
+	if expectedPayloadType != "" && env.PayloadType != expectedPayloadType {
+		return nil, fmt.Errorf("DSSE_PAYLOAD_TYPE_MISMATCH: got %q want %q", env.PayloadType, expectedPayloadType)
+	}
+	if len(env.Signatures) < 1 {
+		return nil, errors.New("DSSE_SIGNATURE_REQUIRED: expected at least 1 active principal signature")
+	}
+	rawPayload, err := env.DecodePayload()
+	if err != nil {
+		return nil, fmt.Errorf("DSSE_PAYLOAD_DECODE_ERR: %w", err)
+	}
+	canon, err := CanonicalizeJSON(rawPayload)
+	if err != nil {
+		return nil, fmt.Errorf("DSSE_JCS_INVALID: %w", err)
+	}
+	if string(canon) != string(rawPayload) {
+		return nil, errors.New("DSSE_PAYLOAD_NOT_CANONICAL_JCS: payload bytes deviate from RFC 8785 JCS")
+	}
+
+	sig := env.Signatures[0]
+	pk, err := resolver.ResolveKey(sig.KeyID)
+	if err != nil {
+		return nil, fmt.Errorf("AC5_UNKNOWN_SIGNER: %w", err)
+	}
+	if pk.Role != RoleServiceOwner && pk.Role != RoleAuthorizingOfficial {
+		return nil, fmt.Errorf("AC5_UNAUTHORIZED_ROLE: role %s (%s) cannot authorize governance/emergency action", pk.Role, pk.PrincipalID)
+	}
+	if err := VerifySingleSignature(env.PayloadType, rawPayload, sig, pk, webauthnCfg); err != nil {
+		return nil, fmt.Errorf("DSSE_SIG_INVALID: %w", err)
+	}
+	return &SinglePrincipalVerificationResult{
+		CanonicalPayload: canon,
+		PayloadSHA256:    SHA256Hex(canon),
+		Signer:           pk,
 	}, nil
 }

@@ -59,6 +59,8 @@ services:
       WEBAUTHN_RP_ORIGIN: "http://localhost:8080"
       WARRANT_ENABLE_TEST_SMARTCARDS: "${WARRANT_ENABLE_TEST_SMARTCARDS:-false}"
       WARRANT_BOOTSTRAP_ADMIN_TOKEN: "${WARRANT_BOOTSTRAP_ADMIN_TOKEN:-}"
+      WARRANT_OPERATOR_TOKEN: "${WARRANT_OPERATOR_TOKEN:-}"
+      WARRANT_INTAKE_TOKEN: "${WARRANT_INTAKE_TOKEN:-}"
       WARRANT_EXTERNAL_ANCHOR_PATH: "/var/lib/warrant-anchor/checkpoints.jsonl"
       WARRANT_FEED_MODE: "${WARRANT_FEED_MODE:-offline}"
       WARRANT_CISA_KEV_URL: "${WARRANT_CISA_KEV_URL:-https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json}"

@@ -23,7 +23,7 @@ const PayloadTypeCheckpoint = "application/vnd.g1163rt.ledger-checkpoint.v1+json
 
 // TransparencyAnchor ships DSSE-signed Merkle Root checkpoints outside PostgreSQL
 // (to an append-only external JSONL receipt log and/or remote HTTP transparency/S3-Object-Lock webhook)
-// so a rogue PostgreSQL superuser who disables triggers cannot rewrite historical audit rows undetected.
+// so a rogue PostgreSQL superuser who disables triggers cannot rewrite historical audit rows or inject unanchored keys undetected.
 type TransparencyAnchor struct {
 	mu          sync.Mutex
 	receiptPath string
@@ -47,18 +47,21 @@ func NewTransparencyAnchor(receiptPath, webhookURL string) *TransparencyAnchor {
 	}
 }
 
-// AnchorCheckpoint signs a combined Merkle root over all 3 ledger tables and ships it to the external trust boundary.
+// AnchorCheckpoint signs a combined 6-chain Merkle root (MerkleVersion=2) over all 6 immutable tables
+// and ships it to the external trust boundary.
 func (a *TransparencyAnchor) AnchorCheckpoint(ctx context.Context, store *db.Store, signer crypto.EnvelopeSigner) (*models.LedgerCheckpoint, error) {
+	// Note: compute current chain heads directly from VerifyAllLedgerChains without passing stale external witnesses
+	// (we verify internal chain continuity before sealing the new external checkpoint!)
 	rep, err := store.VerifyAllLedgerChains(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if !rep.AllValid {
-		return nil, fmt.Errorf("cannot anchor corrupted ledger chain")
+		return nil, fmt.Errorf("cannot anchor corrupted ledger chain: %s", rep.SuperuserTamperDetail)
 	}
 
-	var wHead, agHead, attHead string
-	var wRows, agRows, attRows int
+	var wHead, agHead, attHead, pHead, revHead, kHead string
+	var wRows, agRows, attRows, pRows, revRows, kRows int
 	for _, t := range rep.Tables {
 		switch t.TableName {
 		case "warrant_envelopes":
@@ -67,21 +70,41 @@ func (a *TransparencyAnchor) AnchorCheckpoint(ctx context.Context, store *db.Sto
 			agHead, agRows = t.TerminalHash, t.RowCount
 		case "attestation_records":
 			attHead, attRows = t.TerminalHash, t.RowCount
+		case "principals":
+			pHead, pRows = t.TerminalHash, t.RowCount
+		case "principal_revocations":
+			revHead, revRows = t.TerminalHash, t.RowCount
+		case "kernel_public_keys":
+			kHead, kRows = t.TerminalHash, t.RowCount
 		}
 	}
 
-	merkleRoot := db.ComputeCombinedMerkleRoot(wHead, wRows, agHead, agRows, attHead, attRows)
+	merkleRoot := db.ComputeCombinedMerkleRootV2(
+		wHead, wRows,
+		agHead, agRows,
+		attHead, attRows,
+		pHead, pRows,
+		revHead, revRows,
+		kHead, kRows,
+	)
 	now := time.Now().UTC()
 	cpID := "chk-" + uuid.NewString()[:8]
 
 	payload := map[string]any{
 		"checkpoint_id":         cpID,
+		"merkle_version":        2,
 		"warrant_head_hash":     wHead,
 		"warrant_row_count":     wRows,
 		"agent_head_hash":       agHead,
 		"agent_row_count":       agRows,
 		"attestation_head_hash": attHead,
 		"attestation_row_count": attRows,
+		"principal_head_hash":   pHead,
+		"principal_row_count":   pRows,
+		"revocation_head_hash":  revHead,
+		"revocation_row_count":  revRows,
+		"kernel_key_head_hash":  kHead,
+		"kernel_key_row_count":  kRows,
 		"combined_merkle_root":  merkleRoot,
 		"anchored_at":           now.Format(time.RFC3339),
 	}
@@ -99,27 +122,35 @@ func (a *TransparencyAnchor) AnchorCheckpoint(ctx context.Context, store *db.Sto
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	cp := models.LedgerCheckpoint{
+		CheckpointID:         cpID,
+		MerkleVersion:        2,
+		WarrantHeadHash:      wHead,
+		WarrantRowCount:      wRows,
+		AgentHeadHash:        agHead,
+		AgentRowCount:        agRows,
+		AttestationHeadHash:  attHead,
+		AttestationRowCount:  attRows,
+		PrincipalHeadHash:    pHead,
+		PrincipalRowCount:    pRows,
+		RevocationHeadHash:   revHead,
+		RevocationRowCount:   revRows,
+		KernelKeyHeadHash:    kHead,
+		KernelKeyRowCount:    kRows,
+		CombinedMerkleRoot:   merkleRoot,
+		DSSEEnvelope:         *env,
+		ExternalAnchorTarget: target,
+		ExternalReceiptHash:  receiptHash,
+		AnchoredAt:           now,
+	}
+
 	// 1. Optional external append-only file / mounted WORM volume sink
 	if a.receiptPath != "" {
-		target = "EXTERNAL_WORM_FILE:" + a.receiptPath
+		cp.ExternalAnchorTarget = "EXTERNAL_WORM_FILE:" + a.receiptPath
 		if dir := filepath.Dir(a.receiptPath); dir != "" && dir != "." {
 			_ = os.MkdirAll(dir, 0750)
 		}
-		lineObj := models.LedgerCheckpoint{
-			CheckpointID:         cpID,
-			WarrantHeadHash:      wHead,
-			WarrantRowCount:      wRows,
-			AgentHeadHash:        agHead,
-			AgentRowCount:        agRows,
-			AttestationHeadHash:  attHead,
-			AttestationRowCount:  attRows,
-			CombinedMerkleRoot:   merkleRoot,
-			DSSEEnvelope:         *env,
-			ExternalAnchorTarget: target,
-			ExternalReceiptHash:  receiptHash,
-			AnchoredAt:           now,
-		}
-		if rawLine, mErr := json.Marshal(lineObj); mErr == nil {
+		if rawLine, mErr := json.Marshal(cp); mErr == nil {
 			f, fErr := os.OpenFile(a.receiptPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 			if fErr == nil {
 				_, _ = f.Write(append(rawLine, '\n'))
@@ -130,9 +161,10 @@ func (a *TransparencyAnchor) AnchorCheckpoint(ctx context.Context, store *db.Sto
 
 	// 2. Optional remote Transparency Log / S3 Object Lock / RFC 3161 webhook
 	if a.webhookURL != "" {
-		target = "EXTERNAL_WEBHOOK:" + a.webhookURL
+		cp.ExternalAnchorTarget = "EXTERNAL_WEBHOOK:" + a.webhookURL
 		reqBytes, _ := json.Marshal(map[string]any{
 			"checkpoint_id":        cpID,
+			"merkle_version":       2,
 			"combined_merkle_root": merkleRoot,
 			"dsse_envelope":        env,
 		})
@@ -143,26 +175,12 @@ func (a *TransparencyAnchor) AnchorCheckpoint(ctx context.Context, store *db.Sto
 				respBody, _ := io.ReadAll(resp.Body)
 				_ = resp.Body.Close()
 				if len(respBody) > 0 {
-					receiptHash = crypto.SHA256Hex(respBody)
+					cp.ExternalReceiptHash = crypto.SHA256Hex(respBody)
 				}
 			}
 		}
 	}
 
-	cp := models.LedgerCheckpoint{
-		CheckpointID:         cpID,
-		WarrantHeadHash:      wHead,
-		WarrantRowCount:      wRows,
-		AgentHeadHash:        agHead,
-		AgentRowCount:        agRows,
-		AttestationHeadHash:  attHead,
-		AttestationRowCount:  attRows,
-		CombinedMerkleRoot:   merkleRoot,
-		DSSEEnvelope:         *env,
-		ExternalAnchorTarget: target,
-		ExternalReceiptHash:  receiptHash,
-		AnchoredAt:           now,
-	}
 	a.inMemLog = append([]models.LedgerCheckpoint{cp}, a.inMemLog...)
 	_ = store.SaveLedgerCheckpoint(ctx, cp)
 	return &cp, nil

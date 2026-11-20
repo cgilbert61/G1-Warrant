@@ -1,12 +1,16 @@
 package warrantsdk
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/cgilbert61/G1-Warrant/internal/crypto"
@@ -97,6 +101,123 @@ func (b *SignerKeyBundle) ToRegisterRequest() RegisterPrincipalRequest {
 		Alg:          b.Alg,
 		PublicKeyB64: b.PublicKeyB64,
 	}
+}
+
+// PublicIdentityBundle contains strictly the non-secret public verification identity
+// written to <name>.pub.json so operators never pass a private-key path to network enrollment commands.
+type PublicIdentityBundle struct {
+	PrincipalID    string `json:"principal_id"`
+	Email          string `json:"email"`
+	DisplayName    string `json:"display_name"`
+	Role           string `json:"role"`
+	KeyID          string `json:"key_id"`
+	Alg            string `json:"alg"`
+	PublicKeyB64   string `json:"public_key_b64"`
+	KeyFingerprint string `json:"key_fingerprint"`
+	CreatedAt      string `json:"created_at"`
+}
+
+// ToPublicIdentity extracts a PublicIdentityBundle with zero private key material.
+func (b *SignerKeyBundle) ToPublicIdentity() PublicIdentityBundle {
+	return PublicIdentityBundle{
+		PrincipalID:    b.PrincipalID,
+		Email:          b.Email,
+		DisplayName:    b.DisplayName,
+		Role:           b.Role,
+		KeyID:          b.KeyID,
+		Alg:            b.Alg,
+		PublicKeyB64:   b.PublicKeyB64,
+		KeyFingerprint: b.KeyFingerprint,
+		CreatedAt:      b.CreatedAt,
+	}
+}
+
+// ToRegisterRequest converts a PublicIdentityBundle into a RegisterPrincipalRequest.
+func (p *PublicIdentityBundle) ToRegisterRequest() RegisterPrincipalRequest {
+	return RegisterPrincipalRequest{
+		PrincipalID:  p.PrincipalID,
+		Email:        p.Email,
+		DisplayName:  p.DisplayName,
+		Role:         p.Role,
+		KeyID:        p.KeyID,
+		Alg:          p.Alg,
+		PublicKeyB64: p.PublicKeyB64,
+	}
+}
+
+// ResolveSplitKeyPaths normalizes a key prefix or path into <base>.priv.json and <base>.pub.json.
+func ResolveSplitKeyPaths(outPrefix string) (privPath string, pubPath string) {
+	base := strings.TrimSpace(outPrefix)
+	for _, suf := range []string{".priv.json", ".pub.json", ".json"} {
+		if strings.HasSuffix(strings.ToLower(base), suf) {
+			base = base[:len(base)-len(suf)]
+			break
+		}
+	}
+	if base == "" {
+		base = "signer"
+	}
+	return base + ".priv.json", base + ".pub.json"
+}
+
+// WriteSplitKeyPairFiles writes <name>.priv.json (0600 permissions) and <name>.pub.json (0644, public-only).
+// On POSIX platforms (runtime.GOOS != "windows"), verifies the written private key file permissions are strictly 0600.
+func WriteSplitKeyPairFiles(outPrefix string, bundle *SignerKeyBundle) (string, string, error) {
+	if bundle == nil {
+		return "", "", errors.New("nil SignerKeyBundle")
+	}
+	privPath, pubPath := ResolveSplitKeyPaths(outPrefix)
+	privRaw, err := json.MarshalIndent(bundle, "", "  ")
+	if err != nil {
+		return "", "", err
+	}
+	if err := os.WriteFile(privPath, privRaw, 0600); err != nil {
+		return "", "", fmt.Errorf("write %s: %w", privPath, err)
+	}
+	if runtime.GOOS != "windows" {
+		_ = os.Chmod(privPath, 0600)
+		st, stErr := os.Stat(privPath)
+		if stErr != nil {
+			return "", "", stErr
+		}
+		if st.Mode().Perm() != 0600 {
+			return "", "", fmt.Errorf("private key file %s permissions %04o != 0600", privPath, st.Mode().Perm())
+		}
+	}
+
+	pubObj := bundle.ToPublicIdentity()
+	pubRaw, err := json.MarshalIndent(pubObj, "", "  ")
+	if err != nil {
+		return "", "", err
+	}
+	if err := os.WriteFile(pubPath, pubRaw, 0644); err != nil {
+		return "", "", fmt.Errorf("write %s: %w", pubPath, err)
+	}
+	return privPath, pubPath, nil
+}
+
+// LoadPublicIdentityFile loads a <name>.pub.json file and strictly rejects any JSON containing private_key* fields.
+func LoadPublicIdentityFile(rawJSON []byte) (*PublicIdentityBundle, error) {
+	var rawMap map[string]any
+	if err := json.Unmarshal(rawJSON, &rawMap); err != nil {
+		return nil, fmt.Errorf("decode public identity JSON: %w", err)
+	}
+	for k := range rawMap {
+		lk := strings.ToLower(strings.TrimSpace(k))
+		if strings.Contains(lk, "private_key") || strings.Contains(lk, "priv_key") || lk == "seed_hex" || strings.Contains(lk, "secret_key") {
+			return nil, fmt.Errorf("PRIVATE_KEY_REJECTED_CLIENT_SIDE: file contains secret field %q; pass <name>.pub.json instead of <name>.priv.json", k)
+		}
+	}
+	dec := json.NewDecoder(bytes.NewReader(rawJSON))
+	dec.DisallowUnknownFields()
+	var pub PublicIdentityBundle
+	if err := dec.Decode(&pub); err != nil {
+		return nil, fmt.Errorf("decode PublicIdentityBundle: %w", err)
+	}
+	if pub.PrincipalID == "" || pub.Email == "" || pub.Role == "" || pub.PublicKeyB64 == "" {
+		return nil, errors.New("incomplete PublicIdentityBundle: principal_id, email, role, and public_key_b64 are required")
+	}
+	return &pub, nil
 }
 
 // SignEnvelope appends a slot-bound Ed25519 signature over DSSEv1 PAE bytes to env.
@@ -217,6 +338,58 @@ func DraftExceptionResolutionEnvelope(ex CeilingException) (*Envelope, error) {
 		"evaluated_at":   time.Now().UTC().Format(time.RFC3339),
 	})
 	return env, err
+}
+
+// DraftGovernanceEnvelope constructs an unsigned RFC 8785 JCS Principal Governance DSSEv1 envelope
+// with a fresh single-use envelope_id and bounded short TTL (default 5m, max 15m).
+func DraftGovernanceEnvelope(action string, payload PrincipalGovernancePayload, ttl time.Duration) (*Envelope, PrincipalGovernancePayload, error) {
+	if ttl <= 0 || ttl > 15*time.Minute {
+		ttl = 5 * time.Minute
+	}
+	now := time.Now().UTC()
+	if payload.EnvelopeID == "" {
+		payload.EnvelopeID = "gov-" + uuid.NewString()
+	}
+	payload.Action = action
+	payload.IssuedAt = now.Format(time.RFC3339)
+	payload.ExpiresAt = now.Add(ttl).Format(time.RFC3339)
+
+	env, _, err := crypto.NewUnsignedEnvelope(PayloadTypePrincipalGovernance, payload)
+	if err != nil {
+		return nil, PrincipalGovernancePayload{}, err
+	}
+	return env, payload, nil
+}
+
+// DraftPrincipalEnrollEnvelope builds an unsigned 2-of-2 DSSE Principal Governance envelope (ENROLL_PRINCIPAL)
+// for enrolling a new or rotated public key after genesis bootstrap has been sealed.
+func DraftPrincipalEnrollEnvelope(req RegisterPrincipalRequest, ttl time.Duration) (*Envelope, PrincipalGovernancePayload, error) {
+	alg := req.Alg
+	if alg == "" {
+		alg = crypto.AlgEd25519
+	}
+	return DraftGovernanceEnvelope(GovActionEnrollPrincipal, PrincipalGovernancePayload{
+		PrincipalID:  req.PrincipalID,
+		Email:        req.Email,
+		DisplayName:  req.DisplayName,
+		Role:         req.Role,
+		KeyID:        req.KeyID,
+		Alg:          alg,
+		PublicKeyB64: req.PublicKeyB64,
+	}, ttl)
+}
+
+// DraftPrincipalRevokeEnvelope builds an unsigned 1-of-2 DSSE Principal Governance envelope (REVOKE_PRINCIPAL)
+// so any single active enrolled principal can immediately revoke a compromised or departed key.
+func DraftPrincipalRevokeEnvelope(targetPrincipalID, targetKeyFingerprint, reasonCode string, ttl time.Duration) (*Envelope, PrincipalGovernancePayload, error) {
+	if reasonCode == "" {
+		reasonCode = "SDK_KEY_REVOCATION"
+	}
+	return DraftGovernanceEnvelope(GovActionRevokePrincipal, PrincipalGovernancePayload{
+		TargetPrincipalID:    targetPrincipalID,
+		TargetKeyFingerprint: targetKeyFingerprint,
+		ReasonCode:           reasonCode,
+	}, ttl)
 }
 
 // OfflineVerificationResult summarizes standalone air-gapped verification of a signed OSCAL POA&M bundle.

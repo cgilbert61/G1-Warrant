@@ -23,6 +23,10 @@ const (
 	lockWarrantChain     int64 = 1001001
 	lockAgentActionChain int64 = 1001002
 	lockAttestationChain int64 = 1001003
+	lockPrincipalChain   int64 = 1001004
+	lockRevocationChain  int64 = 1001005
+	lockKernelKeyChain   int64 = 1001006
+	lockBootstrapSeal    int64 = 1001007
 )
 
 // Store manages PostgreSQL persistence, append-only hash chains, and LISTEN/NOTIFY streams.
@@ -85,28 +89,152 @@ func (s *Store) Migrate(ctx context.Context) error {
 	return nil
 }
 
-// UpsertPrincipal registers or updates a principal key in the principals registry.
-func (s *Store) UpsertPrincipal(ctx context.Context, p models.Principal) error {
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO principals (
-			principal_id, email, display_name, role, key_id, alg, public_key_b64, key_fingerprint, authenticator_mode, credential_id
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-		ON CONFLICT (principal_id) DO UPDATE SET
-			key_id = EXCLUDED.key_id,
-			alg = EXCLUDED.alg,
-			public_key_b64 = EXCLUDED.public_key_b64,
-			key_fingerprint = EXCLUDED.key_fingerprint,
-			authenticator_mode = EXCLUDED.authenticator_mode,
-			credential_id = EXCLUDED.credential_id
-	`, p.PrincipalID, p.Email, p.DisplayName, p.Role, p.KeyID, p.Alg, p.PublicKeyB64, p.KeyFingerprint, p.AuthenticatorMode, p.CredentialID)
-	return err
+// ComputePrincipalEntryHash computes the deterministic SHA-256 chain link for principals.
+func ComputePrincipalEntryHash(prevHash string, p models.Principal) string {
+	material := strings.Join([]string{
+		"principals",
+		prevHash,
+		p.PrincipalID,
+		strings.ToLower(p.Email),
+		p.Role,
+		p.KeyID,
+		p.Alg,
+		p.PublicKeyB64,
+		strings.ToLower(p.KeyFingerprint),
+	}, "|")
+	return crypto.SHA256Hex([]byte(material))
 }
 
-// ListPrincipals returns all registered principals with live revocation status.
+// ComputeRevocationEntryHash computes the deterministic SHA-256 chain link for principal_revocations.
+func ComputeRevocationEntryHash(prevHash string, r models.PrincipalRevocation) string {
+	material := strings.Join([]string{
+		"principal_revocations",
+		prevHash,
+		r.RevocationID,
+		r.PrincipalID,
+		strings.ToLower(r.KeyFingerprint),
+		r.ReasonCode,
+		r.RevokedBy,
+	}, "|")
+	return crypto.SHA256Hex([]byte(material))
+}
+
+// ComputeKernelKeyEntryHash computes the deterministic SHA-256 chain link for kernel_public_keys.
+func ComputeKernelKeyEntryHash(prevHash, keyID, alg, pubB64, keyFP, backendMode string) string {
+	material := strings.Join([]string{
+		"kernel_public_keys",
+		prevHash,
+		keyID,
+		alg,
+		pubB64,
+		strings.ToLower(keyFP),
+		backendMode,
+	}, "|")
+	return crypto.SHA256Hex([]byte(material))
+}
+
+// AppendPrincipal enrolls a new principal in the append-only, hash-chained principals registry.
+// Enforces unique principal_id, email, public_key_b64, and key_fingerprint, and blocks re-enrolling revoked keys.
+func (s *Store) AppendPrincipal(ctx context.Context, p *models.Principal) error {
+	return s.insertPrincipalTx(ctx, p, false)
+}
+
+// UpsertPrincipal inserts a principal if absent (idempotent only when identical public key material is already enrolled;
+// never mutates existing rows on the append-only principals chain).
+func (s *Store) UpsertPrincipal(ctx context.Context, p models.Principal) error {
+	return s.insertPrincipalTx(ctx, &p, true)
+}
+
+func (s *Store) insertPrincipalTx(ctx context.Context, p *models.Principal, allowIdenticalIdempotent bool) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, lockPrincipalChain); err != nil {
+		return err
+	}
+
+	// Block re-enrollment of any revoked principal_id or key_fingerprint
+	var revReason string
+	revErr := tx.QueryRow(ctx, `
+		SELECT reason_code FROM principal_revocations
+		WHERE principal_id = $1 OR lower(key_fingerprint) = lower($2)
+		LIMIT 1
+	`, p.PrincipalID, p.KeyFingerprint).Scan(&revReason)
+	if revErr == nil {
+		return fmt.Errorf("AC5_REVOKED_KEY_REENROLLMENT_FORBIDDEN: principal or key fingerprint %s was previously revoked (%s)", p.KeyFingerprint, revReason)
+	}
+	if !errors.Is(revErr, pgx.ErrNoRows) {
+		return revErr
+	}
+
+	// Check for existing principal_id, email, public_key_b64, or key_fingerprint
+	var existID, existEmail, existRole, existKeyID, existPubB64, existFP, existPrev, existEntry string
+	var existCreated time.Time
+	dupErr := tx.QueryRow(ctx, `
+		SELECT principal_id, email, role, key_id, public_key_b64, key_fingerprint, prev_hash, entry_hash, created_at
+		FROM principals
+		WHERE principal_id = $1
+		   OR lower(email) = lower($2)
+		   OR public_key_b64 = $3
+		   OR lower(key_fingerprint) = lower($4)
+		LIMIT 1
+	`, p.PrincipalID, p.Email, p.PublicKeyB64, p.KeyFingerprint).Scan(
+		&existID, &existEmail, &existRole, &existKeyID, &existPubB64, &existFP, &existPrev, &existEntry, &existCreated,
+	)
+	if dupErr == nil {
+		if allowIdenticalIdempotent &&
+			existID == p.PrincipalID &&
+			strings.EqualFold(existEmail, p.Email) &&
+			existRole == p.Role &&
+			existKeyID == p.KeyID &&
+			existPubB64 == p.PublicKeyB64 &&
+			strings.EqualFold(existFP, p.KeyFingerprint) {
+			p.PrevHash = existPrev
+			p.EntryHash = existEntry
+			p.CreatedAt = existCreated
+			return nil
+		}
+		return fmt.Errorf("AC5_DUPLICATE_PRINCIPAL_OR_KEY: principal_id, email, or public key fingerprint %s is already enrolled", p.KeyFingerprint)
+	}
+	if !errors.Is(dupErr, pgx.ErrNoRows) {
+		return dupErr
+	}
+
+	prevHash := GenesisHash
+	err = tx.QueryRow(ctx, `SELECT entry_hash FROM principals ORDER BY seq_no DESC LIMIT 1`).Scan(&prevHash)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	if p.CreatedAt.IsZero() {
+		p.CreatedAt = time.Now().UTC()
+	}
+	p.PrevHash = prevHash
+	p.EntryHash = ComputePrincipalEntryHash(prevHash, *p)
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO principals (
+			principal_id, email, display_name, role, key_id, alg, public_key_b64, key_fingerprint,
+			authenticator_mode, credential_id, prev_hash, entry_hash, created_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+	`,
+		p.PrincipalID, p.Email, p.DisplayName, p.Role, p.KeyID, p.Alg, p.PublicKeyB64, p.KeyFingerprint,
+		p.AuthenticatorMode, p.CredentialID, p.PrevHash, p.EntryHash, p.CreatedAt,
+	)
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// ListPrincipals returns all registered principals with live revocation status and hash-chain links.
 func (s *Store) ListPrincipals(ctx context.Context) ([]models.Principal, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT p.principal_id, p.email, p.display_name, p.role, p.key_id, p.alg,
-		       p.public_key_b64, p.key_fingerprint, p.authenticator_mode, p.credential_id, p.created_at,
+		       p.public_key_b64, p.key_fingerprint, p.authenticator_mode, p.credential_id,
+		       p.prev_hash, p.entry_hash, p.created_at,
 		       COALESCE(r.reason_code, '') AS revoke_reason,
 		       (r.revocation_id IS NOT NULL) AS is_revoked
 		FROM principals p
@@ -117,7 +245,7 @@ func (s *Store) ListPrincipals(ctx context.Context) ([]models.Principal, error) 
 			ORDER BY pr.revoked_at DESC
 			LIMIT 1
 		) r ON TRUE
-		ORDER BY p.principal_id ASC
+		ORDER BY p.seq_no ASC
 	`)
 	if err != nil {
 		return nil, err
@@ -128,7 +256,8 @@ func (s *Store) ListPrincipals(ctx context.Context) ([]models.Principal, error) 
 		var p models.Principal
 		if err := rows.Scan(
 			&p.PrincipalID, &p.Email, &p.DisplayName, &p.Role, &p.KeyID, &p.Alg,
-			&p.PublicKeyB64, &p.KeyFingerprint, &p.AuthenticatorMode, &p.CredentialID, &p.CreatedAt,
+			&p.PublicKeyB64, &p.KeyFingerprint, &p.AuthenticatorMode, &p.CredentialID,
+			&p.PrevHash, &p.EntryHash, &p.CreatedAt,
 			&p.RevokeReason, &p.Revoked,
 		); err != nil {
 			return nil, err
@@ -138,20 +267,54 @@ func (s *Store) ListPrincipals(ctx context.Context) ([]models.Principal, error) 
 	return out, rows.Err()
 }
 
-// RevokePrincipal inserts a live revocation into principal_revocations.
+// RevokePrincipal appends a live revocation into the hash-chained principal_revocations ledger.
 func (s *Store) RevokePrincipal(ctx context.Context, rev models.PrincipalRevocation) error {
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO principal_revocations (revocation_id, principal_id, key_fingerprint, reason_code, revoked_by, revoked_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
-	`, rev.RevocationID, rev.PrincipalID, rev.KeyFingerprint, rev.ReasonCode, rev.RevokedBy, rev.RevokedAt)
-	return err
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, lockRevocationChain); err != nil {
+		return err
+	}
+
+	// Resolve principal_id / key_fingerprint if only one was supplied
+	if rev.PrincipalID == "" && rev.KeyFingerprint != "" {
+		_ = tx.QueryRow(ctx, `SELECT principal_id FROM principals WHERE lower(key_fingerprint) = lower($1) LIMIT 1`, rev.KeyFingerprint).Scan(&rev.PrincipalID)
+	} else if rev.PrincipalID != "" && rev.KeyFingerprint == "" {
+		_ = tx.QueryRow(ctx, `SELECT key_fingerprint FROM principals WHERE principal_id = $1 LIMIT 1`, rev.PrincipalID).Scan(&rev.KeyFingerprint)
+	}
+	if rev.PrincipalID == "" {
+		return fmt.Errorf("REVOCATION_TARGET_NOT_FOUND: principal not found")
+	}
+
+	prevHash := GenesisHash
+	err = tx.QueryRow(ctx, `SELECT entry_hash FROM principal_revocations ORDER BY seq_no DESC LIMIT 1`).Scan(&prevHash)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	if rev.RevokedAt.IsZero() {
+		rev.RevokedAt = time.Now().UTC()
+	}
+	rev.PrevHash = prevHash
+	rev.EntryHash = ComputeRevocationEntryHash(prevHash, rev)
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO principal_revocations (revocation_id, principal_id, key_fingerprint, reason_code, revoked_by, prev_hash, entry_hash, revoked_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	`, rev.RevocationID, rev.PrincipalID, rev.KeyFingerprint, rev.ReasonCode, rev.RevokedBy, rev.PrevHash, rev.EntryHash, rev.RevokedAt)
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // ListRevocations lists all active principal/key revocations.
 func (s *Store) ListRevocations(ctx context.Context) ([]models.PrincipalRevocation, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT revocation_id, principal_id, key_fingerprint, reason_code, revoked_by, revoked_at
-		FROM principal_revocations ORDER BY revoked_at DESC
+		SELECT revocation_id, principal_id, key_fingerprint, reason_code, revoked_by, prev_hash, entry_hash, revoked_at
+		FROM principal_revocations ORDER BY seq_no DESC
 	`)
 	if err != nil {
 		return nil, err
@@ -160,12 +323,122 @@ func (s *Store) ListRevocations(ctx context.Context) ([]models.PrincipalRevocati
 	out := []models.PrincipalRevocation{}
 	for rows.Next() {
 		var r models.PrincipalRevocation
-		if err := rows.Scan(&r.RevocationID, &r.PrincipalID, &r.KeyFingerprint, &r.ReasonCode, &r.RevokedBy, &r.RevokedAt); err != nil {
+		if err := rows.Scan(&r.RevocationID, &r.PrincipalID, &r.KeyFingerprint, &r.ReasonCode, &r.RevokedBy, &r.PrevHash, &r.EntryHash, &r.RevokedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// GetBootstrapState returns whether one-shot genesis bootstrap enrollment has been sealed.
+func (s *Store) GetBootstrapState(ctx context.Context) (models.BootstrapState, error) {
+	var st models.BootstrapState
+	err := s.pool.QueryRow(ctx, `
+		SELECT sealed, sealed_by, sealed_reason, sealed_at
+		FROM bootstrap_state WHERE singleton_id = 1
+	`).Scan(&st.Sealed, &st.SealedBy, &st.SealedReason, &st.SealedAt)
+	if err != nil {
+		return models.BootstrapState{}, err
+	}
+	return st, nil
+}
+
+// CountActiveAC5Principals counts currently unrevoked SERVICE_OWNER and AUTHORIZING_OFFICIAL principals.
+func (s *Store) CountActiveAC5Principals(ctx context.Context) (soCount int, aoCount int, err error) {
+	err = s.pool.QueryRow(ctx, `
+		SELECT
+			COUNT(*) FILTER (WHERE p.role = 'SERVICE_OWNER'),
+			COUNT(*) FILTER (WHERE p.role = 'AUTHORIZING_OFFICIAL')
+		FROM principals p
+		WHERE NOT EXISTS (
+			SELECT 1 FROM principal_revocations pr
+			WHERE pr.principal_id = p.principal_id OR lower(pr.key_fingerprint) = lower(p.key_fingerprint)
+		)
+	`).Scan(&soCount, &aoCount)
+	return soCount, aoCount, err
+}
+
+// SealBootstrap permanently transitions bootstrap_state.sealed = TRUE once >= 1 active SERVICE_OWNER
+// and >= 1 active AUTHORIZING_OFFICIAL are enrolled.
+func (s *Store) SealBootstrap(ctx context.Context, actor, reason string) (models.BootstrapState, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return models.BootstrapState{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, lockBootstrapSeal); err != nil {
+		return models.BootstrapState{}, err
+	}
+
+	var cur models.BootstrapState
+	if err := tx.QueryRow(ctx, `
+		SELECT sealed, sealed_by, sealed_reason, sealed_at
+		FROM bootstrap_state WHERE singleton_id = 1
+	`).Scan(&cur.Sealed, &cur.SealedBy, &cur.SealedReason, &cur.SealedAt); err != nil {
+		return models.BootstrapState{}, err
+	}
+	if cur.Sealed {
+		return cur, nil
+	}
+
+	var soCount, aoCount int
+	if err := tx.QueryRow(ctx, `
+		SELECT
+			COUNT(*) FILTER (WHERE p.role = 'SERVICE_OWNER'),
+			COUNT(*) FILTER (WHERE p.role = 'AUTHORIZING_OFFICIAL')
+		FROM principals p
+		WHERE NOT EXISTS (
+			SELECT 1 FROM principal_revocations pr
+			WHERE pr.principal_id = p.principal_id OR lower(pr.key_fingerprint) = lower(p.key_fingerprint)
+		)
+	`).Scan(&soCount, &aoCount); err != nil {
+		return models.BootstrapState{}, err
+	}
+	if soCount < 1 || aoCount < 1 {
+		return models.BootstrapState{}, fmt.Errorf(
+			"BOOTSTRAP_SEAL_PRECONDITION_FAILED: at least 1 active SERVICE_OWNER (have %d) and 1 active AUTHORIZING_OFFICIAL (have %d) must be enrolled before sealing",
+			soCount, aoCount,
+		)
+	}
+
+	now := time.Now().UTC()
+	if _, err := tx.Exec(ctx, `
+		UPDATE bootstrap_state
+		SET sealed = TRUE, sealed_by = $1, sealed_reason = $2, sealed_at = $3
+		WHERE singleton_id = 1
+	`, actor, reason, now); err != nil {
+		return models.BootstrapState{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return models.BootstrapState{}, err
+	}
+	return models.BootstrapState{
+		Sealed:       true,
+		SealedBy:     actor,
+		SealedReason: reason,
+		SealedAt:     &now,
+	}, nil
+}
+
+// ConsumeGovernanceEnvelopeNonce enforces single-use replay protection on Principal Governance DSSE envelopes.
+func (s *Store) ConsumeGovernanceEnvelopeNonce(ctx context.Context, envelopeID, actionType, payloadSHA256, signerSummary string, expiresAt time.Time) error {
+	if strings.TrimSpace(envelopeID) == "" {
+		return errors.New("GOVERNANCE_MISSING_ENVELOPE_ID: single-use envelope_id is required")
+	}
+	tag, err := s.pool.Exec(ctx, `
+		INSERT INTO governance_envelope_nonces (envelope_id, action_type, payload_sha256, signer_summary, expires_at, consumed_at)
+		VALUES ($1, $2, $3, $4, $5, NOW())
+		ON CONFLICT (envelope_id) DO NOTHING
+	`, envelopeID, actionType, payloadSHA256, signerSummary, expiresAt)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("GOVERNANCE_ENVELOPE_REPLAY_DETECTED: envelope_id %q has already been consumed", envelopeID)
+	}
+	return nil
 }
 
 // KeyResolverContext binds a Store to a context for crypto.KeyResolver lookups.
@@ -468,8 +741,9 @@ func (s *Store) AppendAttestation(ctx context.Context, att *models.AttestationRe
 	return tx.Commit(ctx)
 }
 
-// VerifyAllLedgerChains walks every row in warrant_envelopes, agent_action_ledger, and attestation_records
-// and verifies both prev_hash continuity, recomputed entry_hash integrity, and external Merkle checkpoint consistency.
+// VerifyAllLedgerChains walks every row in all 6 immutable hash-chained tables
+// (warrant_envelopes, agent_action_ledger, attestation_records, principals, principal_revocations, kernel_public_keys)
+// and verifies prev_hash continuity, recomputed entry_hash integrity, and external Merkle checkpoint consistency.
 func (s *Store) VerifyAllLedgerChains(ctx context.Context, externalWitnesses ...[]models.LedgerCheckpoint) (*models.LedgerVerificationReport, error) {
 	wStatus, err := s.verifyWarrantChain(ctx)
 	if err != nil {
@@ -483,12 +757,24 @@ func (s *Store) VerifyAllLedgerChains(ctx context.Context, externalWitnesses ...
 	if err != nil {
 		return nil, err
 	}
+	pStatus, err := s.verifyPrincipalChain(ctx)
+	if err != nil {
+		return nil, err
+	}
+	revStatus, err := s.verifyRevocationChain(ctx)
+	if err != nil {
+		return nil, err
+	}
+	kStatus, err := s.verifyKernelKeyChain(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var witnessSlice []models.LedgerCheckpoint
 	if len(externalWitnesses) > 0 {
 		witnessSlice = externalWitnesses[0]
 	}
 	anchorOK, cpID, merkleRoot, tamperDetail := s.VerifyHistoricalCheckpointConsistency(ctx, witnessSlice)
-	allValid := wStatus.Valid && aStatus.Valid && attStatus.Valid && anchorOK
+	allValid := wStatus.Valid && aStatus.Valid && attStatus.Valid && pStatus.Valid && revStatus.Valid && kStatus.Valid && anchorOK
 	return &models.LedgerVerificationReport{
 		AllValid:                allValid,
 		ExternalAnchorVerified:  anchorOK,
@@ -496,7 +782,7 @@ func (s *Store) VerifyAllLedgerChains(ctx context.Context, externalWitnesses ...
 		LatestCombinedMerkleHex: merkleRoot,
 		SuperuserTamperDetail:   tamperDetail,
 		VerifiedAt:              time.Now().UTC(),
-		Tables:                  []models.ChainTableStatus{wStatus, aStatus, attStatus},
+		Tables:                  []models.ChainTableStatus{wStatus, aStatus, attStatus, pStatus, revStatus, kStatus},
 	}, nil
 }
 
@@ -637,6 +923,127 @@ func (s *Store) verifyAttestationChain(ctx context.Context) (models.ChainTableSt
 	}
 	return models.ChainTableStatus{
 		TableName: "attestation_records", RowCount: idx, Valid: true,
+		TerminalHash: expectedPrev, BrokenAtRowIndex: -1,
+	}, rows.Err()
+}
+
+func (s *Store) verifyPrincipalChain(ctx context.Context) (models.ChainTableStatus, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT principal_id, email, role, key_id, alg, public_key_b64, key_fingerprint, prev_hash, entry_hash
+		FROM principals ORDER BY seq_no ASC
+	`)
+	if err != nil {
+		return models.ChainTableStatus{}, err
+	}
+	defer rows.Close()
+
+	expectedPrev := GenesisHash
+	idx := 0
+	for rows.Next() {
+		var p models.Principal
+		if err := rows.Scan(
+			&p.PrincipalID, &p.Email, &p.Role, &p.KeyID, &p.Alg, &p.PublicKeyB64, &p.KeyFingerprint, &p.PrevHash, &p.EntryHash,
+		); err != nil {
+			return models.ChainTableStatus{}, err
+		}
+		if p.PrevHash != expectedPrev {
+			return models.ChainTableStatus{
+				TableName: "principals", RowCount: idx + 1, Valid: false,
+				BrokenAtRowIndex: idx, FailureDetail: fmt.Sprintf("prev_hash mismatch at %s: got %s want %s", p.PrincipalID, p.PrevHash, expectedPrev),
+			}, nil
+		}
+		recomputed := ComputePrincipalEntryHash(p.PrevHash, p)
+		if recomputed != p.EntryHash {
+			return models.ChainTableStatus{
+				TableName: "principals", RowCount: idx + 1, Valid: false,
+				BrokenAtRowIndex: idx, FailureDetail: fmt.Sprintf("entry_hash tamper detected at %s", p.PrincipalID),
+			}, nil
+		}
+		expectedPrev = p.EntryHash
+		idx++
+	}
+	return models.ChainTableStatus{
+		TableName: "principals", RowCount: idx, Valid: true,
+		TerminalHash: expectedPrev, BrokenAtRowIndex: -1,
+	}, rows.Err()
+}
+
+func (s *Store) verifyRevocationChain(ctx context.Context) (models.ChainTableStatus, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT revocation_id, principal_id, key_fingerprint, reason_code, revoked_by, prev_hash, entry_hash
+		FROM principal_revocations ORDER BY seq_no ASC
+	`)
+	if err != nil {
+		return models.ChainTableStatus{}, err
+	}
+	defer rows.Close()
+
+	expectedPrev := GenesisHash
+	idx := 0
+	for rows.Next() {
+		var r models.PrincipalRevocation
+		if err := rows.Scan(
+			&r.RevocationID, &r.PrincipalID, &r.KeyFingerprint, &r.ReasonCode, &r.RevokedBy, &r.PrevHash, &r.EntryHash,
+		); err != nil {
+			return models.ChainTableStatus{}, err
+		}
+		if r.PrevHash != expectedPrev {
+			return models.ChainTableStatus{
+				TableName: "principal_revocations", RowCount: idx + 1, Valid: false,
+				BrokenAtRowIndex: idx, FailureDetail: fmt.Sprintf("prev_hash mismatch at %s", r.RevocationID),
+			}, nil
+		}
+		recomputed := ComputeRevocationEntryHash(r.PrevHash, r)
+		if recomputed != r.EntryHash {
+			return models.ChainTableStatus{
+				TableName: "principal_revocations", RowCount: idx + 1, Valid: false,
+				BrokenAtRowIndex: idx, FailureDetail: fmt.Sprintf("entry_hash tamper detected at %s", r.RevocationID),
+			}, nil
+		}
+		expectedPrev = r.EntryHash
+		idx++
+	}
+	return models.ChainTableStatus{
+		TableName: "principal_revocations", RowCount: idx, Valid: true,
+		TerminalHash: expectedPrev, BrokenAtRowIndex: -1,
+	}, rows.Err()
+}
+
+func (s *Store) verifyKernelKeyChain(ctx context.Context) (models.ChainTableStatus, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT key_id, alg, public_key_b64, key_fingerprint, backend_mode, prev_hash, entry_hash
+		FROM kernel_public_keys ORDER BY seq_no ASC
+	`)
+	if err != nil {
+		return models.ChainTableStatus{}, err
+	}
+	defer rows.Close()
+
+	expectedPrev := GenesisHash
+	idx := 0
+	for rows.Next() {
+		var r models.KernelPublicKeyRecord
+		if err := rows.Scan(&r.KeyID, &r.Alg, &r.PublicKeyB64, &r.KeyFingerprint, &r.BackendMode, &r.PrevHash, &r.EntryHash); err != nil {
+			return models.ChainTableStatus{}, err
+		}
+		if r.PrevHash != expectedPrev {
+			return models.ChainTableStatus{
+				TableName: "kernel_public_keys", RowCount: idx + 1, Valid: false,
+				BrokenAtRowIndex: idx, FailureDetail: fmt.Sprintf("prev_hash mismatch at %s", r.KeyID),
+			}, nil
+		}
+		recomputed := ComputeKernelKeyEntryHash(r.PrevHash, r.KeyID, r.Alg, r.PublicKeyB64, r.KeyFingerprint, r.BackendMode)
+		if recomputed != r.EntryHash {
+			return models.ChainTableStatus{
+				TableName: "kernel_public_keys", RowCount: idx + 1, Valid: false,
+				BrokenAtRowIndex: idx, FailureDetail: fmt.Sprintf("entry_hash tamper detected at %s", r.KeyID),
+			}, nil
+		}
+		expectedPrev = r.EntryHash
+		idx++
+	}
+	return models.ChainTableStatus{
+		TableName: "kernel_public_keys", RowCount: idx, Valid: true,
 		TerminalHash: expectedPrev, BrokenAtRowIndex: -1,
 	}, rows.Err()
 }

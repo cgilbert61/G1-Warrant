@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import base64
 import http.client
 import json
 import os
 import urllib.parse
 from pathlib import Path
 from typing import Any
+
+from .crypto import (
+    PublicIdentityBundle,
+    SignerKeyBundle,
+    draft_governance_envelope,
+    draft_principal_enroll_envelope,
+    draft_principal_revoke_envelope,
+)
 
 
 class WarrantAPIError(RuntimeError):
@@ -33,6 +42,9 @@ class WarrantClient:
         base_url: str | None = None,
         auditor_token: str | None = None,
         timeout: float = 30.0,
+        operator_token: str | None = None,
+        intake_token: str | None = None,
+        signer_bundle: SignerKeyBundle | None = None,
     ) -> None:
         raw_url = (base_url or os.environ.get("WARRANT_API_URL") or "http://localhost:8080").rstrip("/")
         parsed = urllib.parse.urlparse(raw_url)
@@ -44,6 +56,9 @@ class WarrantClient:
         self._port = parsed.port or (443 if parsed.scheme == "https" else 80)
         self._base_path = parsed.path.rstrip("/")
         self.auditor_token = (auditor_token or os.environ.get("WARRANT_AUDITOR_TOKEN") or "").strip()
+        self.operator_token = (operator_token or os.environ.get("WARRANT_OPERATOR_TOKEN") or "").strip()
+        self.intake_token = (intake_token or os.environ.get("WARRANT_INTAKE_TOKEN") or "").strip()
+        self.signer_bundle = signer_bundle
         self.timeout = timeout
 
     def _request_raw(
@@ -53,16 +68,23 @@ class WarrantClient:
         body: bytes | None = None,
         content_type: str | None = None,
         bearer_override: str | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> bytes:
         full_path = f"{self._base_path}{path}"
         conn_cls = http.client.HTTPSConnection if self._scheme == "https" else http.client.HTTPConnection
         conn = conn_cls(self._host, self._port, timeout=self.timeout)
-        headers: dict[str, str] = {"User-Agent": "g1-warrant-python-sdk/1.0.0"}
+        headers: dict[str, str] = {"User-Agent": "g1-warrant-python-sdk/1.0.1"}
         if content_type:
             headers["Content-Type"] = content_type
         tok = (bearer_override if bearer_override is not None else self.auditor_token).strip()
         if tok:
             headers["Authorization"] = f"Bearer {tok}"
+        if self.operator_token and bearer_override is None and not self.auditor_token:
+            headers["X-Warrant-Operator-Token"] = self.operator_token
+        if self.intake_token:
+            headers["X-Warrant-Intake-Token"] = self.intake_token
+        if extra_headers:
+            headers.update(extra_headers)
 
         try:
             conn.request(method, full_path, body=body, headers=headers)
@@ -90,14 +112,34 @@ class WarrantClient:
         path: str,
         payload: Any = None,
         bearer_override: str | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> Any:
         body: bytes | None = None
         ctype: str | None = None
         if payload is not None:
             body = json.dumps(payload).encode("utf-8")
             ctype = "application/json"
-        raw = self._request_raw(method, path, body=body, content_type=ctype, bearer_override=bearer_override)
+        raw = self._request_raw(
+            method, path, body=body, content_type=ctype, bearer_override=bearer_override, extra_headers=extra_headers
+        )
         return json.loads(raw.decode("utf-8")) if raw else None
+
+    def _request_action_json(
+        self,
+        method: str,
+        path: str,
+        gov_action: str,
+        gov_fields: dict[str, Any] | None = None,
+        payload: Any = None,
+        signer_bundle: SignerKeyBundle | None = None,
+    ) -> Any:
+        extra: dict[str, str] | None = None
+        active_signer = signer_bundle or self.signer_bundle
+        if active_signer is not None:
+            env = draft_governance_envelope(gov_action, gov_fields or {}, ttl_seconds=300)
+            active_signer.sign_envelope(1, env)
+            extra = {"X-Warrant-Governance-DSSE": base64.b64encode(json.dumps(env).encode("utf-8")).decode("ascii")}
+        return self._request_json(method, path, payload=payload, extra_headers=extra)
 
     # ------------------------------------------------------------------
     # Core Health, Scoreboard & Bootstrap
@@ -119,34 +161,71 @@ class WarrantClient:
         return self._request_json("GET", "/api/v1/kernel-keys")
 
     # ------------------------------------------------------------------
-    # N1 Principals, Standing Warrants & Asymmetric Emergency Freeze
+    # N1 Principals, Genesis Seal, Standing Warrants & Emergency Freeze
     # ------------------------------------------------------------------
     def list_principals(self) -> list[dict[str, Any]]:
         return self._request_json("GET", "/api/v1/principals")
 
     def register_principal(
         self,
-        signer_bundle: Any,
+        public_or_signer_bundle: PublicIdentityBundle | SignerKeyBundle | dict[str, Any],
         admin_token: str | None = None,
+        slot1_signer: SignerKeyBundle | None = None,
+        slot2_signer: SignerKeyBundle | None = None,
     ) -> dict[str, Any]:
-        """Enroll a public Ed25519 AC-5 signing key (SERVICE_OWNER or AUTHORIZING_OFFICIAL) via POST /api/v1/principals/register.
+        """Enroll an Ed25519 AC-5 public key via POST /api/v1/principals/register.
 
-        Private keys are stripped locally and NEVER transmitted over the network.
+        - Prior to bootstrap seal: pass `admin_token` (or `$WARRANT_BOOTSTRAP_ADMIN_TOKEN`).
+        - After bootstrap seal: pass `slot1_signer` (`SERVICE_OWNER`) and `slot2_signer` (`AUTHORIZING_OFFICIAL`)
+          to co-sign a 2-of-2 DSSE Principal Governance envelope (`ENROLL_PRINCIPAL`).
+        - Private keys are NEVER transmitted over the network; passing a raw dict containing `private_key*` raises `ValueError`.
         """
+        if isinstance(public_or_signer_bundle, SignerKeyBundle):
+            pub = public_or_signer_bundle.to_public_identity()
+        elif isinstance(public_or_signer_bundle, PublicIdentityBundle):
+            pub = public_or_signer_bundle
+        else:
+            pub = PublicIdentityBundle.from_dict(dict(public_or_signer_bundle))
+
+        if slot1_signer is not None or slot2_signer is not None:
+            if slot1_signer is None or slot2_signer is None:
+                raise ValueError("Both slot1_signer (SERVICE_OWNER) and slot2_signer (AUTHORIZING_OFFICIAL) are required")
+            env = draft_principal_enroll_envelope(pub)
+            slot1_signer.sign_envelope(1, env)
+            slot2_signer.sign_envelope(2, env)
+            return self._request_json("POST", "/api/v1/principals/register", env)
+
         tok = (admin_token or os.environ.get("WARRANT_BOOTSTRAP_ADMIN_TOKEN") or "").strip()
         if not tok:
-            raise ValueError("admin_token (or WARRANT_BOOTSTRAP_ADMIN_TOKEN) is required to enroll AC-5 principals")
-        data = signer_bundle.to_dict() if hasattr(signer_bundle, "to_dict") else dict(signer_bundle)
+            raise ValueError("admin_token (genesis unsealed) OR slot1_signer + slot2_signer (2-of-2 DSSE) is required")
         pub_payload = {
-            "principal_id": data["principal_id"],
-            "email": data["email"],
-            "display_name": data.get("display_name", ""),
-            "role": data["role"],
-            "key_id": data.get("key_id", ""),
-            "alg": data.get("alg", "Ed25519"),
-            "public_key_b64": data["public_key_b64"],
+            "principal_id": pub.principal_id,
+            "email": pub.email,
+            "display_name": pub.display_name,
+            "role": pub.role,
+            "key_id": pub.key_id,
+            "alg": pub.alg or "Ed25519",
+            "public_key_b64": pub.public_key_b64,
         }
-        return self._request_json("POST", "/api/v1/principals/register", pub_payload, bearer_override=tok)
+        return self._request_json(
+            "POST", "/api/v1/principals/register", pub_payload, extra_headers={"X-Warrant-Admin-Token": tok}
+        )
+
+    def seal_bootstrap(
+        self,
+        admin_token: str | None = None,
+        signer_bundle: SignerKeyBundle | None = None,
+    ) -> dict[str, Any]:
+        """Permanently seal genesis bootstrap via POST /api/v1/bootstrap/seal (requires >=1 active SO and >=1 active AO)."""
+        active_signer = signer_bundle or self.signer_bundle
+        if active_signer is not None:
+            env = draft_governance_envelope("SEAL_BOOTSTRAP", {})
+            active_signer.sign_envelope(1, env)
+            return self._request_json("POST", "/api/v1/bootstrap/seal", env)
+        tok = (admin_token or os.environ.get("WARRANT_BOOTSTRAP_ADMIN_TOKEN") or "").strip()
+        if not tok:
+            raise ValueError("admin_token or signer_bundle is required to seal genesis bootstrap")
+        return self._request_json("POST", "/api/v1/bootstrap/seal", {}, extra_headers={"X-Warrant-Admin-Token": tok})
 
     def revoke_principal(
         self,
@@ -154,7 +233,21 @@ class WarrantClient:
         key_fingerprint: str = "",
         reason_code: str = "SDK_KEY_REVOCATION",
         revoked_by: str = "g1-warrant-python-sdk",
+        signer_bundle: SignerKeyBundle | None = None,
+        dsse_envelope: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Revoke a principal via a 1-of-2 DSSE Principal Governance signature (`REVOKE_PRINCIPAL`)."""
+        if dsse_envelope is not None:
+            return self._request_json("POST", "/api/v1/principals/revoke", dsse_envelope)
+        active_signer = signer_bundle or self.signer_bundle
+        if active_signer is not None:
+            env = draft_principal_revoke_envelope(
+                target_principal_id=principal_id,
+                target_key_fingerprint=key_fingerprint,
+                reason_code=reason_code,
+            )
+            active_signer.sign_envelope(1, env)
+            return self._request_json("POST", "/api/v1/principals/revoke", env)
         return self._request_json(
             "POST",
             "/api/v1/principals/revoke",
@@ -186,11 +279,15 @@ class WarrantClient:
         mode: str = "FREEZE_HOLD",
         actor: str = "python-sdk-operator",
         reason_code: str = "EMERGENCY_FREEZE",
+        signer_bundle: SignerKeyBundle | None = None,
     ) -> dict[str, Any]:
-        return self._request_json(
+        return self._request_action_json(
             "POST",
             "/api/v1/freeze",
-            {"mode": mode, "actor": actor, "reason_code": reason_code},
+            "EMERGENCY_FREEZE",
+            {"freeze_mode": mode, "reason_code": reason_code},
+            payload={"mode": mode, "actor": actor, "reason_code": reason_code},
+            signer_bundle=signer_bundle,
         )
 
     def thaw_freeze(self, dsse_envelope: dict[str, Any]) -> dict[str, Any]:
@@ -211,13 +308,17 @@ class WarrantClient:
         remediation_id: str,
         actor: str = "python-sdk-incident-commander",
         reason: str = "POST_PROMOTION_REGRESSION",
+        signer_bundle: SignerKeyBundle | None = None,
     ) -> dict[str, Any]:
         """Execute atomic 3-step Contain-Before-Unban Quarantined Rollback."""
         safe_id = urllib.parse.quote(remediation_id, safe="")
-        return self._request_json(
+        return self._request_action_json(
             "POST",
             f"/api/v1/pipeline/{safe_id}/emergency-rollback",
-            {"actor": actor, "reason": reason},
+            "EMERGENCY_ROLLBACK",
+            {"remediation_id": remediation_id, "reason_code": reason},
+            payload={"actor": actor, "reason": reason},
+            signer_bundle=signer_bundle,
         )
 
     def ingest_sarif(
@@ -295,9 +396,16 @@ class WarrantClient:
             bearer_override=tok,
         )
 
-    def simulate(self, scenario: str) -> dict[str, Any]:
+    def simulate(self, scenario: str, signer_bundle: SignerKeyBundle | None = None) -> dict[str, Any]:
         safe_sc = urllib.parse.quote(scenario, safe="")
-        return self._request_json("POST", f"/api/v1/simulate/{safe_sc}", {})
+        return self._request_action_json(
+            "POST",
+            f"/api/v1/simulate/{safe_sc}",
+            "SIMULATION_DRILL",
+            {"scenario": scenario},
+            payload={},
+            signer_bundle=signer_bundle,
+        )
 
     # ------------------------------------------------------------------
     # Exceptions, Estate, Shadow Canary, Containment Bridges & Drift
@@ -349,15 +457,23 @@ class WarrantClient:
         label: str = "External 3PAO Assessment",
         scoped_attestation_ids: list[str] | None = None,
         ttl_hours: int = 24,
+        signer_bundle: SignerKeyBundle | None = None,
     ) -> dict[str, Any]:
-        return self._request_json(
+        return self._request_action_json(
             "POST",
             "/api/v1/auditor-tokens",
+            "MINT_AUDITOR_TOKEN",
             {
+                "auditor_label": label,
+                "scoped_attestation_ids": scoped_attestation_ids or [],
+                "ttl_hours": ttl_hours,
+            },
+            payload={
                 "label": label,
                 "scoped_attestation_ids": scoped_attestation_ids or [],
                 "ttl_hours": ttl_hours,
             },
+            signer_bundle=signer_bundle,
         )
 
     def get_auditor_vault(self, bearer_token: str | None = None) -> dict[str, Any]:
@@ -372,31 +488,35 @@ class WarrantClient:
     def list_ledger_checkpoints(self) -> list[dict[str, Any]]:
         return self._request_json("GET", "/api/v1/ledger/checkpoints")
 
-    def create_ledger_checkpoint(self) -> dict[str, Any]:
-        return self._request_json("POST", "/api/v1/ledger/checkpoints", {})
+    def create_ledger_checkpoint(self, signer_bundle: SignerKeyBundle | None = None) -> dict[str, Any]:
+        return self._request_action_json("POST", "/api/v1/ledger/checkpoints", "CREATE_CHECKPOINT", payload={}, signer_bundle=signer_bundle)
 
     # ------------------------------------------------------------------
-    # Live Threat & Scanner Feeds ($0 CISA KEV, Google OSV.dev, Trivy)
+    # Live Threat & Scanner Feeds (CISA KEV, Google OSV.dev, Trivy)
     # ------------------------------------------------------------------
     def get_feed_status(self) -> dict[str, Any]:
         return self._request_json("GET", "/api/v1/feeds/status")
 
-    def set_feed_mode(self, mode: str) -> dict[str, Any]:
+    def set_feed_mode(self, mode: str, signer_bundle: SignerKeyBundle | None = None) -> dict[str, Any]:
         st = self.get_feed_status()
         cfg = st["config"]
         cfg["mode"] = mode
-        return self._request_json("POST", "/api/v1/feeds/config", cfg)
+        return self._request_action_json("POST", "/api/v1/feeds/config", "FEED_MUTATION", payload=cfg, signer_bundle=signer_bundle)
 
-    def sync_cisa_kev(self) -> dict[str, Any]:
-        return self._request_json("POST", "/api/v1/feeds/sync/kev", {})
+    def sync_cisa_kev(self, signer_bundle: SignerKeyBundle | None = None) -> dict[str, Any]:
+        return self._request_action_json("POST", "/api/v1/feeds/sync/kev", "FEED_MUTATION", payload={}, signer_bundle=signer_bundle)
 
-    def sync_osv(self, auto_ingest: bool = False) -> dict[str, Any]:
+    def sync_osv(self, auto_ingest: bool = False, signer_bundle: SignerKeyBundle | None = None) -> dict[str, Any]:
         path = "/api/v1/feeds/sync/osv?ingest=true" if auto_ingest else "/api/v1/feeds/sync/osv"
-        return self._request_json("POST", path, {})
+        return self._request_action_json("POST", path, "FEED_MUTATION", payload={}, signer_bundle=signer_bundle)
 
-    def ingest_osv_advisory(self, osv_id: str, service_id: str) -> list[dict[str, Any]]:
-        return self._request_json(
+    def ingest_osv_advisory(
+        self, osv_id: str, service_id: str, signer_bundle: SignerKeyBundle | None = None
+    ) -> list[dict[str, Any]]:
+        return self._request_action_json(
             "POST",
             "/api/v1/feeds/osv/ingest",
-            {"osv_id": osv_id, "service_id": service_id},
+            "FEED_MUTATION",
+            payload={"osv_id": osv_id, "service_id": service_id},
+            signer_bundle=signer_bundle,
         )

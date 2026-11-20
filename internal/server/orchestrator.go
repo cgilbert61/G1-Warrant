@@ -6,7 +6,9 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -47,17 +49,52 @@ type ControlPlaneOrchestrator struct {
 	tetragonSensorToken string
 	tetragonHMACSecret  string
 	bootstrapAdminToken string
+	operatorToken       string
+	intakeToken         string
+}
+
+func isWeakOrPlaceholderSecret(val string) bool {
+	v := strings.ToLower(strings.TrimSpace(val))
+	if len(v) < 16 {
+		return true
+	}
+	badSubstrings := []string{
+		"changeme", "placeholder", "example", "default", "demo", "password", "123456", "<", ">",
+	}
+	for _, b := range badSubstrings {
+		if strings.Contains(v, b) {
+			return true
+		}
+	}
+	return false
 }
 
 // ValidateStartupSecurityGuards enforces fail-closed startup invariants so built-in test smartcard personas
-// can NEVER be enabled alongside live Kubernetes clusters or live threat/scanner feeds.
+// or weak/placeholder registrar/operator secrets can NEVER be enabled alongside live Kubernetes clusters or live threat feeds.
 func ValidateStartupSecurityGuards(getenv func(string) string) error {
+	isK8s := strings.EqualFold(strings.TrimSpace(getenv("WARRANT_CLUSTER_DRIVER")), "kubernetes")
+	isLive := strings.EqualFold(strings.TrimSpace(getenv("WARRANT_FEED_MODE")), "live")
+
 	if strings.EqualFold(strings.TrimSpace(getenv("WARRANT_ENABLE_TEST_SMARTCARDS")), "true") {
-		if strings.EqualFold(strings.TrimSpace(getenv("WARRANT_CLUSTER_DRIVER")), "kubernetes") {
+		if isK8s {
 			return fmt.Errorf("FATAL_SECURITY_GUARD: WARRANT_ENABLE_TEST_SMARTCARDS=true is strictly forbidden when WARRANT_CLUSTER_DRIVER=kubernetes")
 		}
-		if strings.EqualFold(strings.TrimSpace(getenv("WARRANT_FEED_MODE")), "live") {
+		if isLive {
 			return fmt.Errorf("FATAL_SECURITY_GUARD: WARRANT_ENABLE_TEST_SMARTCARDS=true is strictly forbidden when WARRANT_FEED_MODE=live")
+		}
+	}
+
+	if isK8s || isLive {
+		for _, envKey := range []string{
+			"WARRANT_BOOTSTRAP_ADMIN_TOKEN",
+			"WARRANT_OPERATOR_TOKEN",
+			"WARRANT_INTAKE_TOKEN",
+			"WARRANT_TETRAGON_SENSOR_TOKEN",
+			"WARRANT_TETRAGON_HMAC_SECRET",
+		} {
+			if raw := strings.TrimSpace(getenv(envKey)); raw != "" && isWeakOrPlaceholderSecret(raw) {
+				return fmt.Errorf("FATAL_SECURITY_GUARD: %s contains a weak or placeholder secret (<16 chars or well-known token)", envKey)
+			}
 		}
 	}
 	return nil
@@ -73,11 +110,33 @@ func (o *ControlPlaneOrchestrator) BootstrapAdminToken() string {
 	return o.bootstrapAdminToken
 }
 
-// VerifyBootstrapAdminAuth enforces out-of-band IAM registrar authentication on POST /api/v1/principals/register
-// so untrusted network callers cannot self-enroll arbitrary Ed25519 keys as SERVICE_OWNER or AUTHORIZING_OFFICIAL.
+// OperatorToken returns the configured dedicated operator token (if set).
+func (o *ControlPlaneOrchestrator) OperatorToken() string {
+	return o.operatorToken
+}
+
+// IntakeToken returns the configured scanner intake token (if set).
+func (o *ControlPlaneOrchestrator) IntakeToken() string {
+	return o.intakeToken
+}
+
+// VerifyBootstrapUnsealedAuth enforces one-shot genesis bootstrap enrollment:
+// once bootstrap_state.sealed == TRUE, WARRANT_BOOTSTRAP_ADMIN_TOKEN is permanently disabled (HTTP 403).
+func (o *ControlPlaneOrchestrator) VerifyBootstrapUnsealedAuth(ctx context.Context, r *http.Request) (int, error) {
+	st, err := o.Store.GetBootstrapState(ctx)
+	if err != nil {
+		return http.StatusInternalServerError, fmt.Errorf("read bootstrap_state: %w", err)
+	}
+	if st.Sealed {
+		return http.StatusForbidden, fmt.Errorf("BOOTSTRAP_SEALED_REQUIRES_DUAL_KEY_DSSE: genesis bootstrap was permanently sealed (%s); submit a 2-of-2 DSSE Principal Governance envelope", st.SealedReason)
+	}
+	return o.VerifyBootstrapAdminAuth(r)
+}
+
+// VerifyBootstrapAdminAuth enforces out-of-band IAM registrar authentication prior to bootstrap sealing.
 func (o *ControlPlaneOrchestrator) VerifyBootstrapAdminAuth(r *http.Request) (int, error) {
 	if strings.TrimSpace(o.bootstrapAdminToken) == "" {
-		return http.StatusForbidden, fmt.Errorf("PRINCIPAL_ENROLLMENT_DISABLED: configure WARRANT_BOOTSTRAP_ADMIN_TOKEN to enable remote Ed25519 principal enrollment")
+		return http.StatusForbidden, fmt.Errorf("PRINCIPAL_ENROLLMENT_DISABLED: configure WARRANT_BOOTSTRAP_ADMIN_TOKEN to enable genesis principal enrollment")
 	}
 	tok := strings.TrimSpace(r.Header.Get("X-Warrant-Admin-Token"))
 	if tok == "" {
@@ -96,6 +155,126 @@ func (o *ControlPlaneOrchestrator) VerifyBootstrapAdminAuth(r *http.Request) (in
 		return http.StatusForbidden, fmt.Errorf("INVALID_BOOTSTRAP_ADMIN_TOKEN")
 	}
 	return http.StatusOK, nil
+}
+
+// VerifyOperatorOrSinglePrincipalAuth authenticates emergency and operational mutations (freeze, emergency-rollback,
+// auditor-token minting, feed mutations, checkpoint triggers) via EITHER:
+//  1. A 1-of-2 DSSE Principal Governance envelope signed by any active SERVICE_OWNER or AUTHORIZING_OFFICIAL
+//     (in the JSON request body or X-Warrant-Governance-DSSE base64 header), OR
+//  2. Constant-time WARRANT_OPERATOR_TOKEN (X-Warrant-Operator-Token or Authorization Bearer).
+func (o *ControlPlaneOrchestrator) VerifyOperatorOrSinglePrincipalAuth(
+	ctx context.Context,
+	r *http.Request,
+	expectedAction string,
+	rawBody []byte,
+) (string, *models.PrincipalGovernancePayload, int, error) {
+	// 1. Check X-Warrant-Governance-DSSE header first if present
+	if hdrB64 := strings.TrimSpace(r.Header.Get("X-Warrant-Governance-DSSE")); hdrB64 != "" {
+		envRaw, err := crypto.DecodeBase64Any(hdrB64)
+		if err != nil {
+			return "", nil, http.StatusBadRequest, fmt.Errorf("INVALID_GOVERNANCE_DSSE_HEADER: %w", err)
+		}
+		var env crypto.Envelope
+		if err := json.Unmarshal(envRaw, &env); err != nil {
+			return "", nil, http.StatusBadRequest, fmt.Errorf("INVALID_GOVERNANCE_DSSE_JSON: %w", err)
+		}
+		gp, singleRes, vErr := o.N1Warrant.VerifySingleGovernanceEnvelope(ctx, env, expectedAction)
+		if vErr != nil {
+			return "", nil, http.StatusUnprocessableEntity, vErr
+		}
+		return singleRes.Signer.PrincipalID, gp, http.StatusOK, nil
+	}
+
+	// 2. Check if rawBody itself is a DSSE Principal Governance envelope
+	if len(bytesTrimSpace(rawBody)) > 0 {
+		var probe struct {
+			PayloadType string `json:"payloadType"`
+		}
+		if json.Unmarshal(rawBody, &probe) == nil && probe.PayloadType != "" {
+			var env crypto.Envelope
+			if err := json.Unmarshal(rawBody, &env); err != nil {
+				return "", nil, http.StatusBadRequest, fmt.Errorf("decode DSSE envelope: %w", err)
+			}
+			gp, singleRes, vErr := o.N1Warrant.VerifySingleGovernanceEnvelope(ctx, env, expectedAction)
+			if vErr != nil {
+				return "", nil, http.StatusUnprocessableEntity, vErr
+			}
+			return singleRes.Signer.PrincipalID, gp, http.StatusOK, nil
+		}
+	}
+
+	// 3. Check dedicated WARRANT_OPERATOR_TOKEN
+	tok := strings.TrimSpace(r.Header.Get("X-Warrant-Operator-Token"))
+	if tok == "" {
+		auth := strings.TrimSpace(r.Header.Get("Authorization"))
+		if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+			tok = strings.TrimSpace(auth[7:])
+		}
+	}
+	if tok == "" {
+		return "", nil, http.StatusUnauthorized, fmt.Errorf("MISSING_OPERATOR_OR_PRINCIPAL_AUTH: provide a 1-of-2 DSSE Principal Governance signature or X-Warrant-Operator-Token")
+	}
+	if strings.HasPrefix(tok, "g1aud_") || strings.HasPrefix(tok, "g1tet_") {
+		return "", nil, http.StatusForbidden, fmt.Errorf("INVALID_OPERATOR_CREDENTIAL: auditor and sensor tokens cannot execute operational mutations")
+	}
+	if o.operatorToken != "" && subtle.ConstantTimeCompare([]byte(tok), []byte(o.operatorToken)) == 1 {
+		return "operator-token-authenticated", nil, http.StatusOK, nil
+	}
+	return "", nil, http.StatusForbidden, fmt.Errorf("INVALID_OPERATOR_CREDENTIAL")
+}
+
+// VerifyIntakeAuth enforces scanner intake authentication on /api/v1/intake/* when WARRANT_INTAKE_TOKEN
+// is configured or when running against a live Kubernetes cluster.
+func (o *ControlPlaneOrchestrator) VerifyIntakeAuth(r *http.Request) (int, error) {
+	tok := strings.TrimSpace(r.Header.Get("X-Warrant-Intake-Token"))
+	if tok == "" {
+		auth := strings.TrimSpace(r.Header.Get("Authorization"))
+		if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+			tok = strings.TrimSpace(auth[7:])
+		}
+	}
+	if strings.HasPrefix(tok, "g1aud_") || strings.HasPrefix(tok, "g1tet_") {
+		return http.StatusForbidden, fmt.Errorf("INVALID_INTAKE_CREDENTIAL: auditor and sensor tokens cannot submit scanner intake")
+	}
+
+	requireIntake := o.intakeToken != "" || strings.EqualFold(strings.TrimSpace(os.Getenv("WARRANT_CLUSTER_DRIVER")), "kubernetes")
+	if !requireIntake {
+		return http.StatusOK, nil
+	}
+	if tok == "" {
+		return http.StatusUnauthorized, fmt.Errorf("MISSING_INTAKE_TOKEN: X-Warrant-Intake-Token or Authorization Bearer required")
+	}
+	if o.intakeToken != "" && subtle.ConstantTimeCompare([]byte(tok), []byte(o.intakeToken)) == 1 {
+		return http.StatusOK, nil
+	}
+	if o.operatorToken != "" && subtle.ConstantTimeCompare([]byte(tok), []byte(o.operatorToken)) == 1 {
+		return http.StatusOK, nil
+	}
+	return http.StatusForbidden, fmt.Errorf("INVALID_INTAKE_CREDENTIAL")
+}
+
+func bytesTrimSpace(b []byte) []byte {
+	return []byte(strings.TrimSpace(string(b)))
+}
+
+// IsSimulationAllowed returns false whenever WARRANT_CLUSTER_DRIVER=kubernetes or feed mode is live.
+func (o *ControlPlaneOrchestrator) IsSimulationAllowed(ctx context.Context) (bool, string) {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("WARRANT_CLUSTER_DRIVER")), "kubernetes") {
+		return false, "SIMULATION_ROUTES_DISABLED: /api/v1/simulate/* fault-injection drills are disabled when WARRANT_CLUSTER_DRIVER=kubernetes"
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("WARRANT_FEED_MODE")), "live") {
+		return false, "SIMULATION_ROUTES_DISABLED: /api/v1/simulate/* fault-injection drills are disabled when WARRANT_FEED_MODE=live"
+	}
+	if st, err := o.Store.GetLiveFeedStatus(ctx); err == nil && strings.EqualFold(st.Config.Mode, models.FeedModeLive) {
+		return false, "SIMULATION_ROUTES_DISABLED: /api/v1/simulate/* fault-injection drills are disabled while runtime feed mode is live"
+	}
+	return true, ""
+}
+
+// Helper for base64 encoding DSSE header in internal tests if needed.
+func EncodeGovernanceHeader(env crypto.Envelope) string {
+	raw, _ := json.Marshal(env)
+	return base64.StdEncoding.EncodeToString(raw)
 }
 
 // VerifyTetragonSensorAuth enforces dedicated eBPF/Tetragon DaemonSet authentication (distinct from operator and g1aud_* auditor tokens)
@@ -183,6 +362,8 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 	}
 	tetHMAC := strings.TrimSpace(os.Getenv("WARRANT_TETRAGON_HMAC_SECRET"))
 	adminTok := strings.TrimSpace(os.Getenv("WARRANT_BOOTSTRAP_ADMIN_TOKEN"))
+	opTok := strings.TrimSpace(os.Getenv("WARRANT_OPERATOR_TOKEN"))
+	inTok := strings.TrimSpace(os.Getenv("WARRANT_INTAKE_TOKEN"))
 
 	n1, err := warrant.NewEngine(ctx, store, pol, webauthnCfg, broker.Broadcast)
 	if err != nil {
@@ -221,18 +402,21 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 	n3 := verify.NewEngine(store, pol, n1, n4, shield, deploy, twin, broker.Broadcast, rulepacks)
 	n5 := ledger.NewEngine(store, pol, n1, signer, broker.Broadcast)
 
+	// Anchor initial 6-chain Merkle checkpoint covering kernel_public_keys & any migrated authority rows
+	_, _ = n5.CreateCheckpoint(ctx)
+
 	return &ControlPlaneOrchestrator{
-		Store:       store,
-		Policy:      pol,
-		N1Warrant:   n1,
-		N2Gate:      n2,
-		N3Verify:    n3,
-		N4AgentCP:   n4,
-		N5Ledger:    n5,
-		Feeds:       feedMgr,
-		SARIFIntake: sarifIn,
-		FixProvider: fixProv,
-		Shield:      shield,
+		Store:               store,
+		Policy:              pol,
+		N1Warrant:           n1,
+		N2Gate:              n2,
+		N3Verify:            n3,
+		N4AgentCP:           n4,
+		N5Ledger:            n5,
+		Feeds:               feedMgr,
+		SARIFIntake:         sarifIn,
+		FixProvider:         fixProv,
+		Shield:              shield,
 		Deploy:              deploy,
 		Twin:                twin,
 		Broker:              broker,
@@ -240,6 +424,8 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 		tetragonSensorToken: tetToken,
 		tetragonHMACSecret:  tetHMAC,
 		bootstrapAdminToken: adminTok,
+		operatorToken:       opTok,
+		intakeToken:         inTok,
 	}, nil
 }
 

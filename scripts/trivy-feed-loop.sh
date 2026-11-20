@@ -32,8 +32,14 @@ while true; do
     echo "[trivy-sidecar] Scanning real container image '$IMG' for target workload '$SVC'..."
     if trivy image --quiet --scanners vuln --severity CRITICAL,HIGH --format sarif -o "$OUT_FILE" "$IMG"; then
       echo "[trivy-sidecar] POSTing genuine SARIF 2.1.0 report for '$SVC' to $API_URL/api/v1/intake/sarif..."
+      AUTH_ARGS=""
+      if [ -n "${WARRANT_INTAKE_TOKEN:-}" ]; then
+        AUTH_ARGS="-H X-Warrant-Intake-Token:${WARRANT_INTAKE_TOKEN}"
+      fi
+      # shellcheck disable=SC2086
       curl -fsS -X POST \
         -H "Content-Type: application/json" \
+        $AUTH_ARGS \
         --data-binary "@${OUT_FILE}" \
         "${API_URL}/api/v1/intake/sarif?target_service=${SVC}&max_findings=${MAX_FINDINGS}" >/dev/null || \
         echo "[trivy-sidecar] Notice: intake returned non-2xx for $SVC"

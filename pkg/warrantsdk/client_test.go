@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -140,5 +142,37 @@ func TestClientEndpointsAndAuditorScopeIsolation(t *testing.T) {
 	apiErr, ok := err.(*warrantsdk.APIError)
 	if !ok || !apiErr.IsAuditorScopeViolation() {
 		t.Fatalf("expected APIError with IsAuditorScopeViolation=true, got %T: %v", err, err)
+	}
+}
+
+func TestSplitKeygenHygieneAndPrivateKeyClientRejection(t *testing.T) {
+	so, err := warrantsdk.GenerateEd25519SignerBundle("usr-split-so", "split-so@agency.gov", "Split SO", warrantsdk.RoleServiceOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	privPath, pubPath, err := warrantsdk.WriteSplitKeyPairFiles(filepath.Join(dir, "so-key"), so)
+	if err != nil {
+		t.Fatalf("WriteSplitKeyPairFiles failed: %v", err)
+	}
+	pubRaw, err := os.ReadFile(pubPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(pubRaw), "private_key") {
+		t.Fatalf("public identity file %s leaked private_key field: %s", pubPath, string(pubRaw))
+	}
+	pubIdent, err := warrantsdk.LoadPublicIdentityFile(pubRaw)
+	if err != nil || pubIdent.PrincipalID != "usr-split-so" {
+		t.Fatalf("LoadPublicIdentityFile(.pub.json) failed: %+v err=%v", pubIdent, err)
+	}
+
+	// Passing .priv.json to LoadPublicIdentityFile MUST fail closed client-side!
+	privRaw, err := os.ReadFile(privPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := warrantsdk.LoadPublicIdentityFile(privRaw); err == nil || !strings.Contains(err.Error(), "PRIVATE_KEY_REJECTED_CLIENT_SIDE") {
+		t.Fatalf("expected LoadPublicIdentityFile(.priv.json) to fail with PRIVATE_KEY_REJECTED_CLIENT_SIDE, got: %v", err)
 	}
 }

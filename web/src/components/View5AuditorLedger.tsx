@@ -22,12 +22,18 @@ interface View5AuditorLedgerProps {
     public_key_b64: string;
     key_fingerprint: string;
   };
+  onMintAuditorLink: (
+    label: string,
+    scopedIds: string[],
+    ttlHours: number
+  ) => Promise<{ auditor_url?: string }>;
 }
 
 export const View5AuditorLedger: React.FC<View5AuditorLedgerProps> = ({
   attestations,
   agentActions,
   kernelPublicKey,
+  onMintAuditorLink,
 }) => {
   const [activeTab, setActiveTab] = useState<'VAULT' | 'LEDGER'>('VAULT');
   const [filterText, setFilterText] = useState('');
@@ -60,16 +66,11 @@ export const View5AuditorLedger: React.FC<View5AuditorLedgerProps> = ({
 
   const handleMintAuditorLink = async (e: React.FormEvent) => {
     e.preventDefault();
-    const res = await fetch('/api/v1/auditor-tokens', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        label: shareLabel,
-        scoped_attestation_ids: filteredAttestations.map((a) => a.attestation_id),
-        ttl_hours: shareTTLHours,
-      }),
-    });
-    const data = await res.json();
+    const data = await onMintAuditorLink(
+      shareLabel,
+      filteredAttestations.map((a) => a.attestation_id),
+      shareTTLHours
+    );
     if (data.auditor_url) {
       setGeneratedLink(`${window.location.origin}${data.auditor_url}`);
     }

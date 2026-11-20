@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -46,6 +47,7 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			writeAPIError(w, http.StatusInternalServerError, err)
 			return
 		}
+		bootState, _ := o.Store.GetBootstrapState(ctx)
 		principals, _ := o.Store.ListPrincipals(ctx)
 		revocations, _ := o.Store.ListRevocations(ctx)
 		warrants, _ := o.Store.ListWarrants(ctx)
@@ -71,25 +73,26 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		}
 
 		writeAPIJSON(w, http.StatusOK, map[string]any{
-			"scoreboard":     sb,
-			"principals":     principals,
-			"test_personas":  testPersonas,
-			"revocations":    revocations,
-			"warrants":       warrants,
-			"pressure":       pressure,
-			"estate":         estate,
-			"remediations":   remediations,
-			"exceptions":     exceptions,
-			"bridges":        bridges,
-			"lockouts":       lockouts,
-			"drifts":         drifts,
-			"shadow_runs":    shadowRuns,
-			"attestations":   attestations,
-			"agent_actions":  agentActions,
-			"auditor_tokens": auditorTokens,
-			"checkpoints":    checkpoints,
-			"feed_status":    feedStatus,
-			"signer_backend": o.N5Ledger.SignerBackend(),
+			"scoreboard":      sb,
+			"bootstrap_state": bootState,
+			"principals":      principals,
+			"test_personas":   testPersonas,
+			"revocations":     revocations,
+			"warrants":        warrants,
+			"pressure":        pressure,
+			"estate":          estate,
+			"remediations":    remediations,
+			"exceptions":      exceptions,
+			"bridges":         bridges,
+			"lockouts":        lockouts,
+			"drifts":          drifts,
+			"shadow_runs":     shadowRuns,
+			"attestations":    attestations,
+			"agent_actions":   agentActions,
+			"auditor_tokens":  auditorTokens,
+			"checkpoints":     checkpoints,
+			"feed_status":     feedStatus,
+			"signer_backend":  o.N5Ledger.SignerBackend(),
 			"kernel_public_key": map[string]string{
 				"key_id":          kernelPK.KeyID,
 				"alg":             kernelPK.Alg,
@@ -113,7 +116,7 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		writeAPIJSON(w, http.StatusOK, sb)
 	})
 
-	// Principals, Authenticated Ed25519 Enrollment, Hardware WebAuthn Registration, and Live Revocation
+	// Principals, Genesis Seal, 2-of-2 DSSE Ed25519/WebAuthn Enrollment, and 1-of-2 DSSE Live Revocation
 	mux.HandleFunc("GET /api/v1/principals", func(w http.ResponseWriter, r *http.Request) {
 		list, err := o.Store.ListPrincipals(r.Context())
 		if err != nil {
@@ -123,13 +126,59 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		writeAPIJSON(w, http.StatusOK, list)
 	})
 
-	// POST /api/v1/principals/register enrolls an out-of-band verified Ed25519 public key for AC-5 Slot 1 or Slot 2.
-	// Requires WARRANT_BOOTSTRAP_ADMIN_TOKEN so untrusted network callers can NEVER self-enroll signing keys.
-	mux.HandleFunc("POST /api/v1/principals/register", func(w http.ResponseWriter, r *http.Request) {
-		if code, authErr := o.VerifyBootstrapAdminAuth(r); authErr != nil {
-			writeAPIError(w, code, authErr)
+	// POST /api/v1/bootstrap/seal permanently seals genesis bootstrap enrollment once >=1 active SO and >=1 active AO exist.
+	mux.HandleFunc("POST /api/v1/bootstrap/seal", func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		rawBody, err := readBoundedBody(w, r, 1<<20)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, err)
 			return
 		}
+		actor := ""
+		if env, isDSSE, dErr := extractGovernanceDSSEFromRequest(r, rawBody); isDSSE {
+			if dErr != nil {
+				writeAPIError(w, http.StatusBadRequest, dErr)
+				return
+			}
+			_, singleRes, vErr := o.N1Warrant.VerifySingleGovernanceEnvelope(ctx, env, models.GovActionSealBootstrap)
+			if vErr != nil {
+				writeAPIError(w, http.StatusUnprocessableEntity, vErr)
+				return
+			}
+			actor = singleRes.Signer.PrincipalID
+		} else {
+			if code, authErr := o.VerifyBootstrapUnsealedAuth(ctx, r); authErr != nil {
+				writeAPIError(w, code, authErr)
+				return
+			}
+			actor = "bootstrap-admin-token"
+		}
+
+		st, err := o.Store.SealBootstrap(ctx, actor, "EXPLICIT_BOOTSTRAP_SEAL")
+		if err != nil {
+			writeAPIError(w, http.StatusPreconditionFailed, err)
+			return
+		}
+		o.Broker.Broadcast("BOOTSTRAP_SEALED", st)
+		writeAPIJSON(w, http.StatusOK, st)
+	})
+
+	// POST /api/v1/principals/register enrolls an Ed25519 public key for AC-5 Slot 1 or Slot 2.
+	// Before bootstrap seal: accepts WARRANT_BOOTSTRAP_ADMIN_TOKEN or 2-of-2 DSSE (ENROLL_PRINCIPAL).
+	// After bootstrap seal: permanently rejects WARRANT_BOOTSTRAP_ADMIN_TOKEN (403 BOOTSTRAP_SEALED_REQUIRES_DUAL_KEY_DSSE)
+	// and requires a 2-of-2 DSSE Principal Governance envelope signed by active SERVICE_OWNER + AUTHORIZING_OFFICIAL.
+	mux.HandleFunc("POST /api/v1/principals/register", func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		rawBody, err := readBoundedBody(w, r, 1<<20)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, err)
+			return
+		}
+		if pkErr := rejectPrivateKeyFields(rawBody); pkErr != nil {
+			writeAPIError(w, http.StatusBadRequest, pkErr)
+			return
+		}
+
 		var req struct {
 			PrincipalID  string `json:"principal_id"`
 			Email        string `json:"email"`
@@ -139,10 +188,35 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			Alg          string `json:"alg"`
 			PublicKeyB64 string `json:"public_key_b64"`
 		}
-		if err := decodeJSONBody(w, r, &req); err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
-			return
+
+		if env, isDSSE, dErr := extractGovernanceDSSEFromRequest(r, rawBody); isDSSE {
+			if dErr != nil {
+				writeAPIError(w, http.StatusBadRequest, dErr)
+				return
+			}
+			gp, _, vErr := o.N1Warrant.VerifyDualGovernanceEnvelope(ctx, env, models.GovActionEnrollPrincipal)
+			if vErr != nil {
+				writeAPIError(w, http.StatusUnprocessableEntity, vErr)
+				return
+			}
+			req.PrincipalID = gp.PrincipalID
+			req.Email = gp.Email
+			req.DisplayName = gp.DisplayName
+			req.Role = gp.Role
+			req.KeyID = gp.KeyID
+			req.Alg = gp.Alg
+			req.PublicKeyB64 = gp.PublicKeyB64
+		} else {
+			if code, authErr := o.VerifyBootstrapUnsealedAuth(ctx, r); authErr != nil {
+				writeAPIError(w, code, authErr)
+				return
+			}
+			if err := decodeStrictJSONBytes(rawBody, &req); err != nil {
+				writeAPIError(w, http.StatusBadRequest, err)
+				return
+			}
 		}
+
 		if req.Role != crypto.RoleServiceOwner && req.Role != crypto.RoleAuthorizingOfficial {
 			writeAPIError(w, http.StatusBadRequest, fmt.Errorf("AC5_INVALID_ENROLLMENT_ROLE: role must be SERVICE_OWNER or AUTHORIZING_OFFICIAL"))
 			return
@@ -173,15 +247,29 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			AuthenticatorMode: "ED25519_ENROLLED",
 			CreatedAt:         time.Now().UTC(),
 		}
-		if err := o.Store.UpsertPrincipal(r.Context(), p); err != nil {
+		if err := o.Store.AppendPrincipal(ctx, &p); err != nil {
 			writeAPIError(w, http.StatusConflict, err)
 			return
 		}
+		_, _ = o.N5Ledger.CreateCheckpoint(ctx)
 		o.Broker.Broadcast("PRINCIPAL_REGISTERED", p)
 		writeAPIJSON(w, http.StatusCreated, p)
 	})
 
+	// POST /api/v1/principals/webauthn/register enrolls a W3C WebAuthn hardware authenticator.
+	// Enforces the exact same genesis bootstrap vs. post-seal 2-of-2 DSSE Principal Governance rules as Ed25519 enrollment.
 	mux.HandleFunc("POST /api/v1/principals/webauthn/register", func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		rawBody, err := readBoundedBody(w, r, 1<<20)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, err)
+			return
+		}
+		if pkErr := rejectPrivateKeyFields(rawBody); pkErr != nil {
+			writeAPIError(w, http.StatusBadRequest, pkErr)
+			return
+		}
+
 		var req struct {
 			DisplayName       string `json:"display_name"`
 			Email             string `json:"email"`
@@ -190,10 +278,34 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			AttestationObject string `json:"attestation_object"`
 			PublicKeySPKI     string `json:"public_key_spki"`
 		}
-		if err := decodeJSONBody(w, r, &req); err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
-			return
+
+		if env, isDSSE, dErr := extractGovernanceDSSEFromRequest(r, rawBody); isDSSE {
+			if dErr != nil {
+				writeAPIError(w, http.StatusBadRequest, dErr)
+				return
+			}
+			gp, _, vErr := o.N1Warrant.VerifyDualGovernanceEnvelope(ctx, env, models.GovActionEnrollPrincipal)
+			if vErr != nil {
+				writeAPIError(w, http.StatusUnprocessableEntity, vErr)
+				return
+			}
+			req.DisplayName = gp.DisplayName
+			req.Email = gp.Email
+			req.Role = gp.Role
+			req.CredentialID = gp.CredentialID
+			req.AttestationObject = gp.AttestationObject
+			req.PublicKeySPKI = gp.PublicKeySPKI
+		} else {
+			if code, authErr := o.VerifyBootstrapUnsealedAuth(ctx, r); authErr != nil {
+				writeAPIError(w, code, authErr)
+				return
+			}
+			if err := decodeStrictJSONBytes(rawBody, &req); err != nil {
+				writeAPIError(w, http.StatusBadRequest, err)
+				return
+			}
 		}
+
 		if req.Role != crypto.RoleServiceOwner && req.Role != crypto.RoleAuthorizingOfficial {
 			writeAPIError(w, http.StatusBadRequest, fmt.Errorf("role must be SERVICE_OWNER or AUTHORIZING_OFFICIAL"))
 			return
@@ -217,36 +329,59 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			CredentialID:      req.CredentialID,
 			CreatedAt:         time.Now().UTC(),
 		}
-		if err := o.Store.UpsertPrincipal(r.Context(), p); err != nil {
+		if err := o.Store.AppendPrincipal(ctx, &p); err != nil {
 			writeAPIError(w, http.StatusConflict, err)
 			return
 		}
+		_, _ = o.N5Ledger.CreateCheckpoint(ctx)
 		o.Broker.Broadcast("PRINCIPAL_REGISTERED", p)
 		writeAPIJSON(w, http.StatusCreated, p)
 	})
 
+	// POST /api/v1/principals/revoke enforces Asymmetric 1-of-2 DSSE Principal Governance:
+	// ANY single active enrolled principal (SERVICE_OWNER or AUTHORIZING_OFFICIAL) can immediately revoke a compromised/lost key,
+	// while unauthenticated network callers are rejected fail-closed.
 	mux.HandleFunc("POST /api/v1/principals/revoke", func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			PrincipalID    string `json:"principal_id"`
-			KeyFingerprint string `json:"key_fingerprint"`
-			ReasonCode     string `json:"reason_code"`
-			RevokedBy      string `json:"revoked_by"`
-		}
-		if err := decodeJSONBody(w, r, &req); err != nil {
+		ctx := r.Context()
+		rawBody, err := readBoundedBody(w, r, 1<<20)
+		if err != nil {
 			writeAPIError(w, http.StatusBadRequest, err)
 			return
 		}
-		if req.ReasonCode == "" {
-			req.ReasonCode = "ROLE_DEPARTURE_OR_PIV_REVOCATION"
+		env, isDSSE, dErr := extractGovernanceDSSEFromRequest(r, rawBody)
+		if !isDSSE {
+			writeAPIError(w, http.StatusUnauthorized, fmt.Errorf("MISSING_REVOCATION_DSSE_SIGNATURE: POST /api/v1/principals/revoke requires a 1-of-2 DSSE Principal Governance envelope signed by an active principal"))
+			return
 		}
-		if req.RevokedBy == "" {
-			req.RevokedBy = "sec-ops-console"
+		if dErr != nil {
+			writeAPIError(w, http.StatusBadRequest, dErr)
+			return
 		}
-		rev, err := o.N1Warrant.RevokeSigner(r.Context(), req.PrincipalID, req.KeyFingerprint, req.ReasonCode, req.RevokedBy)
+		gp, singleRes, vErr := o.N1Warrant.VerifySingleGovernanceEnvelope(ctx, env, models.GovActionRevokePrincipal)
+		if vErr != nil {
+			writeAPIError(w, http.StatusUnprocessableEntity, vErr)
+			return
+		}
+		targetID := strings.TrimSpace(gp.TargetPrincipalID)
+		if targetID == "" {
+			targetID = strings.TrimSpace(gp.PrincipalID)
+		}
+		targetFP := strings.TrimSpace(gp.TargetKeyFingerprint)
+		if targetID == "" && targetFP == "" {
+			writeAPIError(w, http.StatusBadRequest, fmt.Errorf("target_principal_id or target_key_fingerprint is required in signed revocation payload"))
+			return
+		}
+		reasonCode := strings.TrimSpace(gp.ReasonCode)
+		if reasonCode == "" {
+			reasonCode = "ROLE_DEPARTURE_OR_PIV_REVOCATION"
+		}
+		revokedBy := singleRes.Signer.PrincipalID
+		rev, err := o.N1Warrant.RevokeSigner(ctx, targetID, targetFP, reasonCode, revokedBy)
 		if err != nil {
 			writeAPIError(w, http.StatusUnprocessableEntity, err)
 			return
 		}
+		_, _ = o.N5Ledger.CreateCheckpoint(ctx)
 		writeAPIJSON(w, http.StatusCreated, rev)
 	})
 
@@ -271,6 +406,7 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			writeAPIError(w, http.StatusUnprocessableEntity, err)
 			return
 		}
+		_, _ = o.N5Ledger.CreateCheckpoint(r.Context())
 		writeAPIJSON(w, http.StatusCreated, rec)
 	})
 
@@ -290,18 +426,43 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		})
 	})
 
-	// N1 Asymmetric Emergency Freeze & 2-of-2 Thaw Ceremony
+	// N1 Asymmetric Emergency Freeze (1-of-2 Active Principal DSSE or Authenticated Operator Token) & 2-of-2 Thaw Ceremony
 	mux.HandleFunc("POST /api/v1/freeze", func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Mode       string `json:"mode"`
-			Actor      string `json:"actor"`
-			ReasonCode string `json:"reason_code"`
-		}
-		if err := decodeJSONBody(w, r, &req); err != nil {
+		ctx := r.Context()
+		rawBody, err := readBoundedBody(w, r, 1<<20)
+		if err != nil {
 			writeAPIError(w, http.StatusBadRequest, err)
 			return
 		}
-		fs, err := o.N1Warrant.TriggerEmergencyFreeze(r.Context(), req.Mode, req.Actor, req.ReasonCode, o.N2Gate.RollbackAllActiveCanaries)
+		actor, gp, code, authErr := o.VerifyOperatorOrSinglePrincipalAuth(ctx, r, models.GovActionEmergencyFreeze, rawBody)
+		if authErr != nil {
+			writeAPIError(w, code, authErr)
+			return
+		}
+
+		mode := ""
+		reasonCode := ""
+		if gp != nil && gp.FreezeMode != "" {
+			mode = gp.FreezeMode
+			reasonCode = gp.ReasonCode
+		}
+		if mode == "" {
+			var req struct {
+				Mode       string `json:"mode"`
+				Actor      string `json:"actor"`
+				ReasonCode string `json:"reason_code"`
+			}
+			if err := json.Unmarshal(rawBody, &req); err != nil {
+				writeAPIError(w, http.StatusBadRequest, err)
+				return
+			}
+			mode = req.Mode
+			if reasonCode == "" {
+				reasonCode = req.ReasonCode
+			}
+		}
+
+		fs, err := o.N1Warrant.TriggerEmergencyFreeze(ctx, mode, actor, reasonCode, o.N2Gate.RollbackAllActiveCanaries)
 		if err != nil {
 			writeAPIError(w, http.StatusUnprocessableEntity, err)
 			return
@@ -342,14 +503,36 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		writeAPIJSON(w, http.StatusOK, traces)
 	})
 
-	// Atomic 3-Step Quarantined Rollback (Contain-Before-Unban) for Post-Closure Latent Regressions
+	// Atomic 3-Step Quarantined Rollback (Contain-Before-Unban) — Authenticated Operator or 1-of-2 Active Principal Required
 	mux.HandleFunc("POST /api/v1/pipeline/{id}/emergency-rollback", func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Actor  string `json:"actor"`
-			Reason string `json:"reason"`
+		ctx := r.Context()
+		remID := r.PathValue("id")
+		rawBody, err := readBoundedBody(w, r, 1<<20)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, err)
+			return
 		}
-		_ = decodeJSONBody(w, r, &req)
-		rem, err := o.N3Verify.ExecuteEmergencyQuarantinedRollback(r.Context(), r.PathValue("id"), req.Actor, req.Reason)
+		actor, gp, code, authErr := o.VerifyOperatorOrSinglePrincipalAuth(ctx, r, models.GovActionEmergencyRollback, rawBody)
+		if authErr != nil {
+			writeAPIError(w, code, authErr)
+			return
+		}
+		reason := ""
+		if gp != nil {
+			if gp.RemediationID != "" && gp.RemediationID != remID {
+				writeAPIError(w, http.StatusUnprocessableEntity, fmt.Errorf("GOVERNANCE_TARGET_MISMATCH: signed remediation_id %q != URL %q", gp.RemediationID, remID))
+				return
+			}
+			reason = gp.ReasonCode
+		}
+		if reason == "" && len(bytesTrimSpace(rawBody)) > 0 {
+			var req struct {
+				Reason string `json:"reason"`
+			}
+			_ = json.Unmarshal(rawBody, &req)
+			reason = req.Reason
+		}
+		rem, err := o.N3Verify.ExecuteEmergencyQuarantinedRollback(ctx, remID, actor, reason)
 		if err != nil {
 			writeAPIError(w, http.StatusUnprocessableEntity, err)
 			return
@@ -358,6 +541,10 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 	})
 
 	mux.HandleFunc("POST /api/v1/intake/sarif", func(w http.ResponseWriter, r *http.Request) {
+		if code, authErr := o.VerifyIntakeAuth(r); authErr != nil {
+			writeAPIError(w, code, authErr)
+			return
+		}
 		r.Body = http.MaxBytesReader(w, r.Body, 8<<20)
 		raw, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -384,6 +571,10 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 
 	// Secret-Exposure Intake (Gitleaks SARIF / Gitleaks JSON / GitGuardian / Cloud Secret Scanners)
 	mux.HandleFunc("POST /api/v1/intake/secrets", func(w http.ResponseWriter, r *http.Request) {
+		if code, authErr := o.VerifyIntakeAuth(r); authErr != nil {
+			writeAPIError(w, code, authErr)
+			return
+		}
 		r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
 		raw, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -445,12 +636,22 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 	})
 
 	mux.HandleFunc("POST /api/v1/feeds/config", func(w http.ResponseWriter, r *http.Request) {
-		var cfg models.FeedRuntimeConfig
-		if err := decodeJSONBody(w, r, &cfg); err != nil {
+		ctx := r.Context()
+		rawBody, err := readBoundedBody(w, r, 1<<20)
+		if err != nil {
 			writeAPIError(w, http.StatusBadRequest, err)
 			return
 		}
-		updated, err := o.Feeds.UpdateConfig(r.Context(), cfg)
+		if _, _, code, authErr := o.VerifyOperatorOrSinglePrincipalAuth(ctx, r, models.GovActionFeedMutation, rawBody); authErr != nil {
+			writeAPIError(w, code, authErr)
+			return
+		}
+		var cfg models.FeedRuntimeConfig
+		if err := json.Unmarshal(rawBody, &cfg); err != nil {
+			writeAPIError(w, http.StatusBadRequest, err)
+			return
+		}
+		updated, err := o.Feeds.UpdateConfig(ctx, cfg)
 		if err != nil {
 			writeAPIError(w, http.StatusUnprocessableEntity, err)
 			return
@@ -459,7 +660,13 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 	})
 
 	mux.HandleFunc("POST /api/v1/feeds/sync/kev", func(w http.ResponseWriter, r *http.Request) {
-		run, err := o.Feeds.SyncCISAKEV(r.Context())
+		ctx := r.Context()
+		rawBody, _ := readBoundedBody(w, r, 1<<20)
+		if _, _, code, authErr := o.VerifyOperatorOrSinglePrincipalAuth(ctx, r, models.GovActionFeedMutation, rawBody); authErr != nil {
+			writeAPIError(w, code, authErr)
+			return
+		}
+		run, err := o.Feeds.SyncCISAKEV(ctx)
 		if err != nil {
 			writeAPIError(w, http.StatusUnprocessableEntity, err)
 			return
@@ -468,14 +675,20 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 	})
 
 	mux.HandleFunc("POST /api/v1/feeds/sync/osv", func(w http.ResponseWriter, r *http.Request) {
-		run, advisories, err := o.Feeds.SyncOSV(r.Context())
+		ctx := r.Context()
+		rawBody, _ := readBoundedBody(w, r, 1<<20)
+		if _, _, code, authErr := o.VerifyOperatorOrSinglePrincipalAuth(ctx, r, models.GovActionFeedMutation, rawBody); authErr != nil {
+			writeAPIError(w, code, authErr)
+			return
+		}
+		run, advisories, err := o.Feeds.SyncOSV(ctx)
 		if err != nil {
 			writeAPIError(w, http.StatusUnprocessableEntity, err)
 			return
 		}
 		var ingested []models.RemediationItem
 		if r.URL.Query().Get("ingest") == "true" && len(advisories) > 0 {
-			ingested, _ = o.IngestOSVAdvisoryToPipeline(r.Context(), advisories[0].OSVID, advisories[0].ServiceID)
+			ingested, _ = o.IngestOSVAdvisoryToPipeline(ctx, advisories[0].OSVID, advisories[0].ServiceID)
 		}
 		writeAPIJSON(w, http.StatusOK, map[string]any{
 			"sync_run":   run,
@@ -485,15 +698,25 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 	})
 
 	mux.HandleFunc("POST /api/v1/feeds/osv/ingest", func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		rawBody, err := readBoundedBody(w, r, 1<<20)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, err)
+			return
+		}
+		if _, _, code, authErr := o.VerifyOperatorOrSinglePrincipalAuth(ctx, r, models.GovActionFeedMutation, rawBody); authErr != nil {
+			writeAPIError(w, code, authErr)
+			return
+		}
 		var req struct {
 			OSVID     string `json:"osv_id"`
 			ServiceID string `json:"service_id"`
 		}
-		if err := decodeJSONBody(w, r, &req); err != nil {
+		if err := json.Unmarshal(rawBody, &req); err != nil {
 			writeAPIError(w, http.StatusBadRequest, err)
 			return
 		}
-		items, err := o.IngestOSVAdvisoryToPipeline(r.Context(), req.OSVID, req.ServiceID)
+		items, err := o.IngestOSVAdvisoryToPipeline(ctx, req.OSVID, req.ServiceID)
 		if err != nil {
 			writeAPIError(w, http.StatusUnprocessableEntity, err)
 			return
@@ -501,10 +724,21 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		writeAPIJSON(w, http.StatusCreated, items)
 	})
 
+	// Interactive Sandbox Simulation Drills — Disabled on Kubernetes or Live Feed Mode, and Authenticated in Simulator Mode
 	mux.HandleFunc("POST /api/v1/simulate/{scenario}", func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		if allowed, reason := o.IsSimulationAllowed(ctx); !allowed {
+			writeAPIError(w, http.StatusForbidden, fmt.Errorf("%s", reason))
+			return
+		}
+		rawBody, _ := readBoundedBody(w, r, 1<<20)
+		if _, _, code, authErr := o.VerifyOperatorOrSinglePrincipalAuth(ctx, r, models.GovActionSimulationDrill, rawBody); authErr != nil {
+			writeAPIError(w, code, authErr)
+			return
+		}
+
 		scenario := r.PathValue("scenario")
 		seq := atomic.AddUint64(&simSeq, 1)
-		ctx := r.Context()
 
 		switch scenario {
 		case "inject-kev":
@@ -579,7 +813,6 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 				writeAPIError(w, http.StatusInternalServerError, err)
 				return
 			}
-			// Immediately run a drift sweep in addition to background watcher for instant response
 			_ = o.N3Verify.CheckFleetDriftOnce(ctx)
 			writeAPIJSON(w, http.StatusOK, map[string]any{
 				"scenario":         scenario,
@@ -764,17 +997,43 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		writeAPIError(w, http.StatusNotFound, fmt.Errorf("attestation %q not found", id))
 	})
 
+	// POST /api/v1/auditor-tokens — Authenticated Operator or 1-of-2 Active Principal Required
 	mux.HandleFunc("POST /api/v1/auditor-tokens", func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Label                string   `json:"label"`
-			ScopedAttestationIDs []string `json:"scoped_attestation_ids"`
-			TTLHours             int      `json:"ttl_hours"`
-		}
-		if err := decodeJSONBody(w, r, &req); err != nil {
+		ctx := r.Context()
+		rawBody, err := readBoundedBody(w, r, 1<<20)
+		if err != nil {
 			writeAPIError(w, http.StatusBadRequest, err)
 			return
 		}
-		tok, rawBearer, err := o.N5Ledger.MintScopedAuditorToken(r.Context(), req.Label, "console-operator", req.ScopedAttestationIDs, req.TTLHours)
+		actor, gp, code, authErr := o.VerifyOperatorOrSinglePrincipalAuth(ctx, r, models.GovActionMintAuditorToken, rawBody)
+		if authErr != nil {
+			writeAPIError(w, code, authErr)
+			return
+		}
+
+		label := ""
+		var scopedIDs []string
+		ttlHours := 0
+		if gp != nil && gp.AuditorLabel != "" {
+			label = gp.AuditorLabel
+			scopedIDs = gp.ScopedAttestationIDs
+			ttlHours = gp.TTLHours
+		} else if len(bytesTrimSpace(rawBody)) > 0 {
+			var req struct {
+				Label                string   `json:"label"`
+				ScopedAttestationIDs []string `json:"scoped_attestation_ids"`
+				TTLHours             int      `json:"ttl_hours"`
+			}
+			if err := json.Unmarshal(rawBody, &req); err != nil {
+				writeAPIError(w, http.StatusBadRequest, err)
+				return
+			}
+			label = req.Label
+			scopedIDs = req.ScopedAttestationIDs
+			ttlHours = req.TTLHours
+		}
+
+		tok, rawBearer, err := o.N5Ledger.MintScopedAuditorToken(ctx, label, actor, scopedIDs, ttlHours)
 		if err != nil {
 			writeAPIError(w, http.StatusInternalServerError, err)
 			return
@@ -805,7 +1064,13 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 	})
 
 	mux.HandleFunc("POST /api/v1/ledger/checkpoints", func(w http.ResponseWriter, r *http.Request) {
-		cp, err := o.N5Ledger.CreateCheckpoint(r.Context())
+		ctx := r.Context()
+		rawBody, _ := readBoundedBody(w, r, 1<<20)
+		if _, _, code, authErr := o.VerifyOperatorOrSinglePrincipalAuth(ctx, r, models.GovActionCreateCheckpoint, rawBody); authErr != nil {
+			writeAPIError(w, code, authErr)
+			return
+		}
+		cp, err := o.N5Ledger.CreateCheckpoint(ctx)
 		if err != nil {
 			writeAPIError(w, http.StatusUnprocessableEntity, err)
 			return
@@ -922,10 +1187,96 @@ func extractAuditorBearer(r *http.Request) string {
 	return ""
 }
 
+func readBoundedBody(w http.ResponseWriter, r *http.Request, maxBytes int64) ([]byte, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	defer r.Body.Close()
+	return io.ReadAll(r.Body)
+}
+
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) error {
 	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 	defer r.Body.Close()
 	return json.NewDecoder(r.Body).Decode(dst)
+}
+
+func decodeStrictJSONBytes(raw []byte, dst any) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	var trailing any
+	if dec.Decode(&trailing) == nil {
+		return fmt.Errorf("unexpected trailing JSON tokens")
+	}
+	return nil
+}
+
+// rejectPrivateKeyFields recursively inspects decoded JSON and rejects any payload containing private key fields (HTTP 400).
+func rejectPrivateKeyFields(raw []byte) error {
+	if len(bytesTrimSpace(raw)) == 0 {
+		return nil
+	}
+	var val any
+	if err := json.Unmarshal(raw, &val); err != nil {
+		return fmt.Errorf("invalid JSON payload: %w", err)
+	}
+	return checkNoPrivateKeysInValue(val)
+}
+
+func checkNoPrivateKeysInValue(v any) error {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, child := range t {
+			lk := strings.ToLower(strings.TrimSpace(k))
+			if strings.Contains(lk, "private_key") || strings.Contains(lk, "priv_key") || lk == "seed_hex" || strings.Contains(lk, "secret_key") {
+				return fmt.Errorf("PRIVATE_KEY_MATERIAL_REJECTED: field %q is forbidden on network registration endpoints; pass public key (.pub.json) only", k)
+			}
+			if err := checkNoPrivateKeysInValue(child); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, elem := range t {
+			if err := checkNoPrivateKeysInValue(elem); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func extractGovernanceDSSEFromRequest(r *http.Request, rawBody []byte) (crypto.Envelope, bool, error) {
+	if hdrB64 := strings.TrimSpace(r.Header.Get("X-Warrant-Governance-DSSE")); hdrB64 != "" {
+		envRaw, err := crypto.DecodeBase64Any(hdrB64)
+		if err != nil {
+			return crypto.Envelope{}, true, fmt.Errorf("invalid X-Warrant-Governance-DSSE base64: %w", err)
+		}
+		var env crypto.Envelope
+		if err := json.Unmarshal(envRaw, &env); err != nil {
+			return crypto.Envelope{}, true, fmt.Errorf("invalid X-Warrant-Governance-DSSE JSON: %w", err)
+		}
+		return env, true, nil
+	}
+	if len(bytesTrimSpace(rawBody)) > 0 {
+		var probe struct {
+			PayloadType string `json:"payloadType"`
+		}
+		if json.Unmarshal(rawBody, &probe) == nil && probe.PayloadType != "" {
+			var env crypto.Envelope
+			if err := json.Unmarshal(rawBody, &env); err != nil {
+				return crypto.Envelope{}, true, fmt.Errorf("invalid DSSE JSON envelope: %w", err)
+			}
+			// Check inside base64 payload for accidental private_key fields as well
+			if rawP, pErr := env.DecodePayload(); pErr == nil {
+				if pkErr := rejectPrivateKeyFields(rawP); pkErr != nil {
+					return crypto.Envelope{}, true, pkErr
+				}
+			}
+			return env, true, nil
+		}
+	}
+	return crypto.Envelope{}, false, nil
 }
 
 func writeAPIJSON(w http.ResponseWriter, code int, v any) {

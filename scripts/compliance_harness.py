@@ -93,7 +93,13 @@ def docker_workspace_mount():
             if stage_reports.exists():
                 for item in stage_reports.iterdir():
                     if item.is_file():
-                        shutil.copy2(item, REPORTS_DIR / item.name)
+                        dest = REPORTS_DIR / item.name
+                        try:
+                            shutil.copy2(item, dest)
+                        except OSError:
+                            tmp_dest = REPORTS_DIR / f".{item.name}.tmp"
+                            tmp_dest.write_bytes(item.read_bytes())
+                            os.replace(tmp_dest, dest)
 
 
 # ==============================================================================

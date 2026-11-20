@@ -12,7 +12,7 @@ G1-Warrant ships with two first-class client SDKs and two command-line interface
 ### Installation
 
 ```bash
-go get github.com/cgilbert61/G1-Warrant/pkg/warrantsdk
+go get github.com/cgilbert61/G1-Warrant/pkg/warrantsdk@v1.0.1
 ```
 
 ### Programmatic Go Example
@@ -86,13 +86,14 @@ docker compose exec warrantd /warrant status
 Production SDKs and CLIs ship **zero built-in demo signers**. Operators generate or load explicit `SignerKeyBundle` files (or authenticate via hardware WebAuthn PIV/FIDO2 in the Console):
 
 ```bash
-# Step 1: Generate distinct AC-5 signing keys for Service Owner (Slot 1) and Authorizing Official (Slot 2)
-./warrant keygen --id usr-so-01 --email so@agency.gov --role SERVICE_OWNER --out so-key.json
-./warrant keygen --id usr-ao-01 --email ao@agency.gov --role AUTHORIZING_OFFICIAL --out ao-key.json
+# Step 1: Generate split AC-5 signing keypairs (<name>.priv.json [0600] + <name>.pub.json [0644 public-only])
+./warrant keygen --id usr-so-01 --email so@agency.gov --role SERVICE_OWNER --out so-key
+./warrant keygen --id usr-ao-01 --email ao@agency.gov --role AUTHORIZING_OFFICIAL --out ao-key
 
-# Step 2: Enroll public keys in N1 (private keys never leave disk; requires out-of-band WARRANT_BOOTSTRAP_ADMIN_TOKEN)
-./warrant principals register --key so-key.json --admin-token "$WARRANT_BOOTSTRAP_ADMIN_TOKEN"
-./warrant principals register --key ao-key.json --admin-token "$WARRANT_BOOTSTRAP_ADMIN_TOKEN"
+# Step 2: One-shot genesis enrollment using ONLY .pub.json (private keys never pass to network subcommands)
+./warrant principals register --pub so-key.pub.json --admin-token "$WARRANT_BOOTSTRAP_ADMIN_TOKEN"
+./warrant principals register --pub ao-key.pub.json --admin-token "$WARRANT_BOOTSTRAP_ADMIN_TOKEN"
+./warrant principals seal --admin-token "$WARRANT_BOOTSTRAP_ADMIN_TOKEN"
 
 # Step 3: Draft an unsigned RFC 8785 JCS Standing Warrant DSSE envelope
 ./warrant warrants draft \
@@ -102,13 +103,19 @@ Production SDKs and CLIs ship **zero built-in demo signers**. Operators generate
   --out warrant-draft.dsse.json
 
 # Step 4: Slot 1 (Service Owner) signs over DSSEv1 PAE bytes
-./warrant warrants sign --in warrant-draft.dsse.json --slot 1 --key so-key.json
+./warrant warrants sign --in warrant-draft.dsse.json --slot 1 --key so-key.priv.json
 
 # Step 5: Slot 2 (Authorizing Official) co-signs over identical DSSEv1 PAE bytes
-./warrant warrants sign --in warrant-draft.dsse.json --slot 2 --key ao-key.json
+./warrant warrants sign --in warrant-draft.dsse.json --slot 2 --key ao-key.priv.json
 
-# Step 6: Submit the 2-of-2 DSSE envelope to N1 (verified by OPA warrant_ac5.rego + append-only ledger)
+# Step 6: Submit the 2-of-2 DSSE envelope to N1 (auto-seals genesis bootstrap if not yet sealed)
 ./warrant warrants submit warrant-draft.dsse.json
+
+# Post-Seal Principal Governance:
+#   - Enrolling additional/rotated keys requires 2-of-2 DSSE co-signatures (--slot1-key + --slot2-key)
+#   - Revoking a compromised key requires only a 1-of-2 DSSE signature from any active principal (--key)
+./warrant principals register --pub so-backup.pub.json --slot1-key so-key.priv.json --slot2-key ao-key.priv.json
+./warrant principals revoke --principal usr-so-01 --key ao-key.priv.json --reason COMPROMISED_KEY
 ```
 
 ### Full `warrant` Command Reference
@@ -116,20 +123,20 @@ Production SDKs and CLIs ship **zero built-in demo signers**. Operators generate
 | Command | Purpose |
 | :--- | :--- |
 | `warrant status [--json]` | Live control-plane posture, active warrants, 30d median TTVR, armed bridges, and estate eligibility. |
-| `warrant keygen --id <id> --email <e> --role <SO\|AO>` | Generate a portable Ed25519 AC-5 signing key bundle (`0600` JSON). |
-| `warrant principals [list \| register --key <k> \| revoke]` | List, enroll (`WARRANT_BOOTSTRAP_ADMIN_TOKEN`), or revoke AC-5 signing keys for instant fail-closed invalidation. |
-| `warrant warrants [list \| verify \| draft \| sign --key <k> \| submit]` | Inspect, verify, or execute `2-of-2` Standing Warrant ceremonies. |
+| `warrant keygen --id <id> --email <e> --role <SO\|AO> --out <prefix>` | Generate split Ed25519 AC-5 key files (`<prefix>.priv.json` `0600` + `<prefix>.pub.json` `0644`). |
+| `warrant principals [list \| register --pub <p.pub.json> \| seal \| revoke --key <k.priv.json>]` | List principals, enroll `.pub.json` (genesis token or post-seal `2-of-2` DSSE), seal bootstrap, or execute `1-of-2` DSSE revocation. |
+| `warrant warrants [list \| verify \| draft \| sign --key <k.priv.json> \| submit]` | Inspect, verify, or execute `2-of-2` Standing Warrant ceremonies. |
 | `warrant exceptions [list \| approve <id> --slot1-key <so> --slot2-key <ao> \| reject <id> ...]` | Inspect or dual-key resolve stateful/above-ceiling remediation exceptions. |
-| `warrant pipeline [list \| trace <id> \| rollback <id>]` | View Race Pipeline items, millisecond traces, or execute atomic 3-step `QUARANTINED_ROLLBACK` (`Contain-Before-Unban`). |
+| `warrant pipeline [list \| trace <id> \| rollback <id> --key <k.priv.json>]` | View Race Pipeline items, millisecond traces, or execute authenticated atomic 3-step `QUARANTINED_ROLLBACK`. |
 | `warrant estate` / `warrant shadow` | Inspect 3-Tier Graduated Fleet Autonomy Scorecard (5 mandatory gates incl. `readOnlyRootFilesystem` + `noexec /tmp`) and Differential Shadow canary reports. |
 | `warrant bridges` / `warrant lockouts` / `warrant drift` | Inspect Zero-Prose vs. Signed-Rulepack shields (`169.254.169.254` metadata quarantine), `ValidatingAdmissionPolicy` lockouts, and Tetragon/image drift events. |
-| `warrant simulate <scenario>` | Run deterministic drills: `inject-kev`, `bad-syscall`, `stateful-ddl`, `runtime-drift`, `secret-exposure`, `in-pod-webshell`, or `poisoned-config`. |
+| `warrant simulate <scenario>` | Run deterministic drills (`simulator` + `offline` mode only; disabled on `kubernetes` or `live` feeds). |
 | `warrant intake [sarif\|secrets] <file>` | Submit untrusted `SARIF 2.1.0` vulnerability scans or Gitleaks/GitGuardian secret-exposure findings (`SECRET-ROTATION-STATELESS`). |
 | `warrant feeds [status \| mode \| sync-kev \| sync-osv \| ingest-osv]` | Toggle `offline` vs `live` feeds and sync real CISA KEV & Google OSV.dev advisories. |
-| `warrant freeze [hold \| rollback \| thaw --slot1-key <so> --slot2-key <ao>]` | Trigger single-operator emergency freeze/rollback or `2-of-2` DSSE fleet thaw. |
+| `warrant freeze [hold \| rollback --key <k.priv.json> \| thaw --slot1-key <so> --slot2-key <ao>]` | Trigger `1-of-2` authenticated emergency freeze/rollback or `2-of-2` DSSE fleet thaw. |
 | `warrant oscal [export <id> \| verify-offline <bundle.json>]` | Export DSSE-signed NIST OSCAL `1.1.2` POA&M packages and verify signatures air-gapped. |
-| `warrant auditor [mint-token \| inspect]` | Mint or test a scoped read-only `g1aud_*` external 3PAO auditor bearer link. |
-| `warrant ledger [verify \| actions \| checkpoints \| anchor]` | Verify SHA-256 hash chains + External Merkle Transparency Checkpoints across all 3 ledger tables. |
+| `warrant auditor [mint-token --key <k.priv.json> \| inspect]` | Mint (authenticated) or test a scoped read-only `g1aud_*` external 3PAO auditor bearer link. |
+| `warrant ledger [verify \| actions \| checkpoints \| anchor]` | Verify SHA-256 hash chains + External Merkle Transparency Checkpoints across all 6 immutable tables. |
 | `warrant events` | Stream real-time Server-Sent Events (`SSE`) from `warrantd` in the terminal. |
 
 ---
@@ -159,19 +166,20 @@ from g1_warrant import (
 cli = WarrantClient("http://localhost:8080")
 admin_tok = os.environ["WARRANT_BOOTSTRAP_ADMIN_TOKEN"]
 
-# 1. Generate, enroll public keys in N1, and 2-of-2 co-sign + submit a Standing Warrant
+# 1. Generate keys, enroll public-only identities during genesis, and 2-of-2 co-sign + submit a Standing Warrant
+#    (submitting the first Standing Warrant automatically seals genesis bootstrap!)
 so = generate_ed25519_signer_bundle("usr-so-01", "so@agency.gov", "Service Owner", ROLE_SERVICE_OWNER)
 ao = generate_ed25519_signer_bundle("usr-ao-01", "ao@agency.gov", "Authorizing Official", ROLE_AUTHORIZING_OFFICIAL)
-cli.register_principal(so, admin_token=admin_tok)
-cli.register_principal(ao, admin_token=admin_tok)
+cli.register_principal(so.to_public_identity(), admin_token=admin_tok)
+cli.register_principal(ao.to_public_identity(), admin_token=admin_tok)
 
 env = draft_warrant_envelope(scope_services=["payments-ledger-api"], max_cvss=10.0)
 so.sign_envelope(1, env)
 ao.sign_envelope(2, env)
 warrant = cli.create_warrant(env)
 
-# 2. Mint a scoped 3PAO Auditor Token & confirm HTTP 403 Operational Isolation
-minted = cli.mint_auditor_token(label="FedRAMP 3PAO Audit", ttl_hours=12)
+# 2. Mint a scoped 3PAO Auditor Token (1-of-2 active principal DSSE signed) & confirm HTTP 403 Operational Isolation
+minted = cli.mint_auditor_token(label="FedRAMP 3PAO Audit", ttl_hours=12, signer_bundle=so)
 auditor_cli = WarrantClient("http://localhost:8080", auditor_token=minted["bearer"])
 vault = auditor_cli.get_auditor_vault()  # Allowed: Read-Only /api/v1/auditor/vault
 

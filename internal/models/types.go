@@ -181,10 +181,12 @@ type Principal struct {
 	Alg               string    `json:"alg"`
 	PublicKeyB64      string    `json:"public_key_b64"`
 	KeyFingerprint    string    `json:"key_fingerprint"`
-	AuthenticatorMode string    `json:"authenticator_mode"` // "WEBAUTHN_HARDWARE" | "FIPS_PIV_SMARTCARD"
+	AuthenticatorMode string    `json:"authenticator_mode"` // "WEBAUTHN_HARDWARE" | "FIPS_PIV_SMARTCARD" | "ED25519_ENROLLED"
 	CredentialID      string    `json:"credential_id,omitempty"`
 	Revoked           bool      `json:"revoked"`
 	RevokeReason      string    `json:"revoke_reason,omitempty"`
+	PrevHash          string    `json:"prev_hash,omitempty"`
+	EntryHash         string    `json:"entry_hash,omitempty"`
 	CreatedAt         time.Time `json:"created_at"`
 }
 
@@ -195,7 +197,58 @@ type PrincipalRevocation struct {
 	KeyFingerprint string    `json:"key_fingerprint"`
 	ReasonCode     string    `json:"reason_code"`
 	RevokedBy      string    `json:"revoked_by"`
+	PrevHash       string    `json:"prev_hash,omitempty"`
+	EntryHash      string    `json:"entry_hash,omitempty"`
 	RevokedAt      time.Time `json:"revoked_at"`
+}
+
+// BootstrapState tracks whether one-shot genesis bootstrap enrollment has been permanently sealed.
+type BootstrapState struct {
+	Sealed       bool       `json:"sealed"`
+	SealedBy     string     `json:"sealed_by,omitempty"`
+	SealedReason string     `json:"sealed_reason,omitempty"`
+	SealedAt     *time.Time `json:"sealed_at,omitempty"`
+}
+
+// PrincipalGovernanceActions enumerates DSSE-signed governance & emergency actions.
+const (
+	GovActionEnrollPrincipal   = "ENROLL_PRINCIPAL"
+	GovActionRevokePrincipal   = "REVOKE_PRINCIPAL"
+	GovActionSealBootstrap     = "SEAL_BOOTSTRAP"
+	GovActionEmergencyFreeze   = "EMERGENCY_FREEZE"
+	GovActionEmergencyRollback = "EMERGENCY_ROLLBACK"
+	GovActionMintAuditorToken  = "MINT_AUDITOR_TOKEN"
+	GovActionFeedMutation      = "FEED_MUTATION"
+	GovActionCreateCheckpoint  = "CREATE_CHECKPOINT"
+	GovActionSimulationDrill   = "SIMULATION_DRILL"
+)
+
+// PrincipalGovernancePayload is the RFC 8785 JCS payload inside a Principal Governance DSSEv1 envelope
+// (2-of-2 required for ENROLL_PRINCIPAL; 1-of-2 active principal accepted for fail-closed REVOKE_PRINCIPAL & emergency actions).
+type PrincipalGovernancePayload struct {
+	EnvelopeID           string   `json:"envelope_id"`
+	Action               string   `json:"action"`
+	IssuedAt             string   `json:"issued_at"`
+	ExpiresAt            string   `json:"expires_at"`
+	PrincipalID          string   `json:"principal_id,omitempty"`
+	Email                string   `json:"email,omitempty"`
+	DisplayName          string   `json:"display_name,omitempty"`
+	Role                 string   `json:"role,omitempty"`
+	KeyID                string   `json:"key_id,omitempty"`
+	Alg                  string   `json:"alg,omitempty"`
+	PublicKeyB64         string   `json:"public_key_b64,omitempty"`
+	CredentialID         string   `json:"credential_id,omitempty"`
+	AttestationObject    string   `json:"attestation_object,omitempty"`
+	PublicKeySPKI        string   `json:"public_key_spki,omitempty"`
+	TargetPrincipalID    string   `json:"target_principal_id,omitempty"`
+	TargetKeyFingerprint string   `json:"target_key_fingerprint,omitempty"`
+	ReasonCode           string   `json:"reason_code,omitempty"`
+	FreezeMode           string   `json:"freeze_mode,omitempty"`
+	RemediationID        string   `json:"remediation_id,omitempty"`
+	AuditorLabel         string   `json:"auditor_label,omitempty"`
+	ScopedAttestationIDs []string `json:"scoped_attestation_ids,omitempty"`
+	TTLHours             int      `json:"ttl_hours,omitempty"`
+	Scenario             string   `json:"scenario,omitempty"`
 }
 
 // WarrantPayload is the JCS-canonicalized body inside a dual-signed Standing Warrant DSSE envelope.
@@ -554,6 +607,8 @@ type KernelPublicKeyRecord struct {
 	PublicKeyB64   string    `json:"public_key_b64"`
 	KeyFingerprint string    `json:"key_fingerprint"`
 	BackendMode    string    `json:"backend_mode"`
+	PrevHash       string    `json:"prev_hash,omitempty"`
+	EntryHash      string    `json:"entry_hash,omitempty"`
 	RegisteredAt   time.Time `json:"registered_at"`
 }
 
@@ -620,12 +675,19 @@ type LedgerVerificationReport struct {
 // external WORM / Transparency boundary (S3 Object Lock, Rekor, RFC 3161 TSA, or immutable external sink).
 type LedgerCheckpoint struct {
 	CheckpointID         string          `json:"checkpoint_id"`
+	MerkleVersion        int             `json:"merkle_version"`
 	WarrantHeadHash      string          `json:"warrant_head_hash"`
 	WarrantRowCount      int             `json:"warrant_row_count"`
 	AgentHeadHash        string          `json:"agent_head_hash"`
 	AgentRowCount        int             `json:"agent_row_count"`
 	AttestationHeadHash  string          `json:"attestation_head_hash"`
 	AttestationRowCount  int             `json:"attestation_row_count"`
+	PrincipalHeadHash    string          `json:"principal_head_hash"`
+	PrincipalRowCount    int             `json:"principal_row_count"`
+	RevocationHeadHash   string          `json:"revocation_head_hash"`
+	RevocationRowCount   int             `json:"revocation_row_count"`
+	KernelKeyHeadHash    string          `json:"kernel_key_head_hash"`
+	KernelKeyRowCount    int             `json:"kernel_key_row_count"`
 	CombinedMerkleRoot   string          `json:"combined_merkle_root"`
 	DSSEEnvelope         crypto.Envelope `json:"dsse_envelope"`
 	ExternalAnchorTarget string          `json:"external_anchor_target"`

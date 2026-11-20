@@ -3,16 +3,22 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/cgilbert61/G1-Warrant/db/migrations"
 	"github.com/cgilbert61/G1-Warrant/internal/crypto"
 	"github.com/cgilbert61/G1-Warrant/internal/db"
 	"github.com/cgilbert61/G1-Warrant/internal/extractor"
@@ -185,6 +191,9 @@ func setupIsolatedHarness(t *testing.T) *testHarness {
 			t.Fatal(err)
 		}
 	}
+
+	// Anchor initial 6-chain Merkle checkpoint after test harness principal seeding
+	_, _ = orch.N5Ledger.CreateCheckpoint(ctx)
 
 	return h
 }
@@ -535,7 +544,8 @@ func TestInvariant6_ImmutableHashChainedLedger(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 1. Prove PostgreSQL BEFORE UPDATE OR DELETE triggers block mutations on all 3 ledger tables
+	// 1. Prove PostgreSQL BEFORE UPDATE OR DELETE triggers block mutations on all 6 immutable tables
+	_, _ = h.orch.N1Warrant.RevokeSigner(h.ctx, h.mallory.PrincipalID, h.mallory.KeyFingerprint, "TEST_IMMUTABLE_REV", h.alice.PrincipalID)
 	immutableChecks := []string{
 		fmt.Sprintf(`UPDATE warrant_envelopes SET max_cvss = 5.0 WHERE warrant_id = '%s'`, w.WarrantID),
 		fmt.Sprintf(`DELETE FROM warrant_envelopes WHERE warrant_id = '%s'`, w.WarrantID),
@@ -543,6 +553,12 @@ func TestInvariant6_ImmutableHashChainedLedger(t *testing.T) {
 		`DELETE FROM agent_action_ledger`,
 		`UPDATE attestation_records SET cve_id = 'CVE-1999-0001'`,
 		`DELETE FROM attestation_records`,
+		`UPDATE principals SET role = 'AUTHORIZING_OFFICIAL' WHERE principal_id = 'usr-alice-so'`,
+		`DELETE FROM principals WHERE principal_id = 'usr-alice-so'`,
+		`UPDATE principal_revocations SET reason_code = 'REWRITTEN'`,
+		`DELETE FROM principal_revocations`,
+		`UPDATE kernel_public_keys SET backend_mode = 'REWRITTEN'`,
+		`DELETE FROM kernel_public_keys`,
 	}
 	for _, stmt := range immutableChecks {
 		_, err := h.store.Pool().Exec(h.ctx, stmt)
@@ -551,10 +567,11 @@ func TestInvariant6_ImmutableHashChainedLedger(t *testing.T) {
 		}
 	}
 
-	// 2. Prove intact hash chains verify cleanly across all 3 tables
+	// 2. Prove intact hash chains verify cleanly across all 6 tables
+	_, _ = h.orch.N5Ledger.CreateCheckpoint(h.ctx)
 	rep, err := h.store.VerifyAllLedgerChains(h.ctx)
-	if err != nil || !rep.AllValid {
-		t.Fatalf("expected all 3 ledger hash chains valid, got %+v err=%v", rep, err)
+	if err != nil || !rep.AllValid || len(rep.Tables) != 6 {
+		t.Fatalf("expected all 6 ledger hash chains valid, got %+v err=%v", rep, err)
 	}
 
 	// 3. Simulate superuser disk-level hash-link tampering (by disabling trigger temporarily, mutating a field, re-enabling trigger)
@@ -792,10 +809,32 @@ func TestInvariant7_ZeroProseAssuranceTiersQuarantinedRollbackAndExternalAnchor(
 	}
 
 	// 3. Post-Closure Latent Regression -> Atomic 3-Step Quarantined Rollback (Contain-Before-Unban)
-	qrbBody := bytes.NewReader([]byte(`{"actor":"sre-oncall","reason":"LATENT_CONN_POOL_EXHAUSTION"}`))
-	qrbResp, err := http.Post(h.httpSrv.URL+"/api/v1/pipeline/"+rpItems[0].RemediationID+"/emergency-rollback", "application/json", qrbBody)
+	// 3a. Unauthenticated emergency-rollback MUST fail closed with 401 Unauthorized!
+	unauthQRB, err := http.Post(h.httpSrv.URL+"/api/v1/pipeline/"+rpItems[0].RemediationID+"/emergency-rollback", "application/json", bytes.NewReader([]byte(`{"actor":"spoofed","reason":"LATENT_CONN_POOL_EXHAUSTION"}`)))
+	if err != nil || unauthQRB.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected unauthenticated emergency-rollback to return 401, got resp=%v err=%v", unauthQRB, err)
+	}
+	_ = unauthQRB.Body.Close()
+
+	// 3b. Authenticated 1-of-2 DSSE active principal signature (Alice) succeeds!
+	govEnv, _, err := crypto.NewUnsignedEnvelope(crypto.PayloadTypePrincipalGovernance, models.PrincipalGovernancePayload{
+		EnvelopeID:    "gov-qrb-" + uuid.NewString(),
+		Action:        models.GovActionEmergencyRollback,
+		RemediationID: rpItems[0].RemediationID,
+		ReasonCode:    "LATENT_CONN_POOL_EXHAUSTION",
+		IssuedAt:      time.Now().UTC().Format(time.RFC3339),
+		ExpiresAt:     time.Now().UTC().Add(5 * time.Minute).Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = govEnv.SignEd25519(1, h.alice.ToPrincipalKey(), h.alice.PrivateKey)
+	qrbReq, _ := http.NewRequest(http.MethodPost, h.httpSrv.URL+"/api/v1/pipeline/"+rpItems[0].RemediationID+"/emergency-rollback", bytes.NewReader([]byte(`{"reason":"LATENT_CONN_POOL_EXHAUSTION"}`)))
+	qrbReq.Header.Set("Content-Type", "application/json")
+	qrbReq.Header.Set("X-Warrant-Governance-DSSE", server.EncodeGovernanceHeader(*govEnv))
+	qrbResp, err := http.DefaultClient.Do(qrbReq)
 	if err != nil || qrbResp.StatusCode != http.StatusOK {
-		t.Fatalf("POST emergency-rollback failed: resp=%v err=%v", qrbResp, err)
+		t.Fatalf("POST authenticated emergency-rollback failed: resp=%v err=%v", qrbResp, err)
 	}
 	var rolledBack models.RemediationItem
 	_ = json.NewDecoder(qrbResp.Body).Decode(&rolledBack)
@@ -1254,10 +1293,10 @@ func TestInvariant9_TargetedHardeningDelta_KeyRingStartupGuardAndOrderSensitiveC
 			orderItems[0].Stage, orderItems[0].CanaryWeight, orderItems[0].StatusHealth)
 	}
 
-	// 4. AC-5 Principal Enrollment Ceremony:
-	//    - Unenrolled freshly generated keys MUST fail CreateWarrant (AC5_UNKNOWN_SIGNER)
-	//    - Unauthenticated RegisterPrincipal MUST fail closed (401/403)
-	//    - Authenticated RegisterPrincipal (WARRANT_BOOTSTRAP_ADMIN_TOKEN) + CreateWarrant succeeds!
+	// 4. Post-Seal AC-5 Principal Enrollment Ceremony:
+	//    - Because mintDualWarrant already submitted a Standing Warrant on h.store, genesis bootstrap is AUTO-SEALED!
+	//    - WARRANT_BOOTSTRAP_ADMIN_TOKEN MUST now be permanently rejected with 403 BOOTSTRAP_SEALED_REQUIRES_DUAL_KEY_DSSE!
+	//    - Enrolling freshSO + freshAO via 2-of-2 DSSE Principal Governance (Alice + Bob) succeeds!
 	t.Setenv("WARRANT_BOOTSTRAP_ADMIN_TOKEN", "adm_test_registrar_secret_token_99")
 	orch3, err := server.NewOrchestrator(h.ctx, h.store, extSrv.URL, simSrv.URL, "", h.orch.WebAuthnCfg)
 	if err != nil {
@@ -1284,20 +1323,389 @@ func TestInvariant9_TargetedHardeningDelta_KeyRingStartupGuardAndOrderSensitiveC
 	if _, err := unauthCli.CreateWarrant(h.ctx, *draftEnv); err == nil || !strings.Contains(err.Error(), "AC5_UNKNOWN_SIGNER") {
 		t.Fatalf("expected un-enrolled keys to fail CreateWarrant with AC5_UNKNOWN_SIGNER, got: %v", err)
 	}
-	if _, err := unauthCli.RegisterPrincipal(h.ctx, freshSO.ToRegisterRequest()); err == nil {
-		t.Fatal("expected unauthenticated RegisterPrincipal to fail closed")
+
+	// Single-token bootstrap admin enrollment MUST fail with 403 once sealed!
+	adminCli := warrantsdk.NewClient(srv3.URL, warrantsdk.WithAdminToken("adm_test_registrar_secret_token_99"))
+	if _, err := adminCli.RegisterPrincipal(h.ctx, freshSO.ToRegisterRequest()); err == nil || !strings.Contains(err.Error(), "BOOTSTRAP_SEALED_REQUIRES_DUAL_KEY_DSSE") {
+		t.Fatalf("expected sealed bootstrap to reject WARRANT_BOOTSTRAP_ADMIN_TOKEN with BOOTSTRAP_SEALED_REQUIRES_DUAL_KEY_DSSE, got: %v", err)
 	}
 
-	adminCli := warrantsdk.NewClient(srv3.URL, warrantsdk.WithAdminToken("adm_test_registrar_secret_token_99"))
-	if _, err := adminCli.RegisterPrincipal(h.ctx, freshSO.ToRegisterRequest()); err != nil {
-		t.Fatalf("authenticated RegisterPrincipal(SO) failed: %v", err)
+	// 2-of-2 DSSE Principal Governance enrollment co-signed by existing active Alice (SO) + Bob (AO) MUST succeed!
+	enrollSOEnv, _, _ := warrantsdk.DraftPrincipalEnrollEnvelope(freshSO.ToRegisterRequest(), 5*time.Minute)
+	_ = enrollSOEnv.SignEd25519(1, h.alice.ToPrincipalKey(), h.alice.PrivateKey)
+	_ = enrollSOEnv.SignEd25519(2, h.bob.ToPrincipalKey(), h.bob.PrivateKey)
+	if _, err := unauthCli.RegisterPrincipalDualSigned(h.ctx, *enrollSOEnv); err != nil {
+		t.Fatalf("2-of-2 DSSE RegisterPrincipalDualSigned(SO) failed: %v", err)
 	}
-	if _, err := adminCli.RegisterPrincipal(h.ctx, freshAO.ToRegisterRequest()); err != nil {
-		t.Fatalf("authenticated RegisterPrincipal(AO) failed: %v", err)
+
+	enrollAOEnv, _, _ := warrantsdk.DraftPrincipalEnrollEnvelope(freshAO.ToRegisterRequest(), 5*time.Minute)
+	_ = enrollAOEnv.SignEd25519(1, h.alice.ToPrincipalKey(), h.alice.PrivateKey)
+	_ = enrollAOEnv.SignEd25519(2, h.bob.ToPrincipalKey(), h.bob.PrivateKey)
+	if _, err := unauthCli.RegisterPrincipalDualSigned(h.ctx, *enrollAOEnv); err != nil {
+		t.Fatalf("2-of-2 DSSE RegisterPrincipalDualSigned(AO) failed: %v", err)
 	}
+
 	mintedWarrant, err := unauthCli.CreateWarrant(h.ctx, *draftEnv)
 	if err != nil || mintedWarrant.LiveStatus != "ACTIVE" {
-		t.Fatalf("expected CreateWarrant after authenticated enrollment to succeed, got rec=%+v err=%v", mintedWarrant, err)
+		t.Fatalf("expected CreateWarrant after 2-of-2 DSSE enrollment to succeed, got rec=%+v err=%v", mintedWarrant, err)
+	}
+}
+
+// =========================================================================
+// INVARIANT 10 — v1.0.1 Security & Cryptographic Root-of-Trust Suite:
+//   1) Clean-Room Simulator Estate Seeding (6 services, 0 demo smartcards/warrants)
+//   2) Split Keygen (.priv.json / .pub.json) & Client/Server Private-Key Rejection (400)
+//   3) Multi-Key Genesis Bootstrap -> Precondition Seal Check -> Auto-Seal -> Permanent 403 Token Lockout
+//   4) Duplicate Key Fingerprint Rejection, Nonce Replay Rejection, & <=15m TTL Ceiling
+//   5) Asymmetric 1-of-2 DSSE Principal Revocation & Revoked Fingerprint Re-Enrollment Block
+//   6) Full Mutating Route Auth Audit (401 on anonymous freeze/auditor/feeds/simulate; 403 on live/k8s simulate)
+//   7) 6-Chain Concurrency Locking, Superuser Key-Injection Detection, & v1.0.0 Upgrade Backfill
+// =========================================================================
+func TestInvariant10_V101BootstrapSealAsymmetricRevokeSplitKeygenMutatingAuthAnd6ChainUpgrade(t *testing.T) {
+	// Startup guard must reject weak/placeholder secrets in kubernetes or live feed mode
+	if err := server.ValidateStartupSecurityGuards(func(k string) string {
+		switch k {
+		case "WARRANT_CLUSTER_DRIVER":
+			return "kubernetes"
+		case "WARRANT_BOOTSTRAP_ADMIN_TOKEN":
+			return "changeme"
+		default:
+			return ""
+		}
+	}); err == nil {
+		t.Fatal("expected ValidateStartupSecurityGuards to reject weak placeholder bootstrap token in kubernetes mode")
+	}
+
+	ctx := context.Background()
+	adminDSN := os.Getenv("TEST_DATABASE_URL")
+	if adminDSN == "" {
+		adminDSN = os.Getenv("DATABASE_URL")
+	}
+	if adminDSN == "" {
+		adminDSN = "postgres://warrant:warrant@localhost:5432/postgres?sslmode=disable"
+	}
+	adminConn, err := pgx.Connect(ctx, adminDSN)
+	if err != nil {
+		if os.Getenv("REQUIRE_DB_TESTS") == "true" {
+			t.Fatalf("PostgreSQL unreachable: %v", err)
+		}
+		t.Skipf("PostgreSQL not running on host: %v", err)
+	}
+	dbName := "warrant_v101_" + strings.ReplaceAll(uuid.NewString()[:8], "-", "")
+	if _, err := adminConn.Exec(ctx, fmt.Sprintf(`CREATE DATABASE %s`, dbName)); err != nil {
+		_ = adminConn.Close(ctx)
+		t.Fatalf("create test db %s: %v", dbName, err)
+	}
+	_ = adminConn.Close(ctx)
+	t.Cleanup(func() {
+		c, cErr := pgx.Connect(context.Background(), adminDSN)
+		if cErr == nil {
+			_, _ = c.Exec(context.Background(), fmt.Sprintf(`DROP DATABASE IF EXISTS %s WITH (FORCE)`, dbName))
+			_ = c.Close(context.Background())
+		}
+	})
+
+	// -----------------------------------------------------------------
+	// Part A: Test v1.0.0 -> v1.0.1 Database Upgrade Backfill (001..005 -> pre-existing rows -> 006)
+	// -----------------------------------------------------------------
+	testDSN := replaceDBName(adminDSN, dbName)
+	upgStore, err := db.NewStore(ctx, testDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgStore.Close()
+
+	for _, mig := range []string{
+		"001_initial_schema.sql",
+		"002_live_threat_feeds.sql",
+		"003_architectural_hardening.sql",
+		"004_artex_defenses.sql",
+		"005_targeted_hardening.sql",
+	} {
+		sqlBytes, rErr := fs.ReadFile(migrations.FS, mig)
+		if rErr != nil {
+			t.Fatalf("read %s: %v", mig, rErr)
+		}
+		if _, eErr := upgStore.Pool().Exec(ctx, string(sqlBytes)); eErr != nil {
+			t.Fatalf("exec %s: %v", mig, eErr)
+		}
+	}
+	// Insert a pre-v1.0.1 kernel_public_keys row (no seq_no/prev_hash/entry_hash yet)
+	v100Pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	_, err = upgStore.Pool().Exec(ctx, `
+		INSERT INTO kernel_public_keys (key_id, alg, public_key_b64, key_fingerprint, backend_mode)
+		VALUES ('kernel-legacy-v100', 'Ed25519', $1, $2, 'EPHEMERAL_MEMORY_ED25519')
+	`, base64.StdEncoding.EncodeToString(v100Pub), crypto.SHA256Hex(v100Pub))
+	if err != nil {
+		t.Fatalf("seed legacy v1.0.0 kernel key: %v", err)
+	}
+
+	// Run full Migrate() including 006_v1_0_1_authority_chains.sql and verify backfilled chain is 100% valid!
+	if err := upgStore.Migrate(ctx); err != nil {
+		t.Fatalf("v1.0.0 -> v1.0.1 Migrate() upgrade failed: %v", err)
+	}
+	upgRep, err := upgStore.VerifyAllLedgerChains(ctx)
+	if err != nil || !upgRep.AllValid || len(upgRep.Tables) != 6 {
+		t.Fatalf("expected upgraded v1.0.0 -> v1.0.1 6-chain verification to pass, got %+v err=%v", upgRep, err)
+	}
+
+	// -----------------------------------------------------------------
+	// Part B: Clean-Room Simulator Seeding, Split Keygen & One-Shot Bootstrap Lifecycle
+	// -----------------------------------------------------------------
+	anchorFile := filepath.Join(t.TempDir(), "v101-worm-anchor.jsonl")
+	bootstrapSecret := "adm_cleanroom_v101_genesis_token_99887766"
+	t.Setenv("WARRANT_ENABLE_TEST_SMARTCARDS", "false")
+	t.Setenv("WARRANT_EXTERNAL_ANCHOR_PATH", anchorFile)
+	t.Setenv("WARRANT_BOOTSTRAP_ADMIN_TOKEN", bootstrapSecret)
+
+	extSrv := httptest.NewServer(extractor.NewHTTPHandler("sha256-extractor-v101"))
+	defer extSrv.Close()
+	simSrv := httptest.NewServer(fleetsim.NewClusterSimulator().Handler())
+	defer simSrv.Close()
+
+	orch, err := server.NewOrchestrator(ctx, upgStore, extSrv.URL, simSrv.URL, "", crypto.DefaultWebAuthnConfig())
+	if err != nil {
+		t.Fatalf("NewOrchestrator: %v", err)
+	}
+	if err := orch.SeedEnterpriseEstate(ctx); err != nil {
+		t.Fatalf("SeedEnterpriseEstate clean-room failed: %v", err)
+	}
+	httpSrv := httptest.NewServer(orch.BuildHTTPHandler())
+	defer httpSrv.Close()
+
+	anonCli := warrantsdk.NewClient(httpSrv.URL)
+	estate, err := anonCli.ListEstate(ctx)
+	if err != nil || len(estate) != 6 {
+		t.Fatalf("expected 6 simulator estate services out of the box, got %d err=%v", len(estate), err)
+	}
+	principalsInit, _ := anonCli.ListPrincipals(ctx)
+	warrantsInit, _ := anonCli.ListWarrants(ctx)
+	if len(principalsInit) != 0 || len(warrantsInit) != 0 {
+		t.Fatalf("expected 0 principals and 0 warrants in clean-room mode, got principals=%d warrants=%d", len(principalsInit), len(warrantsInit))
+	}
+
+	// Split Keygen & Server-Side Private-Key Field Rejection (HTTP 400)
+	keyDir := t.TempDir()
+	so1, _ := warrantsdk.GenerateEd25519SignerBundle("usr-v101-so1", "so1@agency.gov", "Primary SO", warrantsdk.RoleServiceOwner)
+	soBackup, _ := warrantsdk.GenerateEd25519SignerBundle("usr-v101-so-bak", "so-bak@agency.gov", "Backup SO", warrantsdk.RoleServiceOwner)
+	ao1, _ := warrantsdk.GenerateEd25519SignerBundle("usr-v101-ao1", "ao1@agency.gov", "Primary AO", warrantsdk.RoleAuthorizingOfficial)
+	_, so1PubPath, err := warrantsdk.WriteSplitKeyPairFiles(filepath.Join(keyDir, "so1"), so1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	so1PubBytes, _ := os.ReadFile(so1PubPath)
+	so1Pub, err := warrantsdk.LoadPublicIdentityFile(so1PubBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Raw HTTP upload of full bundle containing private_key_b64 MUST be rejected with HTTP 400!
+	rawPrivJSON, _ := json.Marshal(so1)
+	badReq, _ := http.NewRequest(http.MethodPost, httpSrv.URL+"/api/v1/principals/register", bytes.NewReader(rawPrivJSON))
+	badReq.Header.Set("Content-Type", "application/json")
+	badReq.Header.Set("X-Warrant-Admin-Token", bootstrapSecret)
+	badResp, err := http.DefaultClient.Do(badReq)
+	if err != nil || badResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected HTTP 400 when private_key_b64 is sent to /principals/register, got %v err=%v", badResp, err)
+	}
+	_ = badResp.Body.Close()
+
+	// Precondition Seal Check: sealing before 1 SO + 1 AO are enrolled MUST fail with 412!
+	adminCli := warrantsdk.NewClient(httpSrv.URL, warrantsdk.WithAdminToken(bootstrapSecret))
+	if _, err := adminCli.SealBootstrap(ctx); err == nil || !strings.Contains(err.Error(), "BOOTSTRAP_SEAL_PRECONDITION_FAILED") {
+		t.Fatalf("expected SealBootstrap before enrollment to fail with BOOTSTRAP_SEAL_PRECONDITION_FAILED, got: %v", err)
+	}
+
+	// Enroll Primary SO, Backup SO (proving bootstrap does NOT prematurely auto-seal after 1 SO + 1 AO!), and Primary AO concurrently under -race!
+	var wg sync.WaitGroup
+	enrollErrs := make(chan error, 3)
+	for _, req := range []warrantsdk.RegisterPrincipalRequest{
+		so1Pub.ToRegisterRequest(),
+		soBackup.ToRegisterRequest(),
+		ao1.ToRegisterRequest(),
+	} {
+		rCopy := req
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, eErr := adminCli.RegisterPrincipal(ctx, rCopy); eErr != nil {
+				enrollErrs <- eErr
+			}
+		}()
+	}
+	wg.Wait()
+	close(enrollErrs)
+	for eErr := range enrollErrs {
+		t.Fatalf("concurrent genesis RegisterPrincipal failed: %v", eErr)
+	}
+
+	// Attempt to enroll the SAME physical public key under a second principal_id/email + AO role to fake 2-of-2 AC-5 -> MUST fail 409!
+	dupKeyReq := warrantsdk.RegisterPrincipalRequest{
+		PrincipalID:  "usr-fake-ao-dupkey",
+		Email:        "fake-ao@agency.gov",
+		DisplayName:  "Duplicate Key Spoof",
+		Role:         warrantsdk.RoleAuthorizingOfficial,
+		KeyID:        "ed25519-dupkey-spoof",
+		Alg:          "Ed25519",
+		PublicKeyB64: so1.PublicKeyB64,
+	}
+	if _, err := adminCli.RegisterPrincipal(ctx, dupKeyReq); err == nil || !strings.Contains(err.Error(), "AC5_DUPLICATE_PRINCIPAL_OR_KEY") {
+		t.Fatalf("expected duplicate public key fingerprint enrollment to be rejected, got: %v", err)
+	}
+
+	// Submit first 2-of-2 Standing Warrant -> MUST auto-seal bootstrap!
+	wDraft, _, err := warrantsdk.DraftWarrantEnvelope(warrantsdk.WarrantDraftOptions{
+		WarrantClass:  "KEV-TIER1-STATELESS",
+		ScopeServices: []string{"payments-ledger-api"},
+		MaxCVSS:       10.0,
+		KEVEligible:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = so1.SignEnvelope(1, wDraft)
+	_ = ao1.SignEnvelope(2, wDraft)
+	if _, err := anonCli.CreateWarrant(ctx, *wDraft); err != nil {
+		t.Fatalf("CreateWarrant failed: %v", err)
+	}
+
+	// Once sealed, WARRANT_BOOTSTRAP_ADMIN_TOKEN MUST permanently return 403 BOOTSTRAP_SEALED_REQUIRES_DUAL_KEY_DSSE!
+	ao2, _ := warrantsdk.GenerateEd25519SignerBundle("usr-v101-ao2", "ao2@agency.gov", "Backup AO", warrantsdk.RoleAuthorizingOfficial)
+	if _, err := adminCli.RegisterPrincipal(ctx, ao2.ToRegisterRequest()); err == nil || !strings.Contains(err.Error(), "BOOTSTRAP_SEALED_REQUIRES_DUAL_KEY_DSSE") {
+		t.Fatalf("expected bootstrap admin token to fail with 403 BOOTSTRAP_SEALED_REQUIRES_DUAL_KEY_DSSE after first warrant, got: %v", err)
+	}
+	if _, err := adminCli.SealBootstrap(ctx); err == nil || !strings.Contains(err.Error(), "BOOTSTRAP_SEALED_REQUIRES_DUAL_KEY_DSSE") {
+		t.Fatalf("expected SealBootstrap with bootstrap token after seal to return BOOTSTRAP_SEALED_REQUIRES_DUAL_KEY_DSSE, got: %v", err)
+	}
+
+	// Post-seal 2-of-2 DSSE enrollment with TTL > 15m MUST fail closed!
+	longTTLEnv, _, _ := crypto.NewUnsignedEnvelope(crypto.PayloadTypePrincipalGovernance, models.PrincipalGovernancePayload{
+		EnvelopeID:   "gov-long-ttl-" + uuid.NewString(),
+		Action:       models.GovActionEnrollPrincipal,
+		IssuedAt:     time.Now().UTC().Format(time.RFC3339),
+		ExpiresAt:    time.Now().UTC().Add(30 * time.Minute).Format(time.RFC3339),
+		PrincipalID:  ao2.PrincipalID,
+		Email:        ao2.Email,
+		Role:         ao2.Role,
+		PublicKeyB64: ao2.PublicKeyB64,
+	})
+	_ = so1.SignEnvelope(1, longTTLEnv)
+	_ = ao1.SignEnvelope(2, longTTLEnv)
+	if _, err := anonCli.RegisterPrincipalDualSigned(ctx, *longTTLEnv); err == nil || !strings.Contains(err.Error(), "GOVERNANCE_ENVELOPE_TTL_EXCEEDED") {
+		t.Fatalf("expected >15m governance envelope TTL to be rejected, got: %v", err)
+	}
+
+	// Valid post-seal 2-of-2 DSSE enrollment of ao2 succeeds, and replaying the same envelope_id fails closed!
+	validEnrollAO2, _, _ := warrantsdk.DraftPrincipalEnrollEnvelope(ao2.ToRegisterRequest(), 5*time.Minute)
+	_ = so1.SignEnvelope(1, validEnrollAO2)
+	_ = ao1.SignEnvelope(2, validEnrollAO2)
+	if _, err := anonCli.RegisterPrincipalDualSigned(ctx, *validEnrollAO2); err != nil {
+		t.Fatalf("post-seal 2-of-2 RegisterPrincipalDualSigned(ao2) failed: %v", err)
+	}
+	if _, err := anonCli.RegisterPrincipalDualSigned(ctx, *validEnrollAO2); err == nil || !strings.Contains(err.Error(), "GOVERNANCE_ENVELOPE_REPLAY_DETECTED") {
+		t.Fatalf("expected governance envelope replay to be rejected with GOVERNANCE_ENVELOPE_REPLAY_DETECTED, got: %v", err)
+	}
+
+	// -----------------------------------------------------------------
+	// Part C: Asymmetric 1-of-2 DSSE Revocation & Revoked Key Re-Enrollment Block
+	// -----------------------------------------------------------------
+	if _, err := anonCli.RevokePrincipal(ctx, warrantsdk.RevokePrincipalRequest{PrincipalID: so1.PrincipalID}); err == nil {
+		t.Fatal("expected unauthenticated RevokePrincipal to fail closed")
+	}
+
+	// Honest ao1 unilaterally revokes compromised so1 (1-of-2 DSSE, without needing so1's co-signature!)
+	ao1Cli := warrantsdk.NewClient(httpSrv.URL, warrantsdk.WithSignerBundle(ao1))
+	revRec, err := ao1Cli.RevokePrincipal(ctx, warrantsdk.RevokePrincipalRequest{
+		PrincipalID: so1.PrincipalID,
+		ReasonCode:  "COMPROMISED_LAPTOP_KILLSWITCH",
+	})
+	if err != nil || revRec.RevokedBy != ao1.PrincipalID {
+		t.Fatalf("expected 1-of-2 DSSE revocation by %s to succeed, got rec=%+v err=%v", ao1.PrincipalID, revRec, err)
+	}
+
+	// Revoked so1 CANNOT revoke ao1!
+	revokedSO1Cli := warrantsdk.NewClient(httpSrv.URL, warrantsdk.WithSignerBundle(so1))
+	if _, err := revokedSO1Cli.RevokePrincipal(ctx, warrantsdk.RevokePrincipalRequest{PrincipalID: ao1.PrincipalID}); err == nil || !strings.Contains(err.Error(), "REVOKED_PRINCIPAL_OR_KEY") {
+		t.Fatalf("expected revoked principal to be blocked from revoking peers, got: %v", err)
+	}
+
+	// Attempting to re-enroll so1's revoked key fingerprint under a new principal_id via 2-of-2 DSSE (soBackup + ao1) MUST fail!
+	reenrollRevokedEnv, _, _ := warrantsdk.DraftPrincipalEnrollEnvelope(warrantsdk.RegisterPrincipalRequest{
+		PrincipalID:  "usr-resurrect-so1",
+		Email:        "resurrect@agency.gov",
+		Role:         warrantsdk.RoleServiceOwner,
+		PublicKeyB64: so1.PublicKeyB64,
+	}, 5*time.Minute)
+	_ = soBackup.SignEnvelope(1, reenrollRevokedEnv)
+	_ = ao1.SignEnvelope(2, reenrollRevokedEnv)
+	if _, err := anonCli.RegisterPrincipalDualSigned(ctx, *reenrollRevokedEnv); err == nil || !strings.Contains(err.Error(), "AC5_REVOKED_KEY_REENROLLMENT_FORBIDDEN") {
+		t.Fatalf("expected re-enrollment of revoked key fingerprint to be blocked, got: %v", err)
+	}
+
+	// -----------------------------------------------------------------
+	// Part D: Mutating Route Auth Audit & /simulate/* K8s Gate
+	// -----------------------------------------------------------------
+	if _, err := anonCli.TriggerFreeze(ctx, warrantsdk.FreezeModeHold, "spoofed", "UNAUTH"); err == nil {
+		t.Fatal("expected unauthenticated TriggerFreeze to fail")
+	}
+	if _, err := anonCli.MintAuditorToken(ctx, "Unauth", nil, 1); err == nil {
+		t.Fatal("expected unauthenticated MintAuditorToken to fail")
+	}
+	if _, err := anonCli.SimulateScenario(ctx, "inject-kev"); err == nil {
+		t.Fatal("expected unauthenticated SimulateScenario to fail")
+	}
+
+	// Authenticated 1-of-2 DSSE via active soBackup succeeds and records verified PrincipalID as actor!
+	soBakCli := warrantsdk.NewClient(httpSrv.URL, warrantsdk.WithSignerBundle(soBackup))
+	fsHold, err := soBakCli.TriggerFreeze(ctx, warrantsdk.FreezeModeHold, "ignored-untrusted-string", "SIGNED_FREEZE")
+	if err != nil || fsHold.Actor != soBackup.PrincipalID {
+		t.Fatalf("expected signed TriggerFreeze to record verified principal %s, got %+v err=%v", soBackup.PrincipalID, fsHold, err)
+	}
+	// Thaw back to OPERATIONAL via soBackup + ao1
+	thawEnv, _ := warrantsdk.DraftThawEnvelope()
+	_ = soBackup.SignEnvelope(1, thawEnv)
+	_ = ao1.SignEnvelope(2, thawEnv)
+	if _, err := anonCli.ThawFreeze(ctx, *thawEnv); err != nil {
+		t.Fatalf("ThawFreeze failed: %v", err)
+	}
+
+	// /simulate/* MUST be disabled (403) when WARRANT_CLUSTER_DRIVER=kubernetes!
+	t.Setenv("WARRANT_CLUSTER_DRIVER", "kubernetes")
+	if _, err := soBakCli.SimulateScenario(ctx, "inject-kev"); err == nil || !strings.Contains(err.Error(), "SIMULATION_ROUTES_DISABLED") {
+		t.Fatalf("expected /simulate/* to return 403 SIMULATION_ROUTES_DISABLED in kubernetes mode, got: %v", err)
+	}
+	t.Setenv("WARRANT_CLUSTER_DRIVER", "simulator")
+
+	// -----------------------------------------------------------------
+	// Part E: 6-Chain External Merkle Anchor Catching Rogue PostgreSQL Superuser Key Injection
+	// -----------------------------------------------------------------
+	repClean, err := anonCli.VerifyLedgerChains(ctx)
+	if err != nil || !repClean.AllValid || !repClean.ExternalAnchorVerified || len(repClean.Tables) != 6 {
+		t.Fatalf("expected clean 6-chain verification before superuser attack, got %+v err=%v", repClean, err)
+	}
+
+	// Simulate a clever rogue PostgreSQL superuser who computes a mathematically valid prev_hash + entry_hash
+	// and directly INSERTs an attacker-controlled Ed25519 key into kernel_public_keys to forge offline OSCAL bundles!
+	var curKernelTip string
+	_ = upgStore.Pool().QueryRow(ctx, `SELECT entry_hash FROM kernel_public_keys ORDER BY seq_no DESC LIMIT 1`).Scan(&curKernelTip)
+	roguePub, _, _ := ed25519.GenerateKey(rand.Reader)
+	roguePubB64 := base64.StdEncoding.EncodeToString(roguePub)
+	rogueFP := crypto.SHA256Hex(roguePub)
+	rogueEntryHash := db.ComputeKernelKeyEntryHash(curKernelTip, "rogue-superuser-key", "Ed25519", roguePubB64, rogueFP, "ROGUE_INJECTION")
+	_, err = upgStore.Pool().Exec(ctx, `
+		INSERT INTO kernel_public_keys (key_id, alg, public_key_b64, key_fingerprint, backend_mode, prev_hash, entry_hash)
+		VALUES ('rogue-superuser-key', 'Ed25519', $1, $2, 'ROGUE_INJECTION', $3, $4)
+	`, roguePubB64, rogueFP, curKernelTip, rogueEntryHash)
+	if err != nil {
+		t.Fatalf("simulate superuser SQL key injection failed: %v", err)
+	}
+
+	repAttacked, err := anonCli.VerifyLedgerChains(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repAttacked.AllValid || repAttacked.ExternalAnchorVerified || !strings.Contains(repAttacked.SuperuserTamperDetail, "DB_SUPERUSER_UNANCHORED_KEY_INJECTION_DETECTED") {
+		t.Fatalf("expected 6-chain External Transparency Anchor to catch rogue kernel_public_keys injection, got %+v", repAttacked)
 	}
 }
 
