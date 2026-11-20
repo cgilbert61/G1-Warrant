@@ -36,6 +36,30 @@ Remediation stalls in that merge-to-production gap for four structural reasons:
 
 ---
 
+## Operator Console Overview
+
+### 1. 5-Stage Autonomous Race Pipeline & Live Fleet Drills
+Real-time visibility across `01 INTAKE & REPRO` → `02 BRIDGED / CONTAINED` → `03 SHADOW & CANARY` → `04 VERIFYING & LOCKING` → `05 ATTESTED & CLOSED`, with instant safety rollbacks, drift re-arm counters, and deterministic fleet drills.
+
+![G1-Warrant Race Pipeline](docs/assets/screenshots/01-race-pipeline.jpg)
+
+### 2. Warrant Desk, Dual-Key Ceremonies & Approval Pressure Analytics (`N1`)
+Tracks `2-of-2` Standing Warrants (`SERVICE_OWNER` + `AUTHORIZING_OFFICIAL`), hardware WebAuthn/Ed25519 signing ceremonies, Four-Eyes exception queues, and per-class approval pressure velocity to prevent scope miscalibration and rubber-stamping.
+
+![G1-Warrant Warrant Desk and Approval Pressure](docs/assets/screenshots/02-warrant-desk.jpg)
+
+### 3. Containment Bridges Matrix & Sub-Second Runtime Drift Lockout (`N3`)
+Manages active CiliumNetworkPolicy, Kubernetes NetworkPolicy, and Envoy SPIFFE mTLS containment shields alongside `ValidatingAdmissionPolicy` image lockouts and automatic sub-second bridge re-arming upon runtime drift.
+
+![G1-Warrant Containment Bridges and Runtime Drift Alert](docs/assets/screenshots/04-bridges-drift-lockout.jpg)
+
+### 4. NIST OSCAL 1.1.2 POA&M Vault & Governed Agent Ledger (`N4` & `N5`)
+Seals every verified closure into a DSSE-signed **NIST OSCAL `1.1.2` POA&M** bundle with one-click JSON export and client-side in-browser `RFC 8785 JCS` + `Ed25519` cryptographic verification alongside the hash-chained Governed Agent Ledger.
+
+![G1-Warrant NIST OSCAL 1.1.2 POA&M Vault](docs/assets/screenshots/05-oscal-vault-ledger.jpg)
+
+---
+
 ## Architectural Flow & 5 Control-Plane Engines (`N1–N5`)
 
 ```mermaid
