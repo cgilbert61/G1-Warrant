@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -61,6 +62,7 @@ func NewSeededDevEd25519Signer(seed string) *MemoryEd25519Signer {
 
 // LoadOrCreateFileEd25519Signer loads an existing 0600 local kernel Ed25519 keypair from path
 // or generates and atomically persists a new one on first boot so non-KMS Docker restarts retain seq_no=1.
+// Enforces 0600 file permissions on POSIX filesystems while remaining NTFS-safe on Windows.
 func LoadOrCreateFileEd25519Signer(path string) (*MemoryEd25519Signer, error) {
 	type persistedKernelKey struct {
 		KeyID         string `json:"key_id"`
@@ -68,6 +70,12 @@ func LoadOrCreateFileEd25519Signer(path string) (*MemoryEd25519Signer, error) {
 		PrivateKeyB64 string `json:"private_key_b64"`
 	}
 	if raw, err := os.ReadFile(path); err == nil && len(bytes.TrimSpace(raw)) > 0 {
+		if runtime.GOOS != "windows" {
+			_ = os.Chmod(path, 0o600)
+			if st, stErr := os.Stat(path); stErr == nil && st.Mode().Perm() != 0o600 {
+				return nil, fmt.Errorf("kernel key file %s permissions %04o != 0600", path, st.Mode().Perm())
+			}
+		}
 		var saved persistedKernelKey
 		if err := json.Unmarshal(raw, &saved); err != nil {
 			return nil, fmt.Errorf("parse kernel key file %s: %w", path, err)
@@ -119,8 +127,18 @@ func LoadOrCreateFileEd25519Signer(path string) (*MemoryEd25519Signer, error) {
 		return nil, fmt.Errorf("write kernel key file: %w", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
+		// NTFS fallback if target is held open or cross-handle locked on Windows
+		if wErr := os.WriteFile(path, b, 0o600); wErr != nil {
+			_ = os.Remove(tmpPath)
+			return nil, fmt.Errorf("commit kernel key file: %w", err)
+		}
 		_ = os.Remove(tmpPath)
-		return nil, fmt.Errorf("commit kernel key file: %w", err)
+	}
+	if runtime.GOOS != "windows" {
+		_ = os.Chmod(path, 0o600)
+		if st, stErr := os.Stat(path); stErr != nil || st.Mode().Perm() != 0o600 {
+			return nil, fmt.Errorf("verify 0600 permissions on kernel key file %s failed", path)
+		}
 	}
 	return m, nil
 }

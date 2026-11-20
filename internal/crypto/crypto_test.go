@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/base64"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -182,5 +183,66 @@ func TestDualHumanCeremony_WebAuthnES256HardwareAssertion(t *testing.T) {
 
 	if _, err := VerifyDualHumanCeremony(env, PayloadTypeWarrant, resolver, DefaultWebAuthnConfig()); err != nil {
 		t.Fatalf("WebAuthn ES256 ceremony verification failed: %v", err)
+	}
+}
+
+func TestSingleActivePrincipalCeremony_WebAuthnP256AndAlgorithmDowngradeBlock(t *testing.T) {
+	p256Priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p256Der, _ := x509.MarshalPKIXPublicKey(&p256Priv.PublicKey)
+	pk := &PrincipalKey{
+		PrincipalID:    "usr-hw-freeze-op",
+		Email:          "hw-freeze@g1163rt.sec",
+		Role:           RoleServiceOwner,
+		KeyID:          "webauthn-piv-freeze",
+		Alg:            AlgWebAuthnES256,
+		PublicKeyBytes: p256Der,
+		KeyFingerprint: SHA256Hex(p256Der),
+	}
+	resolver := MapKeyResolver{
+		pk.KeyID:     pk,
+		"cred-piv-1": pk,
+	}
+
+	env, _, err := NewUnsignedEnvelope(PayloadTypePrincipalGovernance, map[string]any{
+		"action":      "EMERGENCY_FREEZE",
+		"envelope_id": "gov-hw-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.SignWebAuthnP256(1, *pk, p256Priv, "cred-piv-1", "localhost", "http://localhost:8080"); err != nil {
+		t.Fatalf("SignWebAuthnP256: %v", err)
+	}
+
+	res, err := VerifySingleActivePrincipalCeremony(env, PayloadTypePrincipalGovernance, resolver, DefaultWebAuthnConfig())
+	if err != nil || res.Signer.PrincipalID != pk.PrincipalID {
+		t.Fatalf("expected 1-of-2 WebAuthn P-256 verification to succeed, got res=%+v err=%v", res, err)
+	}
+
+	// Algorithm downgrade attempt (omitting WebAuthnMetadata on a WebAuthn-ES256 principal) MUST fail closed!
+	downgradeEnv, _, _ := NewUnsignedEnvelope(PayloadTypePrincipalGovernance, map[string]any{
+		"action":      "EMERGENCY_FREEZE",
+		"envelope_id": "gov-hw-downgrade",
+	})
+	_ = downgradeEnv.SignECDSAP256(1, *pk, p256Priv)
+	if _, err := VerifySingleActivePrincipalCeremony(downgradeEnv, PayloadTypePrincipalGovernance, resolver, DefaultWebAuthnConfig()); err == nil || !strings.Contains(err.Error(), "WEBAUTHN_METADATA_REQUIRED") {
+		t.Fatalf("expected algorithm downgrade without WebAuthnMetadata to be rejected, got: %v", err)
+	}
+
+	// Verify LoadOrCreateFileEd25519Signer persists and reloads identical key material across restarts
+	keyPath := filepath.Join(t.TempDir(), "kernel_signer.json")
+	s1, err := LoadOrCreateFileEd25519Signer(keyPath)
+	if err != nil {
+		t.Fatalf("LoadOrCreateFileEd25519Signer boot 1: %v", err)
+	}
+	s2, err := LoadOrCreateFileEd25519Signer(keyPath)
+	if err != nil {
+		t.Fatalf("LoadOrCreateFileEd25519Signer boot 2: %v", err)
+	}
+	if s1.PublicKey().KeyID != s2.PublicKey().KeyID || s1.PublicKey().KeyFingerprint != s2.PublicKey().KeyFingerprint {
+		t.Fatalf("expected persisted kernel key to remain identical across restarts: %+v vs %+v", s1.PublicKey(), s2.PublicKey())
 	}
 }

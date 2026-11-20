@@ -254,10 +254,23 @@ class WarrantClient:
         revoked_by: str = "g1-warrant-python-sdk",
         signer_bundle: SignerKeyBundle | None = None,
         dsse_envelope: dict[str, Any] | None = None,
+        slot1_signer: SignerKeyBundle | None = None,
+        slot2_signer: SignerKeyBundle | None = None,
     ) -> dict[str, Any]:
-        """Revoke a principal via a 1-of-2 DSSE Principal Governance signature (`REVOKE_PRINCIPAL`)."""
+        """Revoke a principal via 1-of-2 self-revocation (`signer_bundle`) or 2-of-2 peer revocation (`slot1_signer` + `slot2_signer`)."""
         if dsse_envelope is not None:
             return self._request_json("POST", "/api/v1/principals/revoke", dsse_envelope)
+        if slot1_signer is not None or slot2_signer is not None:
+            if slot1_signer is None or slot2_signer is None:
+                raise ValueError("Both slot1_signer (SERVICE_OWNER) and slot2_signer (AUTHORIZING_OFFICIAL) are required for 2-of-2 peer revocation")
+            env = draft_principal_revoke_envelope(
+                target_principal_id=principal_id,
+                target_key_fingerprint=key_fingerprint,
+                reason_code=reason_code,
+            )
+            slot1_signer.sign_envelope(1, env)
+            slot2_signer.sign_envelope(2, env)
+            return self._request_json("POST", "/api/v1/principals/revoke", env)
         active_signer = signer_bundle or self.signer_bundle
         if active_signer is not None:
             env = draft_principal_revoke_envelope(

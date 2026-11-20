@@ -3,8 +3,11 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -340,19 +343,19 @@ func TestInvariant2_AC5SeparationOfDutiesAndLiveRevocation(t *testing.T) {
 		t.Fatalf("expected AC5_SYSADMIN_PROHIBITED, got %v", err)
 	}
 
-	// 3. Mint valid Elena + Marcus warrant, then Bob (same-role AO) revokes Marcus via 1-of-2 DSSE before N2 execution
+	// 3. Mint valid Elena + Marcus warrant, then Marcus self-revokes his compromised AO key via 1-of-2 DSSE (Bob remains surviving AO) before N2 execution
 	w := mintDualWarrant(t, h, "wrt-revoke-live", []string{"identity-sso-gateway"}, h.elena, h.marcus)
 	revEnv, _, _ := crypto.NewUnsignedEnvelope(crypto.PayloadTypePrincipalGovernance, models.PrincipalGovernancePayload{
 		EnvelopeID:           "gov-inv2-rev-" + uuid.NewString(),
 		Action:               models.GovActionRevokePrincipal,
 		TargetPrincipalID:    h.marcus.PrincipalID,
 		TargetKeyFingerprint: h.marcus.KeyFingerprint,
-		ReasonCode:           "AO_DEPARTED_ROLE",
+		ReasonCode:           "AO_COMPROMISED_SELF_REVOKE",
 		IssuedAt:             time.Now().UTC().Format(time.RFC3339),
 		ExpiresAt:            time.Now().UTC().Add(5 * time.Minute).Format(time.RFC3339),
 	})
-	_ = revEnv.SignEd25519(1, h.bob.ToPrincipalKey(), h.bob.PrivateKey)
-	if _, err := h.orch.N1Warrant.RevokeSignerWithGovernance(h.ctx, h.marcus.PrincipalID, h.marcus.KeyFingerprint, "AO_DEPARTED_ROLE", h.bob.PrincipalID, h.bob.Role, false, revEnv); err != nil {
+	_ = revEnv.SignEd25519(1, h.marcus.ToPrincipalKey(), h.marcus.PrivateKey)
+	if _, err := h.orch.N1Warrant.RevokeSignerWithGovernance(h.ctx, h.marcus.PrincipalID, h.marcus.KeyFingerprint, "AO_COMPROMISED_SELF_REVOKE", h.marcus.PrincipalID, h.marcus.Role, false, revEnv); err != nil {
 		t.Fatal(err)
 	}
 
@@ -579,7 +582,8 @@ func TestInvariant6_ImmutableHashChainedLedger(t *testing.T) {
 		ExpiresAt:            time.Now().UTC().Add(5 * time.Minute).Format(time.RFC3339),
 	})
 	_ = revEnv6.SignEd25519(1, h.alice.ToPrincipalKey(), h.alice.PrivateKey)
-	if _, err := h.orch.N1Warrant.RevokeSignerWithGovernance(h.ctx, h.mallory.PrincipalID, h.mallory.KeyFingerprint, "TEST_IMMUTABLE_REV", h.alice.PrincipalID, h.alice.Role, false, revEnv6); err != nil {
+	_ = revEnv6.SignEd25519(2, h.bob.ToPrincipalKey(), h.bob.PrivateKey)
+	if _, err := h.orch.N1Warrant.RevokeSignerWithGovernance(h.ctx, h.mallory.PrincipalID, h.mallory.KeyFingerprint, "TEST_IMMUTABLE_REV", h.alice.PrincipalID+"+"+h.bob.PrincipalID, "", true, revEnv6); err != nil {
 		t.Fatal(err)
 	}
 	immutableChecks := []string{
@@ -1674,24 +1678,25 @@ func TestInvariant10_V101BootstrapSealAsymmetricRevokeSplitKeygenMutatingAuthAnd
 		t.Fatal("expected unauthenticated RevokePrincipal to fail closed")
 	}
 
-	// Cross-role 1-of-2 revocation (ao1 attempting to revoke so1) MUST be rejected with 409 QUORUM_SURVIVOR_FLOOR_VIOLATION!
+	// Peer 1-of-2 revocation (ao1 attempting to revoke so1) MUST be rejected with 403 PEER_REVOCATION_REQUIRES_DUAL_KEY_DSSE!
 	ao1Cli := warrantsdk.NewClient(httpSrv.URL, warrantsdk.WithSignerBundle(ao1))
 	if _, err := ao1Cli.RevokePrincipal(ctx, warrantsdk.RevokePrincipalRequest{
 		PrincipalID: so1.PrincipalID,
 		ReasonCode:  "CROSS_ROLE_ATTEMPT",
-	}); err == nil || !strings.Contains(err.Error(), "QUORUM_SURVIVOR_FLOOR_VIOLATION") {
-		t.Fatalf("expected cross-role 1-of-2 revocation to return 409 QUORUM_SURVIVOR_FLOOR_VIOLATION, got: %v", err)
+	}); err == nil || !strings.Contains(err.Error(), "PEER_REVOCATION_REQUIRES_DUAL_KEY_DSSE") {
+		t.Fatalf("expected peer 1-of-2 revocation to return 403 PEER_REVOCATION_REQUIRES_DUAL_KEY_DSSE, got: %v", err)
 	}
 
-	// Same-role peer soBackup unilaterally revokes compromised so1 (1-of-2 DSSE, preserving >=1 SO and >=1 AO!)
-	soBakCli := warrantsdk.NewClient(httpSrv.URL, warrantsdk.WithSignerBundle(soBackup))
-	revRec, err := soBakCli.RevokePrincipal(ctx, warrantsdk.RevokePrincipalRequest{
+	// Compromised so1 executes 1-of-2 SELF-REVOCATION (preserving soBackup >=1 SO and ao1 >=1 AO!)
+	so1SelfCli := warrantsdk.NewClient(httpSrv.URL, warrantsdk.WithSignerBundle(so1))
+	revRec, err := so1SelfCli.RevokePrincipal(ctx, warrantsdk.RevokePrincipalRequest{
 		PrincipalID: so1.PrincipalID,
-		ReasonCode:  "COMPROMISED_LAPTOP_KILLSWITCH",
+		ReasonCode:  "COMPROMISED_LAPTOP_SELF_KILLSWITCH",
 	})
-	if err != nil || revRec.RevokedBy != soBackup.PrincipalID {
-		t.Fatalf("expected same-role 1-of-2 DSSE revocation by %s to succeed, got rec=%+v err=%v", soBackup.PrincipalID, revRec, err)
+	if err != nil || revRec.RevokedBy != so1.PrincipalID {
+		t.Fatalf("expected 1-of-2 self-revocation by %s to succeed, got rec=%+v err=%v", so1.PrincipalID, revRec, err)
 	}
+	soBakCli := warrantsdk.NewClient(httpSrv.URL, warrantsdk.WithSignerBundle(soBackup))
 
 	// Revoked so1 CANNOT revoke ao1!
 	revokedSO1Cli := warrantsdk.NewClient(httpSrv.URL, warrantsdk.WithSignerBundle(so1))
@@ -1867,14 +1872,14 @@ func TestInvariant11_QuorumSurvivorLineageReplayAndConsoleGates(t *testing.T) {
 	// -----------------------------------------------------------------
 	so1Cli := warrantsdk.NewClient(srvA.URL, warrantsdk.WithSignerBundle(so1))
 
-	// 1. Cross-role 1-of-2 revocation (so1 -> ao1) MUST fail with HTTP 409 QUORUM_SURVIVOR_FLOOR_VIOLATION!
+	// 1. Peer 1-of-2 revocation (so1 -> ao1) MUST fail with HTTP 403 PEER_REVOCATION_REQUIRES_DUAL_KEY_DSSE!
 	_, err = so1Cli.RevokePrincipal(ctx, warrantsdk.RevokePrincipalRequest{
 		PrincipalID: ao1.PrincipalID,
 		ReasonCode:  "SCORCHED_EARTH_CROSS_ROLE_ATTEMPT",
 	})
 	apiErr, ok := err.(*warrantsdk.APIError)
-	if !ok || apiErr.StatusCode != http.StatusConflict || !strings.Contains(apiErr.Message, "QUORUM_SURVIVOR_FLOOR_VIOLATION") {
-		t.Fatalf("expected HTTP 409 QUORUM_SURVIVOR_FLOOR_VIOLATION on cross-role 1-of-2 revoke, got: %v", err)
+	if !ok || apiErr.StatusCode != http.StatusForbidden || !strings.Contains(apiErr.Message, "PEER_REVOCATION_REQUIRES_DUAL_KEY_DSSE") {
+		t.Fatalf("expected HTTP 403 PEER_REVOCATION_REQUIRES_DUAL_KEY_DSSE on 1-of-2 peer revoke, got: %v", err)
 	}
 
 	// 2. Last-survivor self-revocation (so1 -> so1 with 0 other SOs) MUST also fail with HTTP 409 QUORUM_SURVIVOR_FLOOR_VIOLATION!
@@ -2228,6 +2233,336 @@ func TestInvariant11_QuorumSurvivorLineageReplayAndConsoleGates(t *testing.T) {
 	repB2, err := autoB2.VerifyLedgerChains(ctx)
 	if err != nil || repB2.AllValid || !strings.Contains(repB2.SuperuserTamperDetail, "UNATTESTED_AUTHORITY_LINEAGE_INSERT_DETECTED") {
 		t.Fatalf("expected VerifyLedgerChains to flag UNATTESTED_AUTHORITY_LINEAGE_INSERT_DETECTED on kernel_public_keys, got %+v err=%v", repB2, err)
+	}
+}
+
+// =========================================================================
+// INVARIANT 12: v1.0.3 Backup-Assassination Defense, Persisted Kernel Restart
+//               vs Zero-Exemption SQL Insert Block, & 1-of-2 WebAuthn P-256 Freeze
+// =========================================================================
+func TestInvariant12_V103BackupAssassinationBlockKernelPersistenceAndWebAuthnFreeze(t *testing.T) {
+	adminDSN := os.Getenv("TEST_DATABASE_URL")
+	if adminDSN == "" {
+		if os.Getenv("REQUIRE_DB_TESTS") == "true" {
+			t.Fatal("REQUIRE_DB_TESTS=true but TEST_DATABASE_URL is empty")
+		}
+		t.Skip("Skipping DB-backed Invariant 12 suite (TEST_DATABASE_URL not set)")
+	}
+
+	ctx := context.Background()
+	dbName := fmt.Sprintf("warrant_v103_%s", strings.ReplaceAll(uuid.NewString()[:8], "-", ""))
+	adminConn, err := pgx.Connect(ctx, adminDSN)
+	if err != nil {
+		t.Fatalf("connect admin postgres: %v", err)
+	}
+	if _, err := adminConn.Exec(ctx, fmt.Sprintf("CREATE DATABASE %s", dbName)); err != nil {
+		_ = adminConn.Close(ctx)
+		t.Fatalf("create test db %s: %v", dbName, err)
+	}
+	_ = adminConn.Close(ctx)
+	t.Cleanup(func() {
+		c, cErr := pgx.Connect(context.Background(), adminDSN)
+		if cErr == nil {
+			_, _ = c.Exec(context.Background(), fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", dbName))
+			_ = c.Close(context.Background())
+		}
+	})
+
+	store, err := db.NewStore(ctx, replaceDBName(adminDSN, dbName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+
+	extSrv := httptest.NewServer(extractor.NewHTTPHandler("sha256-extractor-v103"))
+	defer extSrv.Close()
+	simSrv := httptest.NewServer(fleetsim.NewClusterSimulator().Handler())
+	defer simSrv.Close()
+
+	kernelKeyPath := filepath.Join(t.TempDir(), "warrant-anchor", "kernel_signer.json")
+	anchorPath := filepath.Join(t.TempDir(), "warrant-anchor", "checkpoints.jsonl")
+	t.Setenv("WARRANT_ENABLE_TEST_SMARTCARDS", "false")
+	t.Setenv("WARRANT_FEED_MODE", "live")
+	t.Setenv("WARRANT_BOOTSTRAP_ADMIN_TOKEN", "bs_v103_genesis_registrar_token_001")
+	t.Setenv("WARRANT_AUTOMATION_TOKEN", "au_v103_automation_ci_cron_token_001")
+	t.Setenv("WARRANT_INTAKE_TOKEN", "in_v103_scanner_intake_token_001")
+	t.Setenv("WARRANT_KERNEL_KEY_PATH", kernelKeyPath)
+	t.Setenv("WARRANT_EXTERNAL_ANCHOR_PATH", anchorPath)
+
+	// Boot #1: non-KMS warrantd using persisted WARRANT_KERNEL_KEY_PATH (kernelSeed == "")
+	orch1, err := server.NewOrchestrator(ctx, store, extSrv.URL, simSrv.URL, "", crypto.DefaultWebAuthnConfig())
+	if err != nil {
+		t.Fatalf("Boot #1 NewOrchestrator failed: %v", err)
+	}
+	if err := orch1.SeedEnterpriseEstate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	srv1 := httptest.NewServer(orch1.BuildHTTPHandler())
+
+	adminCli := warrantsdk.NewClient(srv1.URL, warrantsdk.WithAdminToken("bs_v103_genesis_registrar_token_001"))
+	anonCli := warrantsdk.NewClient(srv1.URL)
+
+	soPrimary, _ := warrantsdk.GenerateEd25519SignerBundle("usr-v103-so-primary", "so-primary@agency.gov", "SO Primary", warrantsdk.RoleServiceOwner)
+	soBackup, _ := warrantsdk.GenerateEd25519SignerBundle("usr-v103-so-backup", "so-backup@agency.gov", "SO Vault Backup", warrantsdk.RoleServiceOwner)
+	aoPrimary, _ := warrantsdk.GenerateEd25519SignerBundle("usr-v103-ao-primary", "ao-primary@agency.gov", "AO Primary", warrantsdk.RoleAuthorizingOfficial)
+	aoBackup, _ := warrantsdk.GenerateEd25519SignerBundle("usr-v103-ao-backup", "ao-backup@agency.gov", "AO Vault Backup", warrantsdk.RoleAuthorizingOfficial)
+
+	// Enroll only 1 SO + 1 AO in live mode -> both SealBootstrap AND first-warrant auto-seal MUST fail closed (< 2 per role)!
+	if _, err := adminCli.RegisterPrincipal(ctx, soPrimary.ToRegisterRequest()); err != nil {
+		t.Fatalf("register soPrimary: %v", err)
+	}
+	if _, err := adminCli.RegisterPrincipal(ctx, aoPrimary.ToRegisterRequest()); err != nil {
+		t.Fatalf("register aoPrimary: %v", err)
+	}
+	if _, err := adminCli.SealBootstrap(ctx); err == nil || !strings.Contains(err.Error(), "BOOTSTRAP_SEAL_PRECONDITION_FAILED") {
+		t.Fatalf("expected SealBootstrap in live mode with 1 SO + 1 AO to fail with BOOTSTRAP_SEAL_PRECONDITION_FAILED, got: %v", err)
+	}
+	prematureWarrant, _, _ := warrantsdk.DraftWarrantEnvelope(warrantsdk.WarrantDraftOptions{
+		WarrantClass:  "KEV-TIER1-STATELESS",
+		ScopeServices: []string{"payments-ledger-api"},
+		MaxCVSS:       10.0,
+		KEVEligible:   true,
+	})
+	_ = soPrimary.SignEnvelope(1, prematureWarrant)
+	_ = aoPrimary.SignEnvelope(2, prematureWarrant)
+	if _, err := anonCli.CreateWarrant(ctx, *prematureWarrant); err == nil || !strings.Contains(err.Error(), "BOOTSTRAP_SEAL_PRECONDITION_FAILED") {
+		t.Fatalf("expected first-warrant auto-seal in live mode with 1 SO + 1 AO to fail with BOOTSTRAP_SEAL_PRECONDITION_FAILED, got: %v", err)
+	}
+
+	// Enroll cold-storage backup keys (reaching 2 SO + 2 AO) AND enroll a W3C WebAuthn P-256 hardware authenticator before sealing!
+	if _, err := adminCli.RegisterPrincipal(ctx, soBackup.ToRegisterRequest()); err != nil {
+		t.Fatalf("register soBackup: %v", err)
+	}
+	if _, err := adminCli.RegisterPrincipal(ctx, aoBackup.ToRegisterRequest()); err != nil {
+		t.Fatalf("register aoBackup: %v", err)
+	}
+
+	p256PrivHW, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p256DerHW, err := x509.MarshalPKIXPublicKey(&p256PrivHW.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hwCredID := "cred-piv-fido2-so-01"
+	hwRegBody, _ := json.Marshal(map[string]string{
+		"display_name":    "Hardware FIDO2 SO",
+		"email":           "so-fido2@agency.gov",
+		"role":            warrantsdk.RoleServiceOwner,
+		"credential_id":   hwCredID,
+		"public_key_spki": base64.RawURLEncoding.EncodeToString(p256DerHW),
+	})
+	hwRegReq, _ := http.NewRequest(http.MethodPost, srv1.URL+"/api/v1/principals/webauthn/register", bytes.NewReader(hwRegBody))
+	hwRegReq.Header.Set("Content-Type", "application/json")
+	hwRegReq.Header.Set("X-Warrant-Admin-Token", "bs_v103_genesis_registrar_token_001")
+	hwRegResp, err := http.DefaultClient.Do(hwRegReq)
+	if err != nil || hwRegResp.StatusCode != http.StatusCreated {
+		b, _ := io.ReadAll(hwRegResp.Body)
+		t.Fatalf("expected genesis WebAuthn P-256 registration 201, got status=%d body=%s err=%v", hwRegResp.StatusCode, string(b), err)
+	}
+	var hwPrincipal models.Principal
+	_ = json.NewDecoder(hwRegResp.Body).Decode(&hwPrincipal)
+	_ = hwRegResp.Body.Close()
+
+	// Seal bootstrap explicitly -> MUST immediately trigger External Merkle Checkpoint #0 covering all 5 genesis principals!
+	sealSt, err := adminCli.SealBootstrap(ctx)
+	if err != nil || !sealSt.Sealed || sealSt.GenesisSealDSSE == nil {
+		t.Fatalf("SealBootstrap with >=2 SO + >=2 AO failed: %+v err=%v", sealSt, err)
+	}
+	cpsAfterSeal, err := anonCli.ListLedgerCheckpoints(ctx)
+	if err != nil || len(cpsAfterSeal) == 0 || cpsAfterSeal[0].PrincipalRowCount != 5 {
+		t.Fatalf("expected SealBootstrap to immediately anchor Checkpoint #0 with PrincipalRowCount=5, got %+v err=%v", cpsAfterSeal, err)
+	}
+
+	// -----------------------------------------------------------------
+	// (a) 1-of-2 Peer Revocation (Backup Assassination) Rejected with 403,
+	//     while 1-of-2 Self-Revocation Succeeds Cleanly!
+	// -----------------------------------------------------------------
+	soPrimaryCli := warrantsdk.NewClient(srv1.URL, warrantsdk.WithSignerBundle(soPrimary))
+	_, err = soPrimaryCli.RevokePrincipal(ctx, warrantsdk.RevokePrincipalRequest{
+		PrincipalID: soBackup.PrincipalID,
+		ReasonCode:  "STOLEN_KEY_ASSASSINATE_VAULT_BACKUP",
+	})
+	apiErr, isAPI := err.(*warrantsdk.APIError)
+	if !isAPI || apiErr.StatusCode != http.StatusForbidden || !strings.Contains(apiErr.Message, "PEER_REVOCATION_REQUIRES_DUAL_KEY_DSSE") {
+		t.Fatalf("expected 1-of-2 peer revocation (so-primary -> so-backup) to fail with 403 PEER_REVOCATION_REQUIRES_DUAL_KEY_DSSE, got: %v", err)
+	}
+
+	// Enroll a disposable SO key via 2-of-2 DSSE, then verify 1-of-2 self-revocation (disposable -> disposable) succeeds!
+	soTemp, _ := warrantsdk.GenerateEd25519SignerBundle("usr-v103-so-temp", "so-temp@agency.gov", "SO Temp Laptop", warrantsdk.RoleServiceOwner)
+	enrollTemp, _, _ := warrantsdk.DraftPrincipalEnrollEnvelope(soTemp.ToRegisterRequest(), 5*time.Minute)
+	_ = soPrimary.SignEnvelope(1, enrollTemp)
+	_ = aoPrimary.SignEnvelope(2, enrollTemp)
+	if _, err := anonCli.RegisterPrincipalDualSigned(ctx, *enrollTemp); err != nil {
+		t.Fatalf("RegisterPrincipalDualSigned(soTemp) failed: %v", err)
+	}
+	soTempCli := warrantsdk.NewClient(srv1.URL, warrantsdk.WithSignerBundle(soTemp))
+	selfRev, err := soTempCli.RevokePrincipal(ctx, warrantsdk.RevokePrincipalRequest{
+		PrincipalID: soTemp.PrincipalID,
+		ReasonCode:  "LAPTOP_LOST_SELF_REVOCATION",
+	})
+	if err != nil || selfRev.PrincipalID != soTemp.PrincipalID || selfRev.RevokedBy != soTemp.PrincipalID {
+		t.Fatalf("expected 1-of-2 self-revocation to succeed cleanly, got %+v err=%v", selfRev, err)
+	}
+
+	// -----------------------------------------------------------------
+	// (b) 2-of-2 Peer Revocation (so-backup + ao-primary -> stolen so-primary) Succeeds!
+	// -----------------------------------------------------------------
+	// Mint a Standing Warrant signed by soPrimary + aoPrimary first so we also confirm live fail-closed invalidation
+	wStolen, _, _ := warrantsdk.DraftWarrantEnvelope(warrantsdk.WarrantDraftOptions{
+		WarrantClass:  "KEV-TIER1-STATELESS",
+		ScopeServices: []string{"payments-ledger-api"},
+		MaxCVSS:       10.0,
+		KEVEligible:   true,
+	})
+	_ = soPrimary.SignEnvelope(1, wStolen)
+	_ = aoPrimary.SignEnvelope(2, wStolen)
+	mintedW, err := anonCli.CreateWarrant(ctx, *wStolen)
+	if err != nil {
+		t.Fatalf("CreateWarrant(soPrimary+aoPrimary) failed: %v", err)
+	}
+
+	dualPeerRevEnv, _, err := warrantsdk.DraftPrincipalRevokeEnvelope(soPrimary.PrincipalID, soPrimary.KeyFingerprint, "STOLEN_PRIMARY_REVOKED_BY_2OF2_QUORUM", 5*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = soBackup.SignEnvelope(1, dualPeerRevEnv)
+	_ = aoPrimary.SignEnvelope(2, dualPeerRevEnv)
+	peerRev, err := anonCli.RevokePrincipalSigned(ctx, *dualPeerRevEnv)
+	if err != nil || peerRev.PrincipalID != soPrimary.PrincipalID {
+		t.Fatalf("expected 2-of-2 peer revocation (soBackup + aoPrimary -> soPrimary) to succeed, got %+v err=%v", peerRev, err)
+	}
+	vCheck, err := anonCli.VerifyWarrant(ctx, mintedW.WarrantID)
+	if err != nil || vCheck.Valid {
+		t.Fatalf("expected warrant signed by revoked soPrimary to fail live N1 verification, got %+v err=%v", vCheck, err)
+	}
+
+	// -----------------------------------------------------------------
+	// (d) 1-of-2 W3C WebAuthn P-256 Hardware Assertion + Raw-Byte Body Hashing on POST /api/v1/freeze!
+	// -----------------------------------------------------------------
+	// Craft intentionally non-canonical JSON (indentation, spaces around colons, reverse key order)
+	// to prove api.go hashes exact raw wire bytes BEFORE json.Unmarshal!
+	rawNonCanonicalFreezeBody := []byte("{\n  \"reason_code\" : \"FIDO2_HARDWARE_EMERGENCY_HALT\" ,\n  \"mode\" : \"FREEZE_HOLD\" ,\n  \"actor\" : \"so-fido2@agency.gov\"\n}\n")
+	hwPK := crypto.PrincipalKey{
+		PrincipalID:    hwPrincipal.PrincipalID,
+		Email:          hwPrincipal.Email,
+		DisplayName:    hwPrincipal.DisplayName,
+		Role:           hwPrincipal.Role,
+		KeyID:          hwPrincipal.KeyID,
+		Alg:            hwPrincipal.Alg,
+		PublicKeyBytes: p256DerHW,
+		KeyFingerprint: hwPrincipal.KeyFingerprint,
+	}
+	hwFreezeEnv, _, err := crypto.NewUnsignedEnvelope(crypto.PayloadTypePrincipalGovernance, models.PrincipalGovernancePayload{
+		EnvelopeID:        "gov-webauthn-freeze-" + uuid.NewString(),
+		Action:            models.GovActionEmergencyFreeze,
+		HTTPMethod:        http.MethodPost,
+		CanonicalPath:     "/api/v1/freeze",
+		RequestBodySHA256: crypto.SHA256Hex(rawNonCanonicalFreezeBody),
+		FreezeMode:        warrantsdk.FreezeModeHold,
+		ReasonCode:        "FIDO2_HARDWARE_EMERGENCY_HALT",
+		IssuedAt:          time.Now().UTC().Format(time.RFC3339),
+		ExpiresAt:         time.Now().UTC().Add(4 * time.Minute).Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hwFreezeEnv.SignWebAuthnP256(1, hwPK, p256PrivHW, hwCredID, "localhost", "http://localhost:8080"); err != nil {
+		t.Fatalf("SignWebAuthnP256 failed: %v", err)
+	}
+	hwEnvJSON, _ := json.Marshal(hwFreezeEnv)
+	hwReq, _ := http.NewRequest(http.MethodPost, srv1.URL+"/api/v1/freeze", bytes.NewReader(rawNonCanonicalFreezeBody))
+	hwReq.Header.Set("Content-Type", "application/json")
+	hwReq.Header.Set("X-Warrant-Governance-DSSE", base64.StdEncoding.EncodeToString(hwEnvJSON))
+	hwResp, err := http.DefaultClient.Do(hwReq)
+	if err != nil || hwResp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(hwResp.Body)
+		t.Fatalf("expected 1-of-2 WebAuthn P-256 POST /api/v1/freeze to return 200 OK, got status=%d body=%s err=%v", hwResp.StatusCode, string(b), err)
+	}
+	var hwFreezeState models.FreezeState
+	_ = json.NewDecoder(hwResp.Body).Decode(&hwFreezeState)
+	_ = hwResp.Body.Close()
+	if hwFreezeState.Mode != warrantsdk.FreezeModeHold || hwFreezeState.Actor != hwPrincipal.PrincipalID {
+		t.Fatalf("unexpected WebAuthn freeze state: %+v (want actor=%s)", hwFreezeState, hwPrincipal.PrincipalID)
+	}
+
+	// -----------------------------------------------------------------
+	// (c) Simulated Post-Seal warrantd Container Restart Reloading WARRANT_KERNEL_KEY_PATH
+	//     vs Zero-Exemption Ephemeral SQL INSERT Block!
+	// -----------------------------------------------------------------
+	srv1.Close()
+
+	// Boot #2: spin up a fresh ControlPlaneOrchestrator against the SAME DB + SAME WARRANT_KERNEL_KEY_PATH
+	orch2, err := server.NewOrchestrator(ctx, store, extSrv.URL, simSrv.URL, "", crypto.DefaultWebAuthnConfig())
+	if err != nil {
+		t.Fatalf("Boot #2 NewOrchestrator (reloading WARRANT_KERNEL_KEY_PATH) failed: %v", err)
+	}
+	srv2 := httptest.NewServer(orch2.BuildHTTPHandler())
+	defer srv2.Close()
+
+	autoCli2 := warrantsdk.NewClient(srv2.URL, warrantsdk.WithAutomationToken("au_v103_automation_ci_cron_token_001"))
+	ringAfterRestart, err := autoCli2.KernelPublicKeyRing(ctx)
+	if err != nil || len(ringAfterRestart) != 1 {
+		t.Fatalf("expected Boot #2 to retain seq_no=1 without unattested key churn (len=1), got len=%d err=%v", len(ringAfterRestart), err)
+	}
+	cpAfterRestart, err := autoCli2.CreateLedgerCheckpoint(ctx)
+	if err != nil || cpAfterRestart.KernelKeyRowCount != 1 {
+		t.Fatalf("expected AnchorCheckpoint after Boot #2 restart to succeed cleanly, got cp=%+v err=%v", cpAfterRestart, err)
+	}
+	repAfterRestart, err := autoCli2.VerifyLedgerChains(ctx)
+	if err != nil || !repAfterRestart.AllValid || !repAfterRestart.ExternalAnchorVerified {
+		t.Fatalf("expected VerifyAllLedgerChains after Boot #2 restart to pass 100%%, got %+v err=%v", repAfterRestart, err)
+	}
+
+	// Verify 2-of-2 Principal Governance ROTATE_KERNEL_KEY is accepted for legitimate seq_no=2 rotation
+	rotKSigner, _ := crypto.NewEphemeralEd25519Signer()
+	rotKPK := rotKSigner.PublicKey()
+	rotKPubB64 := base64.StdEncoding.EncodeToString(rotKPK.PublicKeyBytes)
+	rotGovEnv, _, _ := crypto.NewUnsignedEnvelope(crypto.PayloadTypePrincipalGovernance, models.PrincipalGovernancePayload{
+		EnvelopeID:           "gov-krot-" + uuid.NewString(),
+		Action:               models.GovActionRotateKernelKey,
+		KeyID:                rotKPK.KeyID,
+		Alg:                  rotKPK.Alg,
+		PublicKeyB64:         rotKPubB64,
+		TargetKeyFingerprint: rotKPK.KeyFingerprint,
+		IssuedAt:             time.Now().UTC().Format(time.RFC3339),
+		ExpiresAt:            time.Now().UTC().Add(5 * time.Minute).Format(time.RFC3339),
+	})
+	_ = soBackup.SignEnvelope(1, rotGovEnv)
+	_ = aoPrimary.SignEnvelope(2, rotGovEnv)
+	if err := store.RegisterKernelPublicKey(ctx, rotKPK, "PERSISTED_LOCAL_ED25519", rotGovEnv); err != nil {
+		t.Fatalf("expected 2-of-2 ROTATE_KERNEL_KEY governance rotation to succeed, got: %v", err)
+	}
+	if _, err := autoCli2.CreateLedgerCheckpoint(ctx); err != nil {
+		t.Fatalf("expected AnchorCheckpoint after 2-of-2 ROTATE_KERNEL_KEY to succeed, got: %v", err)
+	}
+
+	// Now inject a raw SQL INSERT into kernel_public_keys (explicitly marked EPHEMERAL_MEMORY_ED25519, valid hash chain, NO rotation_dsse)
+	// -> ZERO exemptions for ephemeral mode: BOTH AnchorCheckpoint and VerifyAllLedgerChains MUST fail closed!
+	var kTip string
+	_ = store.Pool().QueryRow(ctx, `SELECT entry_hash FROM kernel_public_keys ORDER BY seq_no DESC LIMIT 1`).Scan(&kTip)
+	rogueEphPub, _, _ := ed25519.GenerateKey(rand.Reader)
+	rogueEphPubB64 := base64.StdEncoding.EncodeToString(rogueEphPub)
+	rogueEphFP := crypto.SHA256Hex(rogueEphPub)
+	rogueEphEntry := db.ComputeKernelKeyEntryHash(kTip, "kernel-ephemeral-sql-bypass", "Ed25519", rogueEphPubB64, rogueEphFP, "EPHEMERAL_MEMORY_ED25519")
+	_, err = store.Pool().Exec(ctx, `
+		INSERT INTO kernel_public_keys (key_id, alg, public_key_b64, key_fingerprint, backend_mode, prev_hash, entry_hash)
+		VALUES ('kernel-ephemeral-sql-bypass', 'Ed25519', $1, $2, 'EPHEMERAL_MEMORY_ED25519', $3, $4)
+	`, rogueEphPubB64, rogueEphFP, kTip, rogueEphEntry)
+	if err != nil {
+		t.Fatalf("raw SQL INSERT into kernel_public_keys failed: %v", err)
+	}
+
+	if _, err := autoCli2.CreateLedgerCheckpoint(ctx); err == nil || !strings.Contains(err.Error(), "UNATTESTED_AUTHORITY_LINEAGE_INSERT_DETECTED") {
+		t.Fatalf("expected AnchorCheckpoint to block unattested EPHEMERAL_MEMORY_ED25519 SQL INSERT with UNATTESTED_AUTHORITY_LINEAGE_INSERT_DETECTED, got: %v", err)
+	}
+	repAfterSQL, err := autoCli2.VerifyLedgerChains(ctx)
+	if err != nil || repAfterSQL.AllValid || !strings.Contains(repAfterSQL.SuperuserTamperDetail, "UNATTESTED_AUTHORITY_LINEAGE_INSERT_DETECTED") {
+		t.Fatalf("expected VerifyAllLedgerChains to flag UNATTESTED_AUTHORITY_LINEAGE_INSERT_DETECTED on ephemeral SQL INSERT, got %+v err=%v", repAfterSQL, err)
 	}
 }
 

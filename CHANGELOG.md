@@ -1,11 +1,29 @@
 # Changelog
 
 All notable changes to **G1-Warrant** are documented in this file.
-Published Git tags (`v1.0.0`, `v1.0.1`, `v1.0.2`, ...) are immutable to preserve Go Checksum Database (`sum.golang.org`) reproducibility for `github.com/cgilbert61/G1-Warrant/pkg/warrantsdk`.
+Published Git tags (`v1.0.0`, `v1.0.1`, `v1.0.2`, `v1.0.3`, ...) are immutable to preserve Go Checksum Database (`sum.golang.org`) reproducibility for `github.com/cgilbert61/G1-Warrant/pkg/warrantsdk`.
 
 ---
 
-## [v1.0.2] - 2026-11-20
+## [v1.0.3] - 2026-11-20
+
+### Security & Governance Hardening
+
+1. **Block Stolen-Key Backup Assassination on Revocation (`NIST SP 800-53 Rev 5 AC-5`):**
+   - Restricted `1-of-2` `REVOKE_PRINCIPAL` (`POST /api/v1/principals/revoke`) strictly to **self-revocation** (`signer.PrincipalID == target.PrincipalID`, while preserving the `>= 1` active `SERVICE_OWNER` and `>= 1` active `AUTHORIZING_OFFICIAL` survivor floor) so a stolen primary key cannot burn cold-storage vault backup keys.
+   - Required a **`2-of-2` DSSE ceremony** (`REVOKE_PRINCIPAL` or `ROTATE_AND_REVOKE_PRINCIPAL` co-signed by active `SERVICE_OWNER` + active `AUTHORIZING_OFFICIAL`) whenever `signer.PrincipalID != target.PrincipalID`, rejecting `1-of-2` peer revocation with **`HTTP 403 PEER_REVOCATION_REQUIRES_DUAL_KEY_DSSE`**.
+   - Enforced `>= 2` active `SERVICE_OWNER` and `>= 2` active `AUTHORIZING_OFFICIAL` principals before `POST /api/v1/bootstrap/seal` (or first-warrant auto-seal) succeeds when `WARRANT_CLUSTER_DRIVER=kubernetes` or `WARRANT_FEED_MODE=live` (retaining `>= 1 SO + >= 1 AO` in offline `simulator` mode).
+2. **Persisted `WARRANT_KERNEL_KEY_PATH`, Zero-Exemption Kernel Lineage & Immediate `Checkpoint #0`:**
+   - Persisted local non-KMS kernel key material on a `0600` volume-backed path (`WARRANT_KERNEL_KEY_PATH`, mounted to `warrant_anchor` in `docker-compose.yml` with NTFS-safe Windows handling) so routine container restarts retain `seq_no = 1` without unattested key churn.
+   - Enforced with **zero exemptions** (including ephemeral and KMS modes) across `lineage.go` and `queries.go` that every `kernel_public_keys` row with `seq_no > 1` carries a valid `rotation_dsse` signed by `seq_no - 1` OR a `2-of-2` human Principal Governance `ROTATE_KERNEL_KEY` DSSE envelope.
+   - Wired immediate `AnchorCheckpoint` (**`Checkpoint #0`**) directly inside `Store.SealBootstrap` (`POST /api/v1/bootstrap/seal` and first-warrant auto-seal) so the Genesis Seal Manifest and initial authority chains are externally anchored the instant sealing completes.
+3. **WebAuthn P-256 Parity & Raw-Byte Body Hashing on `1-of-2` Operator Routes:**
+   - Hardened `VerifySingleActivePrincipalCeremony` and `VerifySingleSignature` (plus `StoreKeyResolver` credential lookup and Console `App.tsx` / `crypto.ts`) to validate both `Ed25519` and **`W3C WebAuthn P-256` (`ES256`)** hardware assertions (`authenticatorData` + `clientDataJSON`) across `freeze`, `emergency-rollback`, `auditor-tokens`, and self-revocation while blocking algorithm-downgrade bypasses.
+   - Verified and buffered exact raw wire bytes from `http.MaxBytesReader` prior to JSON unmarshaling across `api.go` so `request_body_sha256` signatures never fail due to key ordering or whitespace.
+
+---
+
+## [v1.0.2] - 2026-11-20 (`097469b`)
 
 ### Security & Governance Hardening
 

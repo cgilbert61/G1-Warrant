@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -19,12 +18,18 @@ import (
 
 const (
 	CodeQuorumSurvivorFloorViolation     = "QUORUM_SURVIVOR_FLOOR_VIOLATION"
+	CodePeerRevocationRequiresDualKeyDSSE = "PEER_REVOCATION_REQUIRES_DUAL_KEY_DSSE"
 	CodeUnattestedAuthorityLineageInsert = "UNATTESTED_AUTHORITY_LINEAGE_INSERT_DETECTED"
 )
 
-// IsQuorumSurvivorFloorError returns true when an error represents a 1-of-2 survivor floor or cross-role revocation violation.
+// IsQuorumSurvivorFloorError returns true when an error represents a survivor floor violation.
 func IsQuorumSurvivorFloorError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), CodeQuorumSurvivorFloorViolation)
+}
+
+// IsPeerRevocationError returns true when a 1-of-2 revocation attempts to revoke a peer principal instead of self-revoking.
+func IsPeerRevocationError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), CodePeerRevocationRequiresDualKeyDSSE)
 }
 
 // IsUnattestedAuthorityLineageError returns true when an unattested SQL INSERT into principals, principal_revocations, or kernel_public_keys is detected.
@@ -241,14 +246,13 @@ func (s *Store) RevokePrincipalEnforced(
 	rev.PrincipalID = targetID
 	rev.KeyFingerprint = targetFP
 
-	// Enforce same-role or self-revocation rule on 1-of-2 revocations
-	if !isDualSigned {
-		if targetID != signerPrincipalID && targetRole != signerRole {
-			return nil, fmt.Errorf(
-				"%s: 1-of-2 revocation by %s (%s) cannot revoke cross-role principal %s (%s); submit an atomic 2-of-2 ROTATE_AND_REVOKE_PRINCIPAL envelope",
-				CodeQuorumSurvivorFloorViolation, signerPrincipalID, signerRole, targetID, targetRole,
-			)
-		}
+	// Block stolen-key backup assassination: 1-of-2 REVOKE_PRINCIPAL is restricted STRICTLY to self-revocation!
+	// Revoking any other principal (same-role backup OR cross-role peer) requires a 2-of-2 DSSE ceremony.
+	if !isDualSigned && targetID != signerPrincipalID {
+		return nil, fmt.Errorf(
+			"%s: 1-of-2 revocation by %s (%s) cannot revoke peer principal %s (%s); 1-of-2 REVOKE_PRINCIPAL is restricted strictly to self-revocation (submit a 2-of-2 REVOKE_PRINCIPAL or ROTATE_AND_REVOKE_PRINCIPAL DSSE envelope)",
+			CodePeerRevocationRequiresDualKeyDSSE, signerPrincipalID, signerRole, targetID, targetRole,
+		)
 	}
 
 	// Enforce Quorum Survivor Floor: >= 1 active SERVICE_OWNER and >= 1 active AUTHORIZING_OFFICIAL must remain after revocation
@@ -804,8 +808,11 @@ func (s *Store) VerifyAuthorityLineageAttestations(ctx context.Context) (string,
 					if targetPK == nil {
 						return "principal_revocations", fmt.Errorf("%s: revocation %s references unknown principal %s", CodeUnattestedAuthorityLineageInsert, st.revoke.rev.RevocationID, st.revoke.rev.PrincipalID)
 					}
-					if targetPK.PrincipalID != singleRes.Signer.PrincipalID && targetPK.Role != singleRes.Signer.Role {
-						return "principal_revocations", fmt.Errorf("%s: 1-of-2 revocation %s violated cross-role restriction", CodeUnattestedAuthorityLineageInsert, st.revoke.rev.RevocationID)
+					if targetPK.PrincipalID != singleRes.Signer.PrincipalID {
+						return "principal_revocations", fmt.Errorf(
+							"%s: 1-of-2 revocation %s violated strict self-revocation rule (signer=%s target=%s)",
+							CodeUnattestedAuthorityLineageInsert, st.revoke.rev.RevocationID, singleRes.Signer.PrincipalID, targetPK.PrincipalID,
+						)
 					}
 				}
 				if gp.Action != models.GovActionRevokePrincipal && gp.Action != models.GovActionRotateAndRevokePrincipal {
@@ -822,7 +829,9 @@ func (s *Store) VerifyAuthorityLineageAttestations(ctx context.Context) (string,
 		}
 	}
 
-	// 4. Replay kernel_public_keys from seq_no = 1 forward AND verify bootstrap_state.genesis_seal_dsse against verified kernel keys
+	// 4. Replay kernel_public_keys from seq_no = 1 forward AND verify bootstrap_state.genesis_seal_dsse against verified kernel keys.
+	//    ZERO exemptions for ephemeral or env modes: EVERY row with seq_no > 1 MUST carry a valid rotation_dsse signed by
+	//    the preceding (seq_no - 1) kernel key OR a 2-of-2 human Principal Governance ROTATE_KERNEL_KEY DSSE envelope.
 	kRows, err := s.pool.Query(ctx, `
 		SELECT seq_no, key_id, alg, public_key_b64, key_fingerprint, backend_mode, rotation_dsse
 		FROM kernel_public_keys ORDER BY seq_no ASC
@@ -834,8 +843,6 @@ func (s *Store) VerifyAuthorityLineageAttestations(ctx context.Context) (string,
 
 	verifiedKernelKeys := map[string]*crypto.PrincipalKey{}
 	var prevKernelPK *crypto.PrincipalKey
-	kmsURL := strings.TrimSpace(os.Getenv("WARRANT_KMS_SIGN_URL"))
-	kmsPubB64 := strings.TrimSpace(os.Getenv("WARRANT_KMS_PUBLIC_KEY_B64"))
 
 	kIdx := 0
 	for kRows.Next() {
@@ -859,48 +866,18 @@ func (s *Store) VerifyAuthorityLineageAttestations(ctx context.Context) (string,
 		}
 
 		if kIdx > 0 {
-			matchesConfiguredKMS := rec.BackendMode == "NON_EXPORTABLE_EXTERNAL_KMS_HSM" && kmsURL != "" && kmsPubB64 != "" && kmsPubB64 == rec.PublicKeyB64
-			if !matchesConfiguredKMS {
-				if len(rotRaw) == 0 {
-					return "kernel_public_keys", fmt.Errorf(
-						"%s: kernel_public_keys row %s (seq_no=%d > 1) lacks rotation_dsse signed by preceding kernel key or 2-of-2 principals",
-						CodeUnattestedAuthorityLineageInsert, rec.KeyID, seqNo,
-					)
-				}
-				var rotEnv crypto.Envelope
-				if err := json.Unmarshal(rotRaw, &rotEnv); err != nil {
-					return "kernel_public_keys", fmt.Errorf("%s: invalid rotation_dsse JSON on kernel key %s", CodeUnattestedAuthorityLineageInsert, rec.KeyID)
-				}
-				if rotEnv.PayloadType != crypto.PayloadTypeKernelKeyRotation {
-					return "kernel_public_keys", fmt.Errorf("%s: unexpected rotation_dsse payloadType %q on kernel key %s", CodeUnattestedAuthorityLineageInsert, rotEnv.PayloadType, rec.KeyID)
-				}
-				rawRotPayload, pErr := rotEnv.DecodePayload()
-				if pErr != nil {
-					return "kernel_public_keys", fmt.Errorf("%s: decode rotation_dsse payload on %s: %w", CodeUnattestedAuthorityLineageInsert, rec.KeyID, pErr)
-				}
-				canonRot, cErr := crypto.CanonicalizeJSON(rawRotPayload)
-				if cErr != nil || string(canonRot) != string(rawRotPayload) {
-					return "kernel_public_keys", fmt.Errorf("%s: non-canonical rotation_dsse JCS on kernel key %s", CodeUnattestedAuthorityLineageInsert, rec.KeyID)
-				}
-				var rotBody models.KernelKeyRotationPayload
-				if err := json.Unmarshal(rawRotPayload, &rotBody); err != nil {
-					return "kernel_public_keys", fmt.Errorf("%s: parse rotation_dsse payload on %s: %w", CodeUnattestedAuthorityLineageInsert, rec.KeyID, err)
-				}
-				if rotBody.NewKeyID != rec.KeyID || rotBody.NewPublicKeyB64 != rec.PublicKeyB64 || !strings.EqualFold(rotBody.NewKeyFingerprint, rec.KeyFingerprint) {
-					return "kernel_public_keys", fmt.Errorf("%s: rotation_dsse key binding mismatch on kernel key %s", CodeUnattestedAuthorityLineageInsert, rec.KeyID)
-				}
-
-				signedByPrevKernel := len(rotEnv.Signatures) >= 1 && prevKernelPK != nil &&
-					rotEnv.Signatures[0].KeyID == prevKernelPK.KeyID &&
-					crypto.VerifySingleSignature(rotEnv.PayloadType, rawRotPayload, rotEnv.Signatures[0], prevKernelPK, webauthnCfg) == nil
-				if !signedByPrevKernel {
-					if _, dualErr := crypto.VerifyDualHumanCeremony(&rotEnv, crypto.PayloadTypeKernelKeyRotation, activeByKeyID, webauthnCfg); dualErr != nil {
-						return "kernel_public_keys", fmt.Errorf(
-							"%s: rotation_dsse on kernel key %s failed both preceding-kernel and 2-of-2 AC-5 verification: %w",
-							CodeUnattestedAuthorityLineageInsert, rec.KeyID, dualErr,
-						)
-					}
-				}
+			if len(rotRaw) == 0 {
+				return "kernel_public_keys", fmt.Errorf(
+					"%s: kernel_public_keys row %s (seq_no=%d > 1) lacks rotation_dsse signed by preceding kernel key or 2-of-2 ROTATE_KERNEL_KEY principals",
+					CodeUnattestedAuthorityLineageInsert, rec.KeyID, seqNo,
+				)
+			}
+			var rotEnv crypto.Envelope
+			if err := json.Unmarshal(rotRaw, &rotEnv); err != nil {
+				return "kernel_public_keys", fmt.Errorf("%s: invalid rotation_dsse JSON on kernel key %s", CodeUnattestedAuthorityLineageInsert, rec.KeyID)
+			}
+			if err := verifyKernelKeyRotationDSSE(&rotEnv, rec, prevKernelPK, activeByKeyID, webauthnCfg); err != nil {
+				return "kernel_public_keys", err
 			}
 		}
 
@@ -993,4 +970,70 @@ func verifyRevocationMatchesPayload(rev models.PrincipalRevocation, gp models.Pr
 		return fmt.Errorf("%s: revocation %s key_fingerprint %q != signed target %q", CodeUnattestedAuthorityLineageInsert, rev.RevocationID, rev.KeyFingerprint, signedFP)
 	}
 	return nil
+}
+
+// verifyKernelKeyRotationDSSE strictly validates rotation_dsse on any kernel_public_keys row with seq_no > 1:
+// accepts EITHER a PayloadTypeKernelKeyRotation signed by prevKernelPK (seq_no - 1) / 2-of-2 active SO+AO principals,
+// OR a 2-of-2 Principal Governance ROTATE_KERNEL_KEY DSSE envelope signed by active SO+AO principals.
+func verifyKernelKeyRotationDSSE(
+	rotEnv *crypto.Envelope,
+	rec models.KernelPublicKeyRecord,
+	prevKernelPK *crypto.PrincipalKey,
+	dualResolver crypto.KeyResolver,
+	webauthnCfg crypto.WebAuthnConfig,
+) error {
+	if rotEnv == nil {
+		return fmt.Errorf("%s: missing rotation_dsse for kernel key %s", CodeUnattestedAuthorityLineageInsert, rec.KeyID)
+	}
+	rawPayload, pErr := rotEnv.DecodePayload()
+	if pErr != nil {
+		return fmt.Errorf("%s: decode rotation_dsse payload on %s: %w", CodeUnattestedAuthorityLineageInsert, rec.KeyID, pErr)
+	}
+	canonRot, cErr := crypto.CanonicalizeJSON(rawPayload)
+	if cErr != nil || string(canonRot) != string(rawPayload) {
+		return fmt.Errorf("%s: non-canonical rotation_dsse JCS on kernel key %s", CodeUnattestedAuthorityLineageInsert, rec.KeyID)
+	}
+
+	switch rotEnv.PayloadType {
+	case crypto.PayloadTypeKernelKeyRotation:
+		var rotBody models.KernelKeyRotationPayload
+		if err := json.Unmarshal(rawPayload, &rotBody); err != nil {
+			return fmt.Errorf("%s: parse rotation_dsse payload on %s: %w", CodeUnattestedAuthorityLineageInsert, rec.KeyID, err)
+		}
+		if rotBody.NewKeyID != rec.KeyID || rotBody.NewPublicKeyB64 != rec.PublicKeyB64 || !strings.EqualFold(rotBody.NewKeyFingerprint, rec.KeyFingerprint) {
+			return fmt.Errorf("%s: rotation_dsse key binding mismatch on kernel key %s", CodeUnattestedAuthorityLineageInsert, rec.KeyID)
+		}
+		signedByPrevKernel := len(rotEnv.Signatures) >= 1 && prevKernelPK != nil &&
+			rotEnv.Signatures[0].KeyID == prevKernelPK.KeyID &&
+			crypto.VerifySingleSignature(rotEnv.PayloadType, rawPayload, rotEnv.Signatures[0], prevKernelPK, webauthnCfg) == nil
+		if !signedByPrevKernel {
+			if _, dualErr := crypto.VerifyDualHumanCeremony(rotEnv, crypto.PayloadTypeKernelKeyRotation, dualResolver, webauthnCfg); dualErr != nil {
+				return fmt.Errorf(
+					"%s: rotation_dsse on kernel key %s failed both preceding-kernel and 2-of-2 AC-5 verification: %w",
+					CodeUnattestedAuthorityLineageInsert, rec.KeyID, dualErr,
+				)
+			}
+		}
+		return nil
+
+	case crypto.PayloadTypePrincipalGovernance:
+		dualRes, dualErr := crypto.VerifyDualHumanCeremony(rotEnv, crypto.PayloadTypePrincipalGovernance, dualResolver, webauthnCfg)
+		if dualErr != nil {
+			return fmt.Errorf("%s: ROTATE_KERNEL_KEY 2-of-2 verification failed on %s: %w", CodeUnattestedAuthorityLineageInsert, rec.KeyID, dualErr)
+		}
+		var gp models.PrincipalGovernancePayload
+		if err := json.Unmarshal(dualRes.CanonicalPayload, &gp); err != nil || gp.Action != models.GovActionRotateKernelKey {
+			return fmt.Errorf("%s: expected 2-of-2 ROTATE_KERNEL_KEY action on kernel key %s, got %q", CodeUnattestedAuthorityLineageInsert, rec.KeyID, gp.Action)
+		}
+		if (gp.KeyID != "" && gp.KeyID != rec.KeyID) || strings.TrimSpace(gp.PublicKeyB64) != rec.PublicKeyB64 {
+			return fmt.Errorf("%s: ROTATE_KERNEL_KEY payload key mismatch on %s", CodeUnattestedAuthorityLineageInsert, rec.KeyID)
+		}
+		if gp.TargetKeyFingerprint != "" && !strings.EqualFold(gp.TargetKeyFingerprint, rec.KeyFingerprint) {
+			return fmt.Errorf("%s: ROTATE_KERNEL_KEY fingerprint mismatch on %s", CodeUnattestedAuthorityLineageInsert, rec.KeyID)
+		}
+		return nil
+
+	default:
+		return fmt.Errorf("%s: unsupported rotation_dsse payloadType %q on kernel key %s", CodeUnattestedAuthorityLineageInsert, rotEnv.PayloadType, rec.KeyID)
+	}
 }

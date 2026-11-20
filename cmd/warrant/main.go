@@ -225,13 +225,32 @@ func main() {
 			pid := fs.String("principal", "", "Target Principal ID to revoke")
 			fp := fs.String("fingerprint", "", "Optional target SHA-256 key fingerprint")
 			reason := fs.String("reason", "CLI_KEY_REVOCATION", "Revocation reason code")
-			keyFile := fs.String("key", globalSignerPath, "Active enrolled principal .priv.json signing 1-of-2 REVOKE_PRINCIPAL DSSE")
+			keyFile := fs.String("key", globalSignerPath, "Self .priv.json signing 1-of-2 self-revocation REVOKE_PRINCIPAL DSSE")
+			slot1Key := fs.String("slot1-key", "", "Slot 1 (SERVICE_OWNER) .priv.json for 2-of-2 peer revocation")
+			slot2Key := fs.String("slot2-key", "", "Slot 2 (AUTHORIZING_OFFICIAL) .priv.json for 2-of-2 peer revocation")
 			_ = fs.Parse(args[2:])
 			if *pid == "" && *fp == "" {
 				fatalf("--principal or --fingerprint is required")
 			}
+			if *slot1Key != "" || *slot2Key != "" {
+				if *slot1Key == "" || *slot2Key == "" {
+					fatalf("both --slot1-key <so.priv.json> and --slot2-key <ao.priv.json> are required for 2-of-2 peer revocation")
+				}
+				s1, err1 := loadPrivateSignerFile(*slot1Key)
+				must(err1)
+				s2, err2 := loadPrivateSignerFile(*slot2Key)
+				must(err2)
+				env, _, dErr := warrantsdk.DraftPrincipalRevokeEnvelope(*pid, *fp, *reason, 5*time.Minute)
+				must(dErr)
+				must(s1.SignEnvelope(1, env))
+				must(s2.SignEnvelope(2, env))
+				rev, rErr := cli.RevokePrincipalSigned(ctx, *env)
+				must(rErr)
+				printJSON(rev)
+				return
+			}
 			if strings.TrimSpace(*keyFile) == "" {
-				fatalf("--key <active.priv.json> (1-of-2 DSSE active principal signature) is required to revoke a principal")
+				fatalf("--key <self.priv.json> (1-of-2 self-revocation) OR --slot1-key + --slot2-key (2-of-2 peer revocation) is required")
 			}
 			signer, sErr := loadPrivateSignerFile(*keyFile)
 			must(sErr)

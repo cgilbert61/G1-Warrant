@@ -340,6 +340,37 @@ export function buildDualPrincipalGovernanceEnvelope(
 }
 
 /**
+ * Builds and signs a 2-of-2 DSSEv1 Principal Governance envelope using enrolled W3C WebAuthn
+ * hardware authenticators (Slot 1 SERVICE_OWNER + Slot 2 AUTHORIZING_OFFICIAL).
+ */
+export async function buildDualPrincipalGovernanceEnvelopeWebAuthn(
+  action: string,
+  fields: Record<string, unknown>,
+  soPrincipal: Principal,
+  aoPrincipal: Principal,
+  rpId: string
+): Promise<DSSEEnvelope> {
+  const now = new Date();
+  const exp = new Date(now.getTime() + 15 * 60 * 1000);
+  const randSuffix = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+  const payloadObj: Record<string, unknown> = {
+    ...fields,
+    envelope_id: `gov-hw2-${randSuffix}`,
+    action,
+    issued_at: now.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+    expires_at: exp.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+  };
+  const { envelope, paeBytes } = createUnsignedDSSE(
+    'application/vnd.g1163rt.principal-governance.v1+json',
+    payloadObj
+  );
+  const sig1 = await signPAEWithWebAuthn(1, soPrincipal, paeBytes, rpId);
+  const sig2 = await signPAEWithWebAuthn(2, aoPrincipal, paeBytes, rpId);
+  envelope.signatures.push(sig1, sig2);
+  return envelope;
+}
+
+/**
  * In-Browser DSSE + RFC 8785 JCS Cryptographic Verifier (View 5 & External /auditor Vault).
  * Performs real client-side JCS canonicalization, PAE reconstruction, SHA-256 hashing,
  * and Ed25519 mathematical signature verification.

@@ -76,10 +76,12 @@ def main(argv: list[str] | None = None) -> int:
     p_pseal.add_argument("--admin-token", default=None)
     p_pseal.add_argument("--key", type=Path, default=None)
 
-    p_prev = sub.add_parser("principals-revoke", help="Revoke a self or same-role principal using a 1-of-2 DSSE active principal signature")
+    p_prev = sub.add_parser("principals-revoke", help="Revoke self via 1-of-2 DSSE (--key) or revoke a peer via 2-of-2 DSSE (--slot1-key + --slot2-key)")
     p_prev.add_argument("--principal", required=True)
     p_prev.add_argument("--reason", default="CLI_KEY_REVOCATION")
-    p_prev.add_argument("--key", type=Path, default=None, help="Active principal .priv.json signing REVOKE_PRINCIPAL")
+    p_prev.add_argument("--key", type=Path, default=None, help="Self .priv.json signing 1-of-2 self-revocation")
+    p_prev.add_argument("--slot1-key", type=Path, default=None, help="Slot 1 (SERVICE_OWNER) .priv.json for 2-of-2 peer revocation")
+    p_prev.add_argument("--slot2-key", type=Path, default=None, help="Slot 2 (AUTHORIZING_OFFICIAL) .priv.json for 2-of-2 peer revocation")
 
     p_prot = sub.add_parser("principals-rotate-revoke", help="Atomically enroll replacement principal and revoke target via 2-of-2 DSSE")
     p_prot.add_argument("--pub", type=Path, required=True, help="Replacement <name>.pub.json")
@@ -204,7 +206,15 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "principals-revoke":
-            _dump(cli.revoke_principal(principal_id=args.principal, reason_code=args.reason, signer_bundle=_load_priv_key(args.key)))
+            _dump(
+                cli.revoke_principal(
+                    principal_id=args.principal,
+                    reason_code=args.reason,
+                    signer_bundle=_load_priv_key(args.key),
+                    slot1_signer=_load_priv_key(args.slot1_key),
+                    slot2_signer=_load_priv_key(args.slot2_key),
+                )
+            )
             return 0
 
         if args.command == "principals-rotate-revoke":

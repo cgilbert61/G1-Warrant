@@ -3,6 +3,7 @@ import { Activity, FileSignature, GitCompare, ShieldAlert, Vault } from 'lucide-
 import type { BootstrapSnapshot, DSSEEnvelope } from './types';
 import {
   buildDualPrincipalGovernanceEnvelope,
+  buildDualPrincipalGovernanceEnvelopeWebAuthn,
   buildSinglePrincipalGovernanceEnvelope,
   buildSinglePrincipalGovernanceEnvelopeWebAuthn,
   bytesToBase64,
@@ -146,7 +147,7 @@ export const App: React.FC = () => {
     };
     const headers: Record<string, string> = {};
 
-    if (activePersonas.length > 0) {
+    if (smartcardBarEnabled && activePersonas.length > 0) {
       const env = buildSinglePrincipalGovernanceEnvelope(action, scopedFields, activePersonas[0]);
       headers['X-Warrant-Governance-DSSE'] = bytesToBase64(utf8ToBytes(JSON.stringify(env)));
     } else if (allowAutomationToken && automationToken) {
@@ -320,29 +321,52 @@ export const App: React.FC = () => {
                 target_key_fingerprint: keyFp,
                 reason_code: 'OPERATOR_KEY_REVOCATION_DRILL',
               };
-              const sameRolePersona =
-                activePersonas.find((p) => p.role === targetRole && p.principal_id !== principalId) ||
-                activePersonas.find((p) => p.principal_id === principalId);
-              if (sameRolePersona) {
-                const env = buildSinglePrincipalGovernanceEnvelope('REVOKE_PRINCIPAL', revFields, sameRolePersona);
-                await postJSON('/api/v1/principals/revoke', env);
-                return;
+              // v1.0.3: 1-of-2 REVOKE_PRINCIPAL is strictly self-revocation (signer.principal_id === target.principal_id);
+              // revoking any peer principal requires a 2-of-2 DSSE ceremony (SERVICE_OWNER + AUTHORIZING_OFFICIAL).
+              const survivingSameRole = snapshot.principals.filter(
+                (p) => !p.revoked && p.role === targetRole && p.principal_id !== principalId
+              );
+              if (smartcardBarEnabled) {
+                const selfPersona = activePersonas.find((p) => p.principal_id === principalId);
+                if (selfPersona && survivingSameRole.length >= 1) {
+                  const env = buildSinglePrincipalGovernanceEnvelope('REVOKE_PRINCIPAL', revFields, selfPersona);
+                  await postJSON('/api/v1/principals/revoke', env);
+                  return;
+                }
+                const soPersona = activePersonas.find((p) => p.role === 'SERVICE_OWNER');
+                const aoPersona = activePersonas.find((p) => p.role === 'AUTHORIZING_OFFICIAL');
+                if (soPersona && aoPersona) {
+                  const env = buildDualPrincipalGovernanceEnvelope('REVOKE_PRINCIPAL', revFields, soPersona, aoPersona);
+                  await postJSON('/api/v1/principals/revoke', env);
+                  return;
+                }
               }
-              const sameRoleHw =
-                activeWebAuthnPrincipals.find((p) => p.role === targetRole && p.principal_id !== principalId) ||
-                activeWebAuthnPrincipals.find((p) => p.principal_id === principalId);
-              if (sameRoleHw) {
+              const selfHw = activeWebAuthnPrincipals.find((p) => p.principal_id === principalId);
+              if (selfHw && survivingSameRole.length >= 1) {
                 const env = await buildSinglePrincipalGovernanceEnvelopeWebAuthn(
                   'REVOKE_PRINCIPAL',
                   revFields,
-                  sameRoleHw,
+                  selfHw,
+                  rpId
+                );
+                await postJSON('/api/v1/principals/revoke', env);
+                return;
+              }
+              const soHw = activeWebAuthnPrincipals.find((p) => p.role === 'SERVICE_OWNER');
+              const aoHw = activeWebAuthnPrincipals.find((p) => p.role === 'AUTHORIZING_OFFICIAL');
+              if (soHw && aoHw) {
+                const env = await buildDualPrincipalGovernanceEnvelopeWebAuthn(
+                  'REVOKE_PRINCIPAL',
+                  revFields,
+                  soHw,
+                  aoHw,
                   rpId
                 );
                 await postJSON('/api/v1/principals/revoke', env);
                 return;
               }
               throw new Error(
-                `1-of-2 revocation requires an active ${targetRole || 'same-role'} key while preserving >=1 SO and >=1 AO (or use atomic 2-of-2 warrant principals rotate-and-revoke)`
+                `1-of-2 revocation is restricted strictly to self-revocation with >=1 ${targetRole || 'same-role'} backup; peer revocation requires 2-of-2 SO+AO co-signatures (or atomic rotate-and-revoke)`
               );
             }}
             onResolveException={async (exceptionId, decision, env) => {

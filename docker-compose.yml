@@ -62,7 +62,7 @@ services:
       WARRANT_OPERATOR_TOKEN: "${WARRANT_OPERATOR_TOKEN:-}"
       WARRANT_AUTOMATION_TOKEN: "${WARRANT_AUTOMATION_TOKEN:-}"
       WARRANT_INTAKE_TOKEN: "${WARRANT_INTAKE_TOKEN:-}"
-      WARRANT_KERNEL_KEY_FILE: "/var/lib/warrant-anchor/kernel_signer.json"
+      WARRANT_KERNEL_KEY_PATH: "/var/lib/warrant-anchor/kernel_signer.json"
       WARRANT_EXTERNAL_ANCHOR_PATH: "/var/lib/warrant-anchor/checkpoints.jsonl"
       WARRANT_FEED_MODE: "${WARRANT_FEED_MODE:-offline}"
       WARRANT_CISA_KEV_URL: "${WARRANT_CISA_KEV_URL:-https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json}"

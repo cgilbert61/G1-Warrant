@@ -161,7 +161,6 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			writeAPIError(w, http.StatusPreconditionFailed, err)
 			return
 		}
-		_, _ = o.N5Ledger.CreateCheckpoint(ctx)
 		o.Broker.Broadcast("BOOTSTRAP_SEALED", st)
 		writeAPIJSON(w, http.StatusOK, st)
 	})
@@ -426,6 +425,13 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 				writeAPIError(w, http.StatusUnauthorized, fmt.Errorf("DSSE_REQUEST_SCOPE_OR_NONCE_VIOLATION: revocation envelope request scope mismatch"))
 				return
 			}
+			if strings.TrimSpace(r.Header.Get("X-Warrant-Governance-DSSE")) != "" {
+				rawHash := crypto.SHA256Hex(rawBody)
+				if gp.RequestBodySHA256 == "" || !strings.EqualFold(gp.RequestBodySHA256, rawHash) {
+					writeAPIError(w, http.StatusUnauthorized, fmt.Errorf("DSSE_REQUEST_SCOPE_OR_NONCE_VIOLATION: revocation request_body_sha256 mismatch"))
+					return
+				}
+			}
 			signerID = singleRes.Signer.PrincipalID
 			signerRole = singleRes.Signer.Role
 		}
@@ -445,6 +451,10 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		}
 		rev, err := o.N1Warrant.RevokeSignerWithGovernance(ctx, targetID, targetFP, reasonCode, signerID, signerRole, isDual, &env)
 		if err != nil {
+			if db.IsPeerRevocationError(err) {
+				writeAPIError(w, http.StatusForbidden, err)
+				return
+			}
 			if db.IsQuorumSurvivorFloorError(err) {
 				writeAPIError(w, http.StatusConflict, err)
 				return
@@ -512,6 +522,10 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		}
 		rec, err := o.N1Warrant.SubmitDualSignedWarrant(r.Context(), env)
 		if err != nil {
+			if strings.Contains(err.Error(), "BOOTSTRAP_SEAL_PRECONDITION_FAILED") {
+				writeAPIError(w, http.StatusPreconditionFailed, err)
+				return
+			}
 			writeAPIError(w, http.StatusUnprocessableEntity, err)
 			return
 		}
@@ -1314,9 +1328,14 @@ func extractAuditorBearer(r *http.Request) string {
 }
 
 func readBoundedBody(w http.ResponseWriter, r *http.Request, maxBytes int64) ([]byte, error) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
-	defer r.Body.Close()
-	return io.ReadAll(r.Body)
+	mbr := http.MaxBytesReader(w, r.Body, maxBytes)
+	defer mbr.Close()
+	raw, err := io.ReadAll(mbr)
+	if err != nil {
+		return nil, err
+	}
+	r.Body = io.NopCloser(bytes.NewReader(raw))
+	return raw, nil
 }
 
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) error {

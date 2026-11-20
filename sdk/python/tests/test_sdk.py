@@ -14,6 +14,7 @@ from g1_warrant import (
     ROLE_SERVICE_OWNER,
     WarrantAPIError,
     WarrantClient,
+    __version__,
     canonicalize_jcs,
     draft_principal_enroll_envelope,
     draft_principal_revoke_envelope,
@@ -39,6 +40,7 @@ class TestG1WarrantCryptoAndSDK(unittest.TestCase):
         )
 
     def test_split_keygen_hygiene_and_governance_envelopes(self) -> None:
+        self.assertEqual(__version__, "1.0.3")
         so = generate_ed25519_signer_bundle("usr-so", "so@agency.gov", "Alice SO", ROLE_SERVICE_OWNER)
         ao = generate_ed25519_signer_bundle("usr-ao", "ao@agency.gov", "Bob AO", ROLE_AUTHORIZING_OFFICIAL)
         so2 = generate_ed25519_signer_bundle("usr-so2", "so2@agency.gov", "Carol SO2", ROLE_SERVICE_OWNER)

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -1159,34 +1158,31 @@ func (s *Store) RegisterKernelPublicKey(ctx context.Context, pk crypto.Principal
 	}
 
 	if hasPriorKey {
-		kmsURL := strings.TrimSpace(os.Getenv("WARRANT_KMS_SIGN_URL"))
-		kmsPub := strings.TrimSpace(os.Getenv("WARRANT_KMS_PUBLIC_KEY_B64"))
-		matchesKMS := backendMode == "NON_EXPORTABLE_EXTERNAL_KMS_HSM" && kmsURL != "" && kmsPub != "" && kmsPub == pubB64
-		if !matchesKMS && rotEnv == nil {
-			return fmt.Errorf("%s: kernel key rotation beyond seq_no=1 requires rotation_dsse signed by preceding kernel key %s or 2-of-2 AC-5 principals", CodeUnattestedAuthorityLineageInsert, prevKeyID)
+		if rotEnv == nil {
+			return fmt.Errorf(
+				"%s: kernel key rotation beyond seq_no=1 requires rotation_dsse signed by preceding kernel key %s or 2-of-2 ROTATE_KERNEL_KEY principals",
+				CodeUnattestedAuthorityLineageInsert, prevKeyID,
+			)
 		}
-		if rotEnv != nil {
-			rawRot, dErr := rotEnv.DecodePayload()
-			if dErr != nil {
-				return fmt.Errorf("decode rotation_dsse: %w", dErr)
-			}
-			prevPubBytes, _ := crypto.DecodeBase64Any(prevPubB64)
-			prevPK := &crypto.PrincipalKey{
-				PrincipalID:    "sys-warrantd-kernel",
-				Role:           crypto.RoleAttestationKernel,
-				KeyID:          prevKeyID,
-				Alg:            prevAlg,
-				PublicKeyBytes: prevPubBytes,
-				KeyFingerprint: prevFP,
-			}
-			signedByPrev := len(rotEnv.Signatures) >= 1 && rotEnv.Signatures[0].KeyID == prevKeyID &&
-				crypto.VerifySingleSignature(rotEnv.PayloadType, rawRot, rotEnv.Signatures[0], prevPK, s.WebAuthnConfig()) == nil
-			if !signedByPrev {
-				resolver := StoreKeyResolver{Store: s, Ctx: ctx}
-				if _, dualErr := crypto.VerifyDualHumanCeremony(rotEnv, crypto.PayloadTypeKernelKeyRotation, resolver, s.WebAuthnConfig()); dualErr != nil {
-					return fmt.Errorf("%s: invalid rotation_dsse for kernel key %s: %w", CodeUnattestedAuthorityLineageInsert, pk.KeyID, dualErr)
-				}
-			}
+		prevPubBytes, _ := crypto.DecodeBase64Any(prevPubB64)
+		prevPK := &crypto.PrincipalKey{
+			PrincipalID:    "sys-warrantd-kernel",
+			Role:           crypto.RoleAttestationKernel,
+			KeyID:          prevKeyID,
+			Alg:            prevAlg,
+			PublicKeyBytes: prevPubBytes,
+			KeyFingerprint: prevFP,
+		}
+		rec := models.KernelPublicKeyRecord{
+			KeyID:          pk.KeyID,
+			Alg:            pk.Alg,
+			PublicKeyB64:   pubB64,
+			KeyFingerprint: pk.KeyFingerprint,
+			BackendMode:    backendMode,
+		}
+		resolver := StoreKeyResolver{Store: s, Ctx: ctx}
+		if vErr := verifyKernelKeyRotationDSSE(rotEnv, rec, prevPK, resolver, s.WebAuthnConfig()); vErr != nil {
+			return vErr
 		}
 	}
 

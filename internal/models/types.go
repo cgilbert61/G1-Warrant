@@ -231,6 +231,7 @@ const (
 	GovActionEnrollPrincipal          = "ENROLL_PRINCIPAL"
 	GovActionRevokePrincipal          = "REVOKE_PRINCIPAL"
 	GovActionRotateAndRevokePrincipal = "ROTATE_AND_REVOKE_PRINCIPAL"
+	GovActionRotateKernelKey          = "ROTATE_KERNEL_KEY"
 	GovActionSealBootstrap            = "SEAL_BOOTSTRAP"
 	GovActionEmergencyFreeze          = "EMERGENCY_FREEZE"
 	GovActionEmergencyRollback        = "EMERGENCY_ROLLBACK"

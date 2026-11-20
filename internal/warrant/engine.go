@@ -182,11 +182,14 @@ func (e *Engine) SubmitDualSignedWarrant(ctx context.Context, env crypto.Envelop
 		LiveStatus:             "ACTIVE",
 		CreatedAt:              time.Now().UTC(),
 	}
+	// Automatically seal genesis bootstrap (enforcing >=2 SO + >=2 AO in kubernetes/live modes, >=1 SO + >=1 AO in simulator,
+	// signing the Genesis Seal Manifest, and anchoring Checkpoint #0) upon the first valid 2-of-2 Standing Warrant submission.
+	if _, err := e.store.SealBootstrap(ctx, dualRes.Slot1.PrincipalID+"+"+dualRes.Slot2.PrincipalID, "AUTO_SEALED_ON_FIRST_STANDING_WARRANT", e.kernelSigner); err != nil {
+		return nil, err
+	}
 	if err := e.store.AppendWarrantEnvelope(ctx, rec); err != nil {
 		return nil, err
 	}
-	// Automatically seal genesis bootstrap (with kernel-signed Genesis Seal Manifest) upon the first valid 2-of-2 Standing Warrant submission
-	_, _ = e.store.SealBootstrap(ctx, dualRes.Slot1.PrincipalID+"+"+dualRes.Slot2.PrincipalID, "AUTO_SEALED_ON_FIRST_STANDING_WARRANT", e.kernelSigner)
 	e.emit("WARRANT_MINTED", rec)
 	return rec, nil
 }

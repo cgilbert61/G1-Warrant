@@ -351,6 +351,15 @@ func bytesTrimSpace(b []byte) []byte {
 	return []byte(strings.TrimSpace(string(b)))
 }
 
+func firstNonEmptyEnv(keys ...string) string {
+	for _, k := range keys {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // IsSimulationAllowed returns false whenever WARRANT_CLUSTER_DRIVER=kubernetes or feed mode is live.
 func (o *ControlPlaneOrchestrator) IsSimulationAllowed(ctx context.Context) (bool, string) {
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("WARRANT_CLUSTER_DRIVER")), "kubernetes") {
@@ -434,10 +443,10 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 		signer = kmsSigner
 	} else if strings.TrimSpace(kernelSeed) != "" {
 		signer = crypto.NewSeededDevEd25519Signer(kernelSeed)
-	} else if keyFile := strings.TrimSpace(os.Getenv("WARRANT_KERNEL_KEY_FILE")); keyFile != "" {
-		fileSigner, fErr := crypto.LoadOrCreateFileEd25519Signer(keyFile)
+	} else if keyPath := firstNonEmptyEnv("WARRANT_KERNEL_KEY_PATH", "WARRANT_KERNEL_KEY_FILE"); keyPath != "" {
+		fileSigner, fErr := crypto.LoadOrCreateFileEd25519Signer(keyPath)
 		if fErr != nil {
-			return nil, fmt.Errorf("load/create WARRANT_KERNEL_KEY_FILE: %w", fErr)
+			return nil, fmt.Errorf("load/create WARRANT_KERNEL_KEY_PATH: %w", fErr)
 		}
 		signer = fileSigner
 	} else {
@@ -520,6 +529,7 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 	n2 := gate.NewEngine(store, pol, n1, n4, deploy, broker.Broadcast)
 	n3 := verify.NewEngine(store, pol, n1, n4, shield, deploy, twin, broker.Broadcast, rulepacks)
 	n5 := ledger.NewEngine(store, pol, n1, signer, broker.Broadcast)
+	store.SetBootstrapSealAnchorFunc(n5.CreateCheckpoint)
 
 	// Anchor initial 6-chain Merkle checkpoint covering kernel_public_keys & any migrated authority rows
 	_, _ = n5.CreateCheckpoint(ctx)

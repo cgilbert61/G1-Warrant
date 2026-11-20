@@ -166,6 +166,37 @@ func (e *Envelope) SignECDSAP256(slot int, pk PrincipalKey, priv *ecdsa.PrivateK
 	return nil
 }
 
+// SignWebAuthnP256 appends a W3C WebAuthn ES256 (ECDSA P-256) hardware assertion signature
+// (including authenticatorData + clientDataJSON bound to PAEWebAuthnChallenge(PAE)) to the envelope.
+func (e *Envelope) SignWebAuthnP256(slot int, pk PrincipalKey, priv *ecdsa.PrivateKey, credentialID, rpID, origin string) error {
+	rawPayload, err := e.DecodePayload()
+	if err != nil {
+		return err
+	}
+	pae := PAE(e.PayloadType, rawPayload)
+	sigDER, meta, err := CreateWebAuthnP256Assertion(priv, credentialID, rpID, origin, pae)
+	if err != nil {
+		return err
+	}
+	alg := pk.Alg
+	if !strings.HasPrefix(alg, "WebAuthn") {
+		alg = AlgWebAuthnES256
+	}
+	e.Signatures = append(e.Signatures, Signature{
+		Slot:             slot,
+		KeyID:            pk.KeyID,
+		Alg:              alg,
+		Role:             pk.Role,
+		PrincipalID:      pk.PrincipalID,
+		PrincipalEmail:   pk.Email,
+		KeyFingerprint:   pk.KeyFingerprint,
+		Sig:              base64.StdEncoding.EncodeToString(sigDER),
+		SignedAt:         time.Now().UTC().Format(time.RFC3339),
+		WebAuthnMetadata: meta,
+	})
+	return nil
+}
+
 // VerifySingleSignature verifies one DSSE signature against an authoritative PrincipalKey.
 func VerifySingleSignature(payloadType string, rawPayload []byte, sig Signature, pk *PrincipalKey, webauthnCfg WebAuthnConfig) error {
 	if pk == nil {
@@ -186,7 +217,11 @@ func VerifySingleSignature(payloadType string, rawPayload []byte, sig Signature,
 	}
 	pae := PAE(payloadType, rawPayload)
 
-	if sig.WebAuthnMetadata != nil || strings.HasPrefix(sig.Alg, "WebAuthn") {
+	// Prevent algorithm-downgrade attacks: keys enrolled as WebAuthn hardware authenticators MUST carry W3C WebAuthn assertion metadata
+	if strings.HasPrefix(pk.Alg, "WebAuthn") || sig.WebAuthnMetadata != nil || strings.HasPrefix(sig.Alg, "WebAuthn") {
+		if sig.WebAuthnMetadata == nil {
+			return fmt.Errorf("WEBAUTHN_METADATA_REQUIRED: principal key %s (%s) requires authenticatorData + clientDataJSON", pk.KeyID, pk.Alg)
+		}
 		return VerifyWebAuthnAssertion(pae, sigBytes, sig.WebAuthnMetadata, pk.PublicKeyBytes, webauthnCfg)
 	}
 
@@ -269,7 +304,11 @@ func VerifyDualHumanCeremony(env *Envelope, expectedPayloadType string, resolver
 	var slot1Sig, slot2Sig *Signature
 	for idx, sig := range env.Signatures {
 		sigCopy := sig
-		pk, err := resolver.ResolveKey(sig.KeyID)
+		lookupID := strings.TrimSpace(sig.KeyID)
+		if lookupID == "" && sig.WebAuthnMetadata != nil {
+			lookupID = strings.TrimSpace(sig.WebAuthnMetadata.CredentialID)
+		}
+		pk, err := resolver.ResolveKey(lookupID)
 		if err != nil {
 			return nil, fmt.Errorf("AC5_UNKNOWN_SIGNER (sig %d): %w", idx, err)
 		}
@@ -333,7 +372,7 @@ type SinglePrincipalVerificationResult struct {
 }
 
 // VerifySingleActivePrincipalCeremony verifies a 1-of-2 DSSE envelope signed by ANY single active
-// (unrevoked) SERVICE_OWNER or AUTHORIZING_OFFICIAL principal.
+// (unrevoked) SERVICE_OWNER or AUTHORIZING_OFFICIAL principal across BOTH Ed25519 and W3C WebAuthn P-256/EdDSA hardware assertions.
 func VerifySingleActivePrincipalCeremony(env *Envelope, expectedPayloadType string, resolver KeyResolver, webauthnCfg WebAuthnConfig) (*SinglePrincipalVerificationResult, error) {
 	if env == nil {
 		return nil, errors.New("DSSE_MISSING_ENVELOPE: nil DSSE envelope")
@@ -357,9 +396,16 @@ func VerifySingleActivePrincipalCeremony(env *Envelope, expectedPayloadType stri
 	}
 
 	sig := env.Signatures[0]
-	pk, err := resolver.ResolveKey(sig.KeyID)
+	lookupID := strings.TrimSpace(sig.KeyID)
+	if lookupID == "" && sig.WebAuthnMetadata != nil {
+		lookupID = strings.TrimSpace(sig.WebAuthnMetadata.CredentialID)
+	}
+	pk, err := resolver.ResolveKey(lookupID)
 	if err != nil {
 		return nil, fmt.Errorf("AC5_UNKNOWN_SIGNER: %w", err)
+	}
+	if pk.Role == RoleSystemAdmin || sig.Role == RoleSystemAdmin {
+		return nil, fmt.Errorf("AC5_SYSADMIN_PROHIBITED: principal %s (%s) holds SYSTEM_ADMIN role and cannot authorize governance/emergency actions", pk.PrincipalID, pk.Email)
 	}
 	if pk.Role != RoleServiceOwner && pk.Role != RoleAuthorizingOfficial {
 		return nil, fmt.Errorf("AC5_UNAUTHORIZED_ROLE: role %s (%s) cannot authorize governance/emergency action", pk.Role, pk.PrincipalID)

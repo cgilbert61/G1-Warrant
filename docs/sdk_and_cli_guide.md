@@ -12,7 +12,7 @@ G1-Warrant ships with two first-class client SDKs and two command-line interface
 ### Installation
 
 ```bash
-go get github.com/cgilbert61/G1-Warrant/pkg/warrantsdk@v1.0.2
+go get github.com/cgilbert61/G1-Warrant/pkg/warrantsdk@v1.0.3
 ```
 
 ### Programmatic Go Example
@@ -111,14 +111,14 @@ Production SDKs and CLIs ship **zero built-in demo signers**. Operators generate
 # Step 6: Submit the 2-of-2 DSSE envelope to N1 (auto-seals genesis bootstrap if not yet sealed)
 ./warrant warrants submit warrant-draft.dsse.json
 
-# Post-Seal Principal Governance (v1.0.2 Quorum Survivor Floor & Atomic Rotation):
+# Post-Seal Principal Governance (v1.0.3 Self-Revocation & Backup-Assassination Defense):
 #   - Enrolling additional keys requires 2-of-2 DSSE co-signatures (--slot1-key + --slot2-key)
-#   - 1-of-2 DSSE revocation (--key) is restricted to self or same-role peers and requires >=1 active SO & >=1 active AO remaining
-#   - Replacing the last surviving SO or AO (or cross-role rotation) uses atomic 2-of-2 rotate-and-revoke
+#   - 1-of-2 DSSE revocation (--key) is restricted STRICTLY to self-revocation while >=1 active SO & >=1 active AO remain
+#   - Revoking any peer principal requires 2-of-2 DSSE (--slot1-key + --slot2-key on revoke or rotate-and-revoke)
 ./warrant keygen --id usr-so-02 --email so-backup@agency.gov --role SERVICE_OWNER --out so-backup
 ./warrant principals register --pub so-backup.pub.json --slot1-key so-key.priv.json --slot2-key ao-key.priv.json
-./warrant principals revoke --principal usr-so-01 --key so-backup.priv.json --reason COMPROMISED_KEY
-./warrant principals rotate-and-revoke --pub ao-replacement.pub.json --revoke usr-ao-01 --slot1-key so-backup.priv.json --slot2-key ao-key.priv.json
+./warrant principals revoke --principal usr-so-01 --key so-key.priv.json --reason COMPROMISED_KEY_SELF_REVOKE
+./warrant principals rotate-and-revoke --pub ao-replacement.pub.json --principal usr-ao-01 --slot1-key so-backup.priv.json --slot2-key ao-key.priv.json
 ```
 
 ### Full `warrant` Command Reference
@@ -127,7 +127,7 @@ Production SDKs and CLIs ship **zero built-in demo signers**. Operators generate
 | :--- | :--- |
 | `warrant status [--json]` | Live control-plane posture, active warrants, 30d median TTVR, armed bridges, and estate eligibility. |
 | `warrant keygen --id <id> --email <e> --role <SO\|AO> --out <prefix>` | Generate split Ed25519 AC-5 key files (`<prefix>.priv.json` `0600` + `<prefix>.pub.json` `0644`). |
-| `warrant principals [list \| register --pub <p.pub.json> \| seal \| revoke --key <k.priv.json> \| rotate-and-revoke]` | List principals, enroll `.pub.json` (genesis token or post-seal `2-of-2` DSSE), seal bootstrap, execute same-role `1-of-2` revocation, or atomic `2-of-2` rotation+revocation. |
+| `warrant principals [list \| register --pub <p.pub.json> \| seal \| revoke \| rotate-and-revoke]` | List principals, enroll `.pub.json` (genesis token or post-seal `2-of-2` DSSE), seal bootstrap (`Checkpoint #0`), `1-of-2` self-revoke (`--key`), `2-of-2` peer revoke (`--slot1-key` + `--slot2-key`), or atomic `2-of-2` rotation+revocation. |
 | `warrant warrants [list \| verify \| draft \| sign --key <k.priv.json> \| submit]` | Inspect, verify, or execute `2-of-2` Standing Warrant ceremonies. |
 | `warrant exceptions [list \| approve <id> --slot1-key <so> --slot2-key <ao> \| reject <id> ...]` | Inspect or dual-key resolve stateful/above-ceiling remediation exceptions (single-use `envelope_id` + `exception_id` bound). |
 | `warrant pipeline [list \| trace <id> \| rollback <id> --key <k.priv.json>]` | View Race Pipeline items, millisecond traces, or execute request-scoped `1-of-2` atomic 3-step `QUARANTINED_ROLLBACK`. |

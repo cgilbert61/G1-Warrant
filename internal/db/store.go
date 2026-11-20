@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -31,8 +32,15 @@ const (
 
 // Store manages PostgreSQL persistence, append-only hash chains, and LISTEN/NOTIFY streams.
 type Store struct {
-	pool        *pgxpool.Pool
-	webauthnCfg crypto.WebAuthnConfig
+	pool         *pgxpool.Pool
+	webauthnCfg  crypto.WebAuthnConfig
+	sealAnchorFn func(ctx context.Context) (*models.LedgerCheckpoint, error)
+}
+
+// SetBootstrapSealAnchorFunc wires the N5 TransparencyAnchor checkpoint callback so SealBootstrap
+// externally anchors Checkpoint #0 the instant genesis bootstrap sealing completes.
+func (s *Store) SetBootstrapSealAnchorFunc(fn func(ctx context.Context) (*models.LedgerCheckpoint, error)) {
+	s.sealAnchorFn = fn
 }
 
 // SetWebAuthnConfig binds the control-plane WebAuthn relying-party configuration for lineage replay verification.
@@ -458,10 +466,22 @@ func (s *Store) SealBootstrap(ctx context.Context, actor, reason string, kernelS
 	`).Scan(&soCount, &aoCount); err != nil {
 		return models.BootstrapState{}, err
 	}
-	if soCount < 1 || aoCount < 1 {
+	minPerRole := 1
+	isLiveOrK8s := strings.EqualFold(strings.TrimSpace(os.Getenv("WARRANT_CLUSTER_DRIVER")), "kubernetes") ||
+		strings.EqualFold(strings.TrimSpace(os.Getenv("WARRANT_FEED_MODE")), "live")
+	if !isLiveOrK8s {
+		var dbFeedMode string
+		if fErr := s.pool.QueryRow(ctx, `SELECT mode FROM feed_runtime_config WHERE singleton_id = 1`).Scan(&dbFeedMode); fErr == nil && strings.EqualFold(dbFeedMode, models.FeedModeLive) {
+			isLiveOrK8s = true
+		}
+	}
+	if isLiveOrK8s {
+		minPerRole = 2
+	}
+	if soCount < minPerRole || aoCount < minPerRole {
 		return models.BootstrapState{}, fmt.Errorf(
-			"BOOTSTRAP_SEAL_PRECONDITION_FAILED: at least 1 active SERVICE_OWNER (have %d) and 1 active AUTHORIZING_OFFICIAL (have %d) must be enrolled before sealing",
-			soCount, aoCount,
+			"BOOTSTRAP_SEAL_PRECONDITION_FAILED: at least %d active SERVICE_OWNER (have %d) and %d active AUTHORIZING_OFFICIAL (have %d) must be enrolled before sealing",
+			minPerRole, soCount, minPerRole, aoCount,
 		)
 	}
 
@@ -512,6 +532,12 @@ func (s *Store) SealBootstrap(ctx context.Context, actor, reason string, kernelS
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return models.BootstrapState{}, err
+	}
+	// Trigger immediate External Merkle Checkpoint #0 the instant genesis bootstrap sealing completes
+	if s.sealAnchorFn != nil {
+		if _, aErr := s.sealAnchorFn(ctx); aErr != nil {
+			return models.BootstrapState{}, fmt.Errorf("anchor genesis seal checkpoint #0: %w", aErr)
+		}
 	}
 	return models.BootstrapState{
 		Sealed:                  true,
@@ -566,7 +592,8 @@ func (r StoreKeyResolver) ResolveKey(keyID string) (*crypto.PrincipalKey, error)
 			ORDER BY pr.revoked_at DESC
 			LIMIT 1
 		) rev ON TRUE
-		WHERE p.key_id = $1
+		WHERE p.key_id = $1 OR (p.credential_id <> '' AND p.credential_id = $1)
+		LIMIT 1
 	`, keyID).Scan(
 		&p.PrincipalID, &p.Email, &p.DisplayName, &p.Role, &p.KeyID, &p.Alg,
 		&p.PublicKeyB64, &p.KeyFingerprint, &p.RevokeReason, &p.Revoked,

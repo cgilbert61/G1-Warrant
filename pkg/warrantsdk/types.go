@@ -10,7 +10,7 @@ import (
 )
 
 // Version is the semantic version of the G1-Warrant Go SDK.
-const Version = "1.0.2"
+const Version = "1.0.3"
 
 // Re-exported protocol constants for callers outside internal/.
 const (
@@ -38,6 +38,7 @@ const (
 	GovActionEnrollPrincipal          = models.GovActionEnrollPrincipal
 	GovActionRevokePrincipal          = models.GovActionRevokePrincipal
 	GovActionRotateAndRevokePrincipal = models.GovActionRotateAndRevokePrincipal
+	GovActionRotateKernelKey          = models.GovActionRotateKernelKey
 	GovActionSealBootstrap            = models.GovActionSealBootstrap
 	GovActionEmergencyFreeze          = models.GovActionEmergencyFreeze
 	GovActionEmergencyRollback        = models.GovActionEmergencyRollback
