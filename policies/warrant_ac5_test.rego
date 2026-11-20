@@ -32,6 +32,40 @@ test_valid_dual_warrant_allowed if {
 	ac5.allow with input as valid_input
 }
 
+test_chained_medium_cwe209_allowed_above_min_cvss_floor if {
+	medium_cwe209 := object.union(valid_input, {
+		"min_cvss": 7.0,
+		"finding_cvss": 5.3,
+		"finding_is_kev": false,
+		"finding_cwe": "CWE-209",
+		"auto_remediate_cwes": ["CWE-209", "CWE-918", "CWE-434"],
+	})
+	ac5.allow with input as medium_cwe209
+	ac5.chained_cwe_elevated with input as medium_cwe209
+
+	non_chained_medium := object.union(medium_cwe209, {
+		"finding_cwe": "CWE-476",
+	})
+	not ac5.allow with input as non_chained_medium
+	"FINDING_BELOW_PRIORITY_FLOOR_UNLESS_CHAINED_CWE" in ac5.violations with input as non_chained_medium
+}
+
+test_secret_rotation_requires_secret_warrant_class_or_flag if {
+	denied := object.union(valid_input, {
+		"action_kind": "SECRET_ROTATION",
+		"warrant_class": "KEV-TIER1-STATELESS",
+		"allow_secret_rotation": false,
+	})
+	not ac5.allow with input as denied
+	"SECRET_ROTATION_NOT_AUTHORIZED_BY_WARRANT" in ac5.violations with input as denied
+
+	allowed := object.union(valid_input, {
+		"action_kind": "SECRET_ROTATION",
+		"warrant_class": "SECRET-ROTATION-STATELESS",
+	})
+	ac5.allow with input as allowed
+}
+
 test_reject_same_principal if {
 	bad := object.union(valid_input, {
 		"slot2": {

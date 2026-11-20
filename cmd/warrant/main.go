@@ -165,23 +165,28 @@ func main() {
 
 		case "draft":
 			fs := flag.NewFlagSet("warrants draft", flag.ExitOnError)
-			wClass := fs.String("class", "KEV-TIER1-STATELESS", "Warrant class")
+			wClass := fs.String("class", "KEV-TIER1-STATELESS", "Warrant class (e.g. KEV-TIER1-STATELESS, SECRET-ROTATION-STATELESS)")
 			services := fs.String("services", "payments-ledger-api,identity-sso-gateway", "Comma-separated service IDs")
 			maxCVSS := fs.Float64("max-cvss", 10.0, "Maximum CVSS ceiling")
 			maxRep := fs.Int("max-replicas", 8, "Maximum replica blast radius")
 			slaMin := fs.Int("sla-minutes", 60, "Containment bridge SLA in minutes")
 			maxP99 := fs.Float64("max-p99-ms", 120.0, "Canary max p99 latency in ms")
 			ttlDays := fs.Int("ttl-days", 30, "Hard expiration in days")
+			allowSecRot := fs.Bool("allow-secret-rotation", false, "Authorize stateless secret/token rotation under this warrant")
+			autoCWEs := fs.String("auto-cwes", "", "Optional comma-separated attack-path CWEs (e.g. CWE-209,CWE-918,CWE-434)")
 			outFile := fs.String("out", "warrant-draft.dsse.json", "Output DSSE draft file")
 			_ = fs.Parse(args[2:])
 
 			svcList := splitCSV(*services)
+			cweList := splitCSV(*autoCWEs)
 			env, payload, err := warrantsdk.DraftWarrantEnvelope(warrantsdk.WarrantDraftOptions{
 				WarrantClass:           *wClass,
 				ScopeServices:          svcList,
 				MaxCVSS:                *maxCVSS,
 				KEVEligible:            true,
 				MaxBlastRadiusReplicas: *maxRep,
+				AllowSecretRotation:    *allowSecRot,
+				AutoRemediateCWEs:      cweList,
 				SLABridgeMinutes:       *slaMin,
 				MaxP99LatencyMs:        *maxP99,
 				TTLDays:                *ttlDays,
@@ -441,7 +446,7 @@ func main() {
 
 	case "simulate":
 		if len(args) < 2 {
-			fatalf("usage: warrant simulate [inject-kev | bad-syscall | stateful-ddl | runtime-drift]")
+			fatalf("usage: warrant simulate [inject-kev | bad-syscall | stateful-ddl | runtime-drift | secret-exposure | in-pod-webshell | poisoned-config]")
 		}
 		res, err := cli.SimulateScenario(ctx, args[1])
 		must(err)
@@ -508,26 +513,33 @@ func main() {
 		}
 
 	case "intake":
-		if len(args) < 3 || args[1] != "sarif" {
-			fatalf("usage: warrant intake sarif <path-to-sarif.json> [--service <id>] [--profile <name>]")
+		if len(args) < 3 || (args[1] != "sarif" && args[1] != "secrets") {
+			fatalf("usage: warrant intake [sarif|secrets] <path-to-report.json> [--service <id>] [--profile <name>]")
 		}
-		sarifPath := args[2]
-		fs := flag.NewFlagSet("intake sarif", flag.ExitOnError)
+		subIntake := args[1]
+		reportPath := args[2]
+		fs := flag.NewFlagSet("intake", flag.ExitOnError)
 		svc := fs.String("service", "", "Optional target service override")
-		profile := fs.String("profile", "", "Optional patch profile (STATELESS_CLEAN, STATEFUL_DDL, BAD_SYSCALL_EXECVE)")
+		profile := fs.String("profile", "", "Optional patch profile (STATELESS_CLEAN, STATEFUL_DDL, BAD_SYSCALL_EXECVE, POISONED_BUILD_CONFIG)")
 		maxFindings := fs.Int("max-findings", 0, "Optional maximum findings to ingest")
 		if len(args) > 3 {
 			_ = fs.Parse(args[3:])
 		}
-		raw, err := os.ReadFile(sarifPath)
+		raw, err := os.ReadFile(reportPath)
 		must(err)
-		items, err := cli.IngestSARIF(ctx, raw, warrantsdk.SARIFIntakeOptions{
-			Profile:       *profile,
-			TargetService: *svc,
-			MaxFindings:   *maxFindings,
-		})
-		must(err)
-		printJSON(items)
+		if subIntake == "secrets" {
+			items, sErr := cli.IngestSecretScan(ctx, raw, *svc)
+			must(sErr)
+			printJSON(items)
+		} else {
+			items, sErr := cli.IngestSARIF(ctx, raw, warrantsdk.SARIFIntakeOptions{
+				Profile:       *profile,
+				TargetService: *svc,
+				MaxFindings:   *maxFindings,
+			})
+			must(sErr)
+			printJSON(items)
+		}
 
 	case "attestations":
 		list, err := cli.ListAttestations(ctx)
@@ -749,8 +761,8 @@ Commands:
   warrant bridges
   warrant lockouts
   warrant drift
-  warrant simulate [inject-kev | bad-syscall | stateful-ddl | runtime-drift]
-  warrant intake sarif <file.sarif> [--service <id>] [--profile <STATELESS_CLEAN|STATEFUL_DDL|BAD_SYSCALL_EXECVE>]
+  warrant simulate [inject-kev | bad-syscall | stateful-ddl | runtime-drift | secret-exposure | in-pod-webshell | poisoned-config]
+  warrant intake [sarif|secrets] <file.json> [--service <id>] [--profile <STATELESS_CLEAN|STATEFUL_DDL|BAD_SYSCALL_EXECVE|POISONED_BUILD_CONFIG>]
   warrant feeds [status | mode <offline|live> | sync-kev | sync-osv | ingest-osv <osv-id> <service-id>]
   warrant freeze [hold | rollback] [--actor <id>] [--reason <code>]
   warrant freeze thaw --slot1-key <so.json> --slot2-key <ao.json>

@@ -67,8 +67,23 @@ def main(argv: list[str] | None = None) -> int:
     p_sarif.add_argument("--service", default=None)
     p_sarif.add_argument("--profile", default=None)
 
+    p_secrets = sub.add_parser("intake-secrets", help="Submit Gitleaks/GitGuardian secret-exposure scan for SECRET-ROTATION-STATELESS")
+    p_secrets.add_argument("scan_file", type=Path)
+    p_secrets.add_argument("--service", default=None)
+
     p_sim = sub.add_parser("simulate", help="Trigger a deterministic control-plane scenario")
-    p_sim.add_argument("scenario", choices=["inject-kev", "bad-syscall", "stateful-ddl", "runtime-drift"])
+    p_sim.add_argument(
+        "scenario",
+        choices=[
+            "inject-kev",
+            "bad-syscall",
+            "stateful-ddl",
+            "runtime-drift",
+            "secret-exposure",
+            "in-pod-webshell",
+            "poisoned-config",
+        ],
+    )
 
     p_freeze = sub.add_parser("freeze", help="Activate or thaw Asymmetric Emergency Freeze")
     p_freeze.add_argument("action", choices=["hold", "rollback", "thaw"])
@@ -173,6 +188,10 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "intake-sarif":
             _dump(cli.ingest_sarif(args.sarif_file, target_service=args.service, profile=args.profile))
+            return 0
+
+        if args.command == "intake-secrets":
+            _dump(cli.ingest_secret_scan(args.scan_file, target_service=args.service))
             return 0
 
         if args.command == "simulate":

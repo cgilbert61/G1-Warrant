@@ -20,18 +20,19 @@ type SignedPatchArtifact struct {
 
 // BridgeApplyRequest carries deterministic parameters to compile and apply a containment bridge.
 type BridgeApplyRequest struct {
-	BridgeID          string
-	RemediationID     string
-	ServiceID         string
-	Namespace         string
-	CVEID             string
-	CWEID             string
-	ExploitVector     string
-	AffectedPort      int
-	BlockedPaths      []string
-	SLABridgeMinutes  int
-	BlockerReasonCode string
-	RearmCount        int
+	BridgeID              string
+	RemediationID         string
+	ServiceID             string
+	Namespace             string
+	CVEID                 string
+	CWEID                 string
+	ExploitVector         string
+	AffectedPort          int
+	BlockedPaths          []string
+	AllowedEgressServices []string
+	SLABridgeMinutes      int
+	BlockerReasonCode     string
+	RearmCount            int
 }
 
 // ScannerIntake ingests untrusted vulnerability scan reports via N4 + warrant-extractor.
@@ -59,7 +60,10 @@ type DeploymentTarget interface {
 	InspectLiveWorkload(ctx context.Context, serviceID string) (*fleetsim.WorkloadState, error)
 	EnforceAdmissionLockout(ctx context.Context, remediationID, serviceID, cveID, bannedDigest, patchedDigest string) (*models.AdmissionLockout, error)
 	SuspendAdmissionLockout(ctx context.Context, lockoutID, policyName, reason string) error
+	RotateWorkloadSecret(ctx context.Context, serviceID, secretResourceKind, secretResourceName string) (*fleetsim.SecretRotationResult, error)
+	CordonAndRecyclePod(ctx context.Context, serviceID, podName, cleanDigest string) (recycledPod string, err error)
 	InjectDriftSimulation(ctx context.Context, serviceID, bannedDigest string) (roguePod string, injectedUnixMs int64, err error)
+	InjectFilesystemDriftSimulation(ctx context.Context, serviceID, filePath, processName string) (podName string, injectedUnixMs int64, err error)
 	RegisterImageProfile(ctx context.Context, prof fleetsim.ImageBehaviorProfile) error
 }
 

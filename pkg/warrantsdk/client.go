@@ -259,8 +259,40 @@ func (c *Client) IngestSARIF(ctx context.Context, rawSARIF []byte, opts SARIFInt
 	return out, nil
 }
 
+// IngestSecretScan submits an untrusted Gitleaks (JSON/SARIF) or GitGuardian secret-exposure report
+// to /api/v1/intake/secrets for zero-prose credential fingerprinting and SECRET-ROTATION-STATELESS execution.
+func (c *Client) IngestSecretScan(ctx context.Context, rawScan []byte, targetService string) ([]RemediationItem, error) {
+	q := url.Values{}
+	if targetService != "" {
+		q.Set("target_service", targetService)
+	}
+	path := "/api/v1/intake/secrets"
+	if encoded := q.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	respBytes, err := c.doRaw(ctx, http.MethodPost, path, "application/json", rawScan)
+	if err != nil {
+		return nil, err
+	}
+	var out []RemediationItem
+	if err := json.Unmarshal(respBytes, &out); err != nil {
+		return nil, fmt.Errorf("warrantsdk: decode secret intake response: %w", err)
+	}
+	return out, nil
+}
+
+// SendTetragonEvent reports an eBPF/Tetragon container filesystem write or untracked process execution
+// to /api/v1/telemetry/tetragon, triggering immediate N3 quarantine bridge re-arming + pod cordon & recycle.
+func (c *Client) SendTetragonEvent(ctx context.Context, ev TetragonDriftEvent) (*DriftIncident, error) {
+	var out DriftIncident
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/telemetry/tetragon", ev, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // SimulateScenario triggers one of the deterministic control-plane drills:
-// "inject-kev", "bad-syscall", "stateful-ddl", or "runtime-drift".
+// "inject-kev", "bad-syscall", "stateful-ddl", "runtime-drift", "secret-exposure", "in-pod-webshell", or "poisoned-config".
 func (c *Client) SimulateScenario(ctx context.Context, scenario string) (map[string]any, error) {
 	var out map[string]any
 	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/simulate/"+url.PathEscape(scenario), map[string]any{}, &out); err != nil {

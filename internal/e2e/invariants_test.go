@@ -152,6 +152,9 @@ func setupIsolatedHarness(t *testing.T) *testHarness {
 			OtelHealthProbes:           true,
 			ReadonlyShadowReplica:      true,
 			RollbackAutomationVerified: true,
+			ReadOnlyRootFilesystem:     true,
+			NoExecTmpMounts:            true,
+			AllowedEgressServices:      []string{"postgres-primary.fin-core.svc.cluster.local", "otel-collector.monitoring.svc.cluster.local"},
 			BaselineSyscalls:           stdSyscalls,
 		},
 		{
@@ -167,6 +170,9 @@ func setupIsolatedHarness(t *testing.T) *testHarness {
 			OtelHealthProbes:           true,
 			ReadonlyShadowReplica:      true,
 			RollbackAutomationVerified: true,
+			ReadOnlyRootFilesystem:     true,
+			NoExecTmpMounts:            true,
+			AllowedEgressServices:      []string{"redis-session.sec-authn.svc.cluster.local", "otel-collector.monitoring.svc.cluster.local"},
 			BaselineSyscalls:           stdSyscalls,
 		},
 	}
@@ -702,6 +708,9 @@ func TestInvariant7_ZeroProseAssuranceTiersQuarantinedRollbackAndExternalAnchor(
 		OtelHealthProbes:           true,
 		ReadonlyShadowReplica:      false,
 		RollbackAutomationVerified: true,
+		ReadOnlyRootFilesystem:     true,
+		NoExecTmpMounts:            true,
+		AllowedEgressServices:      []string{"orders-db.ops-fulfill.svc.cluster.local"},
 		BaselineSyscalls:           []string{"accept4", "close", "epoll_ctl", "epoll_wait", "fcntl", "fstat", "futex", "getsockopt", "mmap", "munmap", "nanosleep", "openat", "read", "recvfrom", "rt_sigaction", "rt_sigprocmask", "sendto", "setsockopt", "socket", "write"},
 	}
 	gate.GradeServiceReadiness(&brownfieldSvc)
@@ -835,6 +844,262 @@ func TestInvariant7_ZeroProseAssuranceTiersQuarantinedRollbackAndExternalAnchor(
 	_ = verResp2.Body.Close()
 	if repAfter.AllValid || repAfter.ExternalAnchorVerified || !strings.Contains(repAfter.SuperuserTamperDetail, "DB_SUPERUSER_REWRITE_DETECTED") {
 		t.Fatalf("expected External Transparency Anchor to catch DB superuser rewrite, got %+v", repAfter)
+	}
+}
+
+// =========================================================================
+// INVARIANT 8 — Autonomous Intrusion Countermeasures (ARTEX / GTIG Defenses)
+//   1) SECRET-ROTATION-STATELESS Standing Warrant Class (N1 & N4):
+//      Zero-prose Gitleaks intake -> ExternalSecret/SA rotation < 5m pivot -> OSCAL POA&M
+//   2) Default Cloud Metadata (169.254.169.254) & Outbound Callback Quarantine (N3)
+//   3) Mandatory 5th Readiness Gate (readOnlyRootFilesystem + noexec /tmp) &
+//      eBPF/Tetragon In-Pod Webshell Drift Cordon + Fresh-Digest Pod Recycling
+//   4) Attack-Path Chained Medium CWE Weighting (CWE-209/CWE-918/CWE-434) &
+//      Cryptographic Build/Agent Config Exclusion (.github/, Dockerfile, AGENTS.md)
+// =========================================================================
+func TestInvariant8_ARTEXCountermeasures_SecretRotationMetadataQuarantineInPodDriftAndConfigLockout(t *testing.T) {
+	h := setupIsolatedHarness(t)
+
+	now := time.Now().UTC()
+
+	// -----------------------------------------------------------------
+	// 1. Addition 1 & 2: Mint 2-of-2 SECRET-ROTATION-STATELESS Warrant &
+	//    Execute Zero-Prose Credential Rotation + Metadata Quarantine
+	// -----------------------------------------------------------------
+	secWP := models.WarrantPayload{
+		WarrantID:              "wrt-inv8-secret-rot",
+		WarrantClass:           models.WarrantClassSecretRotation,
+		ScopeServices:          []string{"payments-ledger-api", "identity-sso-gateway"},
+		MaxCVSS:                10.0,
+		KEVEligible:            true,
+		MaxBlastRadiusReplicas: 10,
+		AllowSecretRotation:    true,
+		SLABridgeMinutes:       15,
+		MaxP99LatencyMs:        120.0,
+		IssuedAt:               now.Format(time.RFC3339),
+		ExpiresAt:              now.Add(24 * time.Hour).Format(time.RFC3339),
+	}
+	secEnv, _, err := crypto.NewUnsignedEnvelope(crypto.PayloadTypeWarrant, secWP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = secEnv.SignEd25519(1, h.alice.ToPrincipalKey(), h.alice.PrivateKey)
+	_ = secEnv.SignEd25519(2, h.bob.ToPrincipalKey(), h.bob.PrivateKey)
+	if _, err := h.orch.N1Warrant.SubmitDualSignedWarrant(h.ctx, *secEnv); err != nil {
+		t.Fatalf("SubmitDualSignedWarrant(SECRET-ROTATION-STATELESS) failed: %v", err)
+	}
+
+	gitleaksPayload := []byte(`[{
+		"RuleID": "vault-service-token",
+		"Secret": "SYNTHETIC_E2E_LEAKED_VAULT_CREDENTIAL_778899",
+		"Match": "VAULT_TOKEN=SYNTHETIC_E2E_LEAKED_VAULT_CREDENTIAL_778899",
+		"File": "config/prod.env",
+		"Message": "UNTRUSTED COMMIT PROSE MUST BE STRIPPED",
+		"service_id": "payments-ledger-api",
+		"secret_resource_kind": "EXTERNAL_SECRET",
+		"secret_resource_name": "extsec-payments-vault-creds"
+	}]`)
+	secResp, err := http.Post(h.httpSrv.URL+"/api/v1/intake/secrets", "application/json", bytes.NewReader(gitleaksPayload))
+	if err != nil || secResp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /api/v1/intake/secrets failed: resp=%v err=%v", secResp, err)
+	}
+	var secItems []models.RemediationItem
+	if err := json.NewDecoder(secResp.Body).Decode(&secItems); err != nil {
+		t.Fatalf("decode secret rotation items: %v", err)
+	}
+	_ = secResp.Body.Close()
+
+	if len(secItems) != 1 {
+		t.Fatalf("expected 1 secret rotation remediation item, got %d", len(secItems))
+	}
+	rotItem := secItems[0]
+	if rotItem.RemediationKind != models.RemediationKindSecretRotation ||
+		rotItem.Stage != models.StageAttestedClosed ||
+		rotItem.AssuranceTier != models.AssuranceTierSecretRotated ||
+		rotItem.PodSweepMatched == 0 || rotItem.PodSweepMatched != rotItem.PodSweepTotal {
+		t.Fatalf("expected SECRET_ROTATION closed at ASSURANCE_TIER_SECRET_ROTATED with 100%% pod secret convergence, got %+v", rotItem)
+	}
+	rotJSON, _ := json.Marshal(rotItem)
+	if strings.Contains(string(rotJSON), "SYNTHETIC_E2E_LEAKED_VAULT_CREDENTIAL") || strings.Contains(string(rotJSON), "UNTRUSTED COMMIT") {
+		t.Fatalf("plaintext secret or commit prose leaked into control-plane item: %s", string(rotJSON))
+	}
+
+	// Addition 2 Check: Verify the N3 bridge explicitly severed 169.254.169.254 metadata & world callbacks
+	rotBridge, err := h.store.GetBridge(h.ctx, rotItem.BridgeID)
+	if err != nil {
+		t.Fatalf("GetBridge(%s) failed: %v", rotItem.BridgeID, err)
+	}
+	if !rotBridge.MetadataPlaneBlocked ||
+		!strings.Contains(rotBridge.CiliumManifestYAML, "169.254.169.254/32") ||
+		!strings.Contains(rotBridge.CiliumManifestYAML, "toEntities") ||
+		!strings.Contains(rotBridge.K8sNetpolYAML, "169.254.169.254/32") ||
+		len(rotBridge.AllowedEgressPeers) == 0 {
+		t.Fatalf("expected N3 bridge to enforce 169.254.169.254/32 metadata severance + AllowedEgressPeers clamp, got %+v", rotBridge)
+	}
+
+	// Verify DSSE-signed OSCAL 1.1.2 POA&M attestation was minted for secret rotation
+	allAtts, err := h.store.ListAttestations(h.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundSecAtt := false
+	for _, a := range allAtts {
+		if a.AttestationID == rotItem.AttestationID && a.AssuranceTier == models.AssuranceTierSecretRotated {
+			foundSecAtt = true
+			break
+		}
+	}
+	if !foundSecAtt {
+		t.Fatalf("expected signed OSCAL attestation %s at ASSURANCE_TIER_SECRET_ROTATED", rotItem.AttestationID)
+	}
+
+	// -----------------------------------------------------------------
+	// 2. Addition 3a: Mandatory 5th Readiness Gate (Immutable RootFS + noexec /tmp)
+	// -----------------------------------------------------------------
+	mutableSvc := models.EstateService{
+		ServiceID:                  "mutable-legacy-portal",
+		DisplayName:                "Mutable RootFS Portal",
+		Namespace:                  "web-edge",
+		Tier:                       "TIER_2_PRODUCTION",
+		WarrantClass:               "KEV-TIER1-STATELESS",
+		CurrentDigest:              "sha256:f600000000000000000000000000000000000000000000000000000000000006",
+		CurrentPURL:                "pkg:oci/mutable-legacy-portal@sha256:f600000000000000000000000000000000000000000000000000000000000006",
+		Replicas:                   2,
+		TestCoveragePct:            95.0,
+		OtelHealthProbes:           true,
+		ReadonlyShadowReplica:      true,
+		RollbackAutomationVerified: true,
+		ReadOnlyRootFilesystem:     false, // <-- Violates 5th Gate (Webshell Dropper Risk)
+		NoExecTmpMounts:            false,
+		BaselineSyscalls:           []string{"accept4", "close", "read", "write"},
+	}
+	gate.GradeServiceReadiness(&mutableSvc)
+	if mutableSvc.Eligible || mutableSvc.AutonomyTier != models.AutonomyTier3ContainAndCAB {
+		t.Fatalf("expected mutable rootfs service to fail 5th gate and land in TIER_3_CONTAIN_AND_CAB, got eligible=%t tier=%s",
+			mutableSvc.Eligible, mutableSvc.AutonomyTier)
+	}
+	if err := h.store.UpsertEstateService(h.ctx, mutableSvc); err != nil {
+		t.Fatal(err)
+	}
+
+	// -----------------------------------------------------------------
+	// 3. Addition 3b: In-Pod Webshell Drift Quarantine (Valid Image Digest + Dropped JSP)
+	// -----------------------------------------------------------------
+	wlBefore, err := h.orch.Deploy.InspectLiveWorkload(h.ctx, "payments-ledger-api")
+	if err != nil || len(wlBefore.Pods) == 0 {
+		t.Fatalf("InspectLiveWorkload failed: %v", err)
+	}
+	targetPod := wlBefore.Pods[0].PodName
+	validDigest := wlBefore.Pods[0].RunningDigest
+
+	tetEv := models.TetragonDriftEvent{
+		ServiceID:          "payments-ledger-api",
+		PodName:            targetPod,
+		RunningDigest:      validDigest, // Pod still reports a valid image digest!
+		ViolationType:      "FILESYSTEM_WRITE",
+		TargetPathOrBinary: "/var/www/html/artex-probe-01.jsp",
+	}
+	tetBody, _ := json.Marshal(tetEv)
+	tetResp, err := http.Post(h.httpSrv.URL+"/api/v1/telemetry/tetragon", "application/json", bytes.NewReader(tetBody))
+	if err != nil || tetResp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /api/v1/telemetry/tetragon failed: resp=%v err=%v", tetResp, err)
+	}
+	var driftInc models.DriftIncident
+	_ = json.NewDecoder(tetResp.Body).Decode(&driftInc)
+	_ = tetResp.Body.Close()
+
+	if driftInc.DriftKind != models.DriftKindFilesystemWebshell ||
+		driftInc.ViolatingArtifact != "/var/www/html/artex-probe-01.jsp" ||
+		!driftInc.PodCordoned || !driftInc.PodRecycled || driftInc.RearmedBridgeID == "" {
+		t.Fatalf("expected Tetragon webshell drop to re-arm quarantine bridge + cordon & recycle pod, got %+v", driftInc)
+	}
+
+	// Verify compromised pod name was evicted & replaced by a fresh clean replica in fleet-sim
+	wlRecycled, err := h.orch.Deploy.InspectLiveWorkload(h.ctx, "payments-ledger-api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range wlRecycled.Pods {
+		if p.PodName == targetPod {
+			t.Fatalf("expected compromised pod %s to be cordoned and evicted from live workload, still present", targetPod)
+		}
+	}
+
+	// -----------------------------------------------------------------
+	// 4. Addition 4a: Attack-Path Chained Medium CWE Weighting (CVSS 5.3 CWE-209)
+	//    Mint Warrant with KEVEligible=true + AutoRemediateCWEs=["CWE-209","CWE-918","CWE-434"]
+	// -----------------------------------------------------------------
+	cweWP := models.WarrantPayload{
+		WarrantID:              "wrt-inv8-chained-cwe",
+		WarrantClass:           "KEV-TIER1-STATELESS",
+		ScopeServices:          []string{"identity-sso-gateway", "payments-ledger-api"},
+		MaxCVSS:                10.0,
+		KEVEligible:            true,
+		AutoRemediateCWEs:      []string{"CWE-209", "CWE-918", "CWE-434"},
+		MaxBlastRadiusReplicas: 10,
+		AllowStatefulPatches:   false,
+		SLABridgeMinutes:       60,
+		MaxP99LatencyMs:        120.0,
+		IssuedAt:               now.Format(time.RFC3339),
+		ExpiresAt:              now.Add(24 * time.Hour).Format(time.RFC3339),
+	}
+	cweEnv, _, _ := crypto.NewUnsignedEnvelope(crypto.PayloadTypeWarrant, cweWP)
+	_ = cweEnv.SignEd25519(1, h.alice.ToPrincipalKey(), h.alice.PrivateKey)
+	_ = cweEnv.SignEd25519(2, h.bob.ToPrincipalKey(), h.bob.PrivateKey)
+	if _, err := h.orch.N1Warrant.SubmitDualSignedWarrant(h.ctx, *cweEnv); err != nil {
+		t.Fatalf("SubmitDualSignedWarrant(chained CWE) failed: %v", err)
+	}
+
+	// Non-KEV CVSS 5.3 CWE-209 (verbose stack trace recon enabler) must elevate & auto-remediate!
+	sarifCWE209 := server.BuildDeterministicSARIF(
+		"CVE-2026-98209", "CWE-209", 5.3, false, "identity-sso-gateway",
+		"sha256:b200000000000000000000000000000000000000000000000000000000000002",
+		"sha256:b277777777777777777777777777777777777777777777777777777777777702",
+		"http_error_stacktrace_leak", "STACK_TRACE_LEAK", 8080,
+	)
+	cweItems, err := h.orch.ExecuteSARIFRemediation(h.ctx, sarifCWE209, "STATELESS_CLEAN")
+	if err != nil || len(cweItems) != 1 {
+		t.Fatalf("ExecuteSARIFRemediation(CWE-209 chained medium) failed: %v", err)
+	}
+	if !cweItems[0].ChainedExploitEnabler || cweItems[0].Stage != models.StageAttestedClosed {
+		t.Fatalf("expected CVSS 5.3 CWE-209 to be marked ChainedExploitEnabler=true and ATTESTED_CLOSED, got %+v", cweItems[0])
+	}
+
+	// -----------------------------------------------------------------
+	// 5. Addition 4b: Build/Agent Config Exclusion (.github/, Dockerfile RUN, AGENTS.md)
+	// -----------------------------------------------------------------
+	sarifPoisoned := server.BuildDeterministicSARIF(
+		"CVE-2026-98999", "CWE-918", 8.8, true, "identity-sso-gateway",
+		"sha256:b277777777777777777777777777777777777777777777777777777777777702",
+		"sha256:b266666666666666666666666666666666666666666666666666666666666602",
+		"ssrf_proxy_fetch", "SSRF_METADATA_FETCH", 8080,
+	)
+	poisonItems, err := h.orch.ExecuteSARIFRemediation(h.ctx, sarifPoisoned, "POISONED_BUILD_CONFIG")
+	if err != nil || len(poisonItems) != 1 {
+		t.Fatalf("ExecuteSARIFRemediation(POISONED_BUILD_CONFIG) failed: %v", err)
+	}
+	pItem := poisonItems[0]
+	if pItem.StatusHealth != models.HealthExceptionRouted || !strings.HasPrefix(pItem.BlockerCode, "N4_FORBIDDEN_CONFIG_POISONING_BLOCKED") {
+		t.Fatalf("expected POISONED_BUILD_CONFIG patch to be blocked with N4_FORBIDDEN_CONFIG_POISONING_BLOCKED, got health=%s blocker=%s",
+			pItem.StatusHealth, pItem.BlockerCode)
+	}
+
+	// Verify N4 agent_action_ledger recorded SECURITY_VIOLATION: FORBIDDEN_BUILD_OR_AGENT_CONFIG_MUTATION
+	actions, err := h.store.ListAgentActions(h.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundConfigViolation := false
+	for _, act := range actions {
+		if act.RemediationID == pItem.RemediationID &&
+			act.Status == "SECURITY_VIOLATION" &&
+			strings.Contains(act.ViolationCode, "FORBIDDEN_BUILD_OR_AGENT_CONFIG_MUTATION") {
+			foundConfigViolation = true
+			break
+		}
+	}
+	if !foundConfigViolation {
+		t.Fatalf("expected SECURITY_VIOLATION (FORBIDDEN_BUILD_OR_AGENT_CONFIG_MUTATION) in agent_action_ledger for %s", pItem.RemediationID)
 	}
 }
 

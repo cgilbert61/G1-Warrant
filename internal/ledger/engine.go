@@ -78,7 +78,11 @@ func (e *Engine) CreateCheckpoint(ctx context.Context) (*models.LedgerCheckpoint
 // and appends it to the immutable attestation_records ledger.
 func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.RemediationItem, svc *models.EstateService, bundle *verify.VerificationBundle) (*models.AttestationRecord, error) {
 	// Live N1 re-verification immediately prior to minting
-	w, err := e.warrants.ReverifyWarrantForExecution(ctx, item.WarrantID, svc.ServiceID, item.CVSSScore, svc.Replicas)
+	actionKind := item.RemediationKind
+	if actionKind == "" {
+		actionKind = models.RemediationKindImagePatch
+	}
+	w, err := e.warrants.ReverifyWarrantForExecution(ctx, item.WarrantID, svc.ServiceID, item.CVSSScore, svc.Replicas, actionKind, item.CWEID)
 	warrantOK := err == nil
 	if !warrantOK {
 		item.StatusHealth = models.HealthExceptionRouted
@@ -88,6 +92,8 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 	}
 
 	verDec, err := e.policy.EvalVerify(ctx, policy.VerifyInput{
+		RemediationKind:          actionKind,
+		SecretRotatedAndRevoked:  bundle.AssuranceTier == models.AssuranceTierSecretRotated,
 		HasSignedProbe:           bundle.AssuranceTier == models.AssuranceTier2DifferentialTwin,
 		UnpatchedTwinStatus:      bundle.UnpatchedTwinStatus,
 		TwinReplayStatus:         item.TwinReplayStatus,

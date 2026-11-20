@@ -28,6 +28,9 @@ const (
 	PayloadTypeThaw        = crypto.PayloadTypeThaw
 	PayloadTypeException   = crypto.PayloadTypeException
 	PayloadTypeAttestation = crypto.PayloadTypeAttestation
+
+	WarrantClassSecretRotation = models.WarrantClassSecretRotation
+	AssuranceTierSecretRotated = models.AssuranceTierSecretRotated
 )
 
 // Public type aliases re-exported cleanly for external Go SDK consumers.
@@ -49,6 +52,7 @@ type (
 	ContainmentBridge        = models.ContainmentBridge
 	AdmissionLockout         = models.AdmissionLockout
 	DriftIncident            = models.DriftIncident
+	TetragonDriftEvent       = models.TetragonDriftEvent
 	AgentLedgerEntry         = models.AgentLedgerEntry
 	AttestationRecord        = models.AttestationRecord
 	AuditorShareToken        = models.AuditorShareToken

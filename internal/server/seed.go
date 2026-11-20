@@ -151,6 +151,9 @@ func (o *ControlPlaneOrchestrator) SeedEnterpriseEstate(ctx context.Context) err
 			OtelHealthProbes:           true,
 			ReadonlyShadowReplica:      true,
 			RollbackAutomationVerified: true,
+			ReadOnlyRootFilesystem:     true,
+			NoExecTmpMounts:            true,
+			AllowedEgressServices:      []string{"postgres-ledger.fin-core.svc.cluster.local", "kube-dns.kube-system.svc.cluster.local"},
 			BaselineSyscalls:           stdSyscalls,
 		},
 		{
@@ -167,6 +170,9 @@ func (o *ControlPlaneOrchestrator) SeedEnterpriseEstate(ctx context.Context) err
 			OtelHealthProbes:           true,
 			ReadonlyShadowReplica:      true,
 			RollbackAutomationVerified: true,
+			ReadOnlyRootFilesystem:     true,
+			NoExecTmpMounts:            true,
+			AllowedEgressServices:      []string{"piv-ocsp.sec-authn.svc.cluster.local", "kube-dns.kube-system.svc.cluster.local"},
 			BaselineSyscalls:           stdSyscalls,
 		},
 		{
@@ -183,6 +189,9 @@ func (o *ControlPlaneOrchestrator) SeedEnterpriseEstate(ctx context.Context) err
 			OtelHealthProbes:           true,
 			ReadonlyShadowReplica:      true,
 			RollbackAutomationVerified: true,
+			ReadOnlyRootFilesystem:     true,
+			NoExecTmpMounts:            true,
+			AllowedEgressServices:      []string{"audit-worm-sink.gov-audit.svc.cluster.local", "kube-dns.kube-system.svc.cluster.local"},
 			BaselineSyscalls:           stdSyscalls,
 		},
 		{
@@ -199,6 +208,9 @@ func (o *ControlPlaneOrchestrator) SeedEnterpriseEstate(ctx context.Context) err
 			OtelHealthProbes:           true,
 			ReadonlyShadowReplica:      true,
 			RollbackAutomationVerified: true,
+			ReadOnlyRootFilesystem:     true,
+			NoExecTmpMounts:            true,
+			AllowedEgressServices:      []string{"payments-ledger-api.fin-core.svc.cluster.local", "kube-dns.kube-system.svc.cluster.local"},
 			BaselineSyscalls:           stdSyscalls,
 		},
 		{
@@ -215,6 +227,9 @@ func (o *ControlPlaneOrchestrator) SeedEnterpriseEstate(ctx context.Context) err
 			OtelHealthProbes:           true,
 			ReadonlyShadowReplica:      false,
 			RollbackAutomationVerified: true,
+			ReadOnlyRootFilesystem:     true,
+			NoExecTmpMounts:            true,
+			AllowedEgressServices:      []string{"queue-broker.ops-fulfill.svc.cluster.local", "kube-dns.kube-system.svc.cluster.local"},
 			BaselineSyscalls:           stdSyscalls,
 		},
 		{
@@ -231,6 +246,9 @@ func (o *ControlPlaneOrchestrator) SeedEnterpriseEstate(ctx context.Context) err
 			OtelHealthProbes:           false,
 			ReadonlyShadowReplica:      false,
 			RollbackAutomationVerified: false,
+			ReadOnlyRootFilesystem:     false,
+			NoExecTmpMounts:            false,
+			AllowedEgressServices:      []string{"kube-dns.kube-system.svc.cluster.local"},
 			BaselineSyscalls:           stdSyscalls,
 		},
 	}
@@ -250,6 +268,7 @@ func (o *ControlPlaneOrchestrator) SeedEnterpriseEstate(ctx context.Context) err
 		ScopeServices:          []string{"payments-ledger-api", "identity-sso-gateway", "fedramp-audit-ingestor"},
 		MaxCVSS:                10.0,
 		KEVEligible:            true,
+		AutoRemediateCWEs:      []string{"CWE-209", "CWE-918", "CWE-434"},
 		MaxBlastRadiusReplicas: 8,
 		AllowStatefulPatches:   false,
 		SLABridgeMinutes:       60,
@@ -273,6 +292,7 @@ func (o *ControlPlaneOrchestrator) SeedEnterpriseEstate(ctx context.Context) err
 		ScopeServices:          []string{"checkout-cart-svc", "fulfillment-worker", "legacy-billing-monolith"},
 		MaxCVSS:                10.0,
 		KEVEligible:            true,
+		AutoRemediateCWEs:      []string{"CWE-209", "CWE-918", "CWE-434"},
 		MaxBlastRadiusReplicas: 10,
 		AllowStatefulPatches:   false,
 		AllowGuardedCanary:     true,
@@ -291,6 +311,30 @@ func (o *ControlPlaneOrchestrator) SeedEnterpriseEstate(ctx context.Context) err
 	_ = env2.SignEd25519(2, marcus.ToPrincipalKey(), marcus.PrivateKey)
 	if _, err := o.N1Warrant.SubmitDualSignedWarrant(ctx, *env2); err != nil {
 		return fmt.Errorf("seed warrant 2: %w", err)
+	}
+
+	// 3c. Seed SECRET-ROTATION-STATELESS Standing Warrant for rapid credential/SA-token revocation (<5s response)
+	w3Payload := models.WarrantPayload{
+		WarrantID:              "wrt-secret-rot-003",
+		WarrantClass:           models.WarrantClassSecretRotation,
+		ScopeServices:          []string{"payments-ledger-api", "identity-sso-gateway", "checkout-cart-svc", "fulfillment-worker"},
+		MaxCVSS:                10.0,
+		KEVEligible:            true,
+		AllowSecretRotation:    true,
+		MaxBlastRadiusReplicas: 12,
+		SLABridgeMinutes:       15,
+		MaxP99LatencyMs:        120.0,
+		IssuedAt:               now.Add(-12 * time.Hour).Format(time.RFC3339),
+		ExpiresAt:              now.Add(60 * 24 * time.Hour).Format(time.RFC3339),
+	}
+	env3, _, err := crypto.NewUnsignedEnvelope(crypto.PayloadTypeWarrant, w3Payload)
+	if err != nil {
+		return err
+	}
+	_ = env3.SignEd25519(1, alice.ToPrincipalKey(), alice.PrivateKey)
+	_ = env3.SignEd25519(2, bob.ToPrincipalKey(), bob.PrivateKey)
+	if _, err := o.N1Warrant.SubmitDualSignedWarrant(ctx, *env3); err != nil {
+		return fmt.Errorf("seed secret-rotation warrant 3: %w", err)
 	}
 
 	// 4. Execute real end-to-end KEV closures + active containment bridge + Four-Eyes exception against live extractor & fleet-sim

@@ -202,27 +202,29 @@ func (o *ControlPlaneOrchestrator) ExecuteSARIFRemediationWithOptions(
 		remID := "rem-" + uuid.NewString()[:8]
 		now := time.Now().UTC()
 		item := models.RemediationItem{
-			RemediationID:    remID,
-			CVEID:            f.CVEID,
-			CWEID:            f.CWEID,
-			IsKEV:            f.IsKEV,
-			CVSSScore:        f.CVSSScore,
-			ServiceID:        svc.ServiceID,
-			VulnerableDigest: f.VulnerableDigest,
-			PatchedDigest:    f.PatchedDigest,
-			PackagePURL:      f.PackagePURL,
-			VulnerableSymbol: f.VulnerableSymbol,
-			ExploitVector:    f.ExploitVector,
-			Stage:            models.StageIntakeRepro,
-			StatusHealth:     models.HealthNormal,
-			PodSweepTotal:    svc.Replicas,
-			BridgeSLAMIN:     60,
-			CreatedAt:        now,
-			UpdatedAt:        now,
+			RemediationID:         remID,
+			RemediationKind:       models.RemediationKindImagePatch,
+			CVEID:                 f.CVEID,
+			CWEID:                 f.CWEID,
+			IsKEV:                 f.IsKEV,
+			ChainedExploitEnabler: f.ChainedExploitEnabler,
+			CVSSScore:             f.CVSSScore,
+			ServiceID:             svc.ServiceID,
+			VulnerableDigest:      f.VulnerableDigest,
+			PatchedDigest:         f.PatchedDigest,
+			PackagePURL:           f.PackagePURL,
+			VulnerableSymbol:      f.VulnerableSymbol,
+			ExploitVector:         f.ExploitVector,
+			Stage:                 models.StageIntakeRepro,
+			StatusHealth:          models.HealthNormal,
+			PodSweepTotal:         svc.Replicas,
+			BridgeSLAMIN:          60,
+			CreatedAt:             now,
+			UpdatedAt:             now,
 		}
 
-		// Match governing active N1 Standing Warrant
-		matchedWarrant, wErr := o.Store.FindMatchingWarrant(ctx, svc.ServiceID, f.CVSSScore)
+		// Match governing active N1 Standing Warrant (with Attack-Path CWE Weighting for CWE-209/918/434)
+		matchedWarrant, wErr := o.Store.FindMatchingWarrant(ctx, svc.ServiceID, f.CVSSScore, f.CWEID)
 		s1ID, s2ID := "UNBOUND", "UNBOUND"
 		if wErr == nil {
 			item.WarrantID = matchedWarrant.WarrantID
@@ -259,17 +261,18 @@ func (o *ControlPlaneOrchestrator) ExecuteSARIFRemediationWithOptions(
 			blockerReason = "NO_VALID_STANDING_WARRANT_FAIL_CLOSED"
 		}
 		bridge, err := o.Shield.CompileAndApplyBridge(ctx, adapters.BridgeApplyRequest{
-			BridgeID:          bridgeID,
-			RemediationID:     remID,
-			ServiceID:         svc.ServiceID,
-			Namespace:         svc.Namespace,
-			CVEID:             f.CVEID,
-			CWEID:             f.CWEID,
-			ExploitVector:     f.ExploitVector,
-			AffectedPort:      f.AffectedPort,
-			BlockedPaths:      f.BlockedPaths,
-			SLABridgeMinutes:  item.BridgeSLAMIN,
-			BlockerReasonCode: blockerReason,
+			BridgeID:              bridgeID,
+			RemediationID:         remID,
+			ServiceID:             svc.ServiceID,
+			Namespace:             svc.Namespace,
+			CVEID:                 f.CVEID,
+			CWEID:                 f.CWEID,
+			ExploitVector:         f.ExploitVector,
+			AffectedPort:          f.AffectedPort,
+			BlockedPaths:          f.BlockedPaths,
+			AllowedEgressServices: svc.AllowedEgressServices,
+			SLABridgeMinutes:      item.BridgeSLAMIN,
+			BlockerReasonCode:     blockerReason,
 		})
 		if err != nil {
 			return nil, err
@@ -362,11 +365,30 @@ func (o *ControlPlaneOrchestrator) ExecuteSARIFRemediationWithOptions(
 			},
 		})
 
-		// Extract untrusted unified diff through isolated warrant-extractor
+		// Extract untrusted unified diff through isolated warrant-extractor (enforcing N4 Build/Agent Config Exclusion)
 		patchMeta, err := o.N4AgentCP.ExtractDiffGoverned(
 			ctx, item.WarrantID, remID, svc.ServiceID, s1ID, s2ID, signedArt.PatchedDigest, signedArt.UnifiedDiff,
 		)
 		if err != nil {
+			if strings.Contains(err.Error(), "N4_FORBIDDEN_CONFIG_POISONING_BLOCKED") {
+				item.PatchMetadata = patchMeta
+				item.StatusHealth = models.HealthExceptionRouted
+				item.BlockerCode = err.Error()
+				_ = o.Store.UpsertRemediation(ctx, &item)
+				_ = o.Store.AppendTrace(ctx, models.TraceEvent{
+					TraceID:       "trc-" + uuid.NewString()[:8],
+					RemediationID: remID,
+					Engine:        "N4",
+					StepCode:      "BUILD_OR_AGENT_CONFIG_POISONING_BLOCKED",
+					Outcome:       "BLOCK",
+					ActorOrToken:  "n4-control-plane",
+					EvidenceHash:  crypto.SHA256Hex([]byte(err.Error())),
+					Fields:        map[string]string{"violation": err.Error(), "active_bridge": item.BridgeID},
+				})
+				o.Broker.Broadcast("REMEDIATION_UPDATED", item)
+				results = append(results, item)
+				continue
+			}
 			return nil, err
 		}
 
@@ -471,4 +493,174 @@ func (o *ControlPlaneOrchestrator) IngestOSVAdvisoryToPipeline(ctx context.Conte
 		}
 	}
 	return nil, fmt.Errorf("OSV advisory %q not found", osvID)
+}
+
+// ExecuteSecretRotationRemediation ingests Gitleaks / GitGuardian / cloud secret-exposure scan findings
+// through warrant-extractor (stripping raw secrets), clamps egress & 169.254.169.254 metadata access immediately,
+// verifies a 2-of-2 SECRET-ROTATION-STATELESS Standing Warrant, revokes/rotates the workload ExternalSecret or SA token
+// with rolling restart in seconds, and mints a DSSE-signed NIST OSCAL 1.1.2 POA&M closure attestation.
+func (o *ControlPlaneOrchestrator) ExecuteSecretRotationRemediation(ctx context.Context, rawSecretScan []byte, targetService string) ([]models.RemediationItem, error) {
+	intakeAsset := targetService
+	if intakeAsset == "" {
+		intakeAsset = "secret-intake-stream"
+	}
+	secretSet, err := o.N4AgentCP.ExtractSecretFindingsGoverned(
+		ctx, "BOOTSTRAP_SECRET_INTAKE", "", intakeAsset, "sys-intake", "sys-intake", rawSecretScan,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	results := make([]models.RemediationItem, 0, len(secretSet.Findings))
+	for _, sf := range secretSet.Findings {
+		svc, err := o.Store.GetEstateService(ctx, sf.TargetServiceID)
+		if err != nil {
+			return nil, fmt.Errorf("unknown target service %q: %w", sf.TargetServiceID, err)
+		}
+
+		remID := "rem-sec-" + uuid.NewString()[:8]
+		now := time.Now().UTC()
+		item := models.RemediationItem{
+			RemediationID:      remID,
+			RemediationKind:    models.RemediationKindSecretRotation,
+			CVEID:              sf.FindingID,
+			CWEID:              "CWE-798",
+			IsKEV:              true,
+			CVSSScore:          9.6,
+			ServiceID:          svc.ServiceID,
+			SecretResourceName: sf.SecretResourceName,
+			VulnerableDigest:   svc.CurrentDigest,
+			PatchedDigest:      svc.CurrentDigest,
+			PackagePURL:        svc.CurrentPURL,
+			ExploitVector:      "GENERIC_RCE",
+			Stage:              models.StageIntakeRepro,
+			StatusHealth:       models.HealthNormal,
+			PodSweepTotal:      svc.Replicas,
+			BridgeSLAMIN:       15,
+			CreatedAt:          now,
+			UpdatedAt:          now,
+		}
+
+		matchedWarrant, wErr := o.Store.FindMatchingSecretWarrant(ctx, svc.ServiceID)
+		s1ID, s2ID := "UNBOUND", "UNBOUND"
+		if wErr == nil {
+			item.WarrantID = matchedWarrant.WarrantID
+			item.BridgeSLAMIN = matchedWarrant.SLABridgeMinutes
+			s1ID = matchedWarrant.Slot1PrincipalID
+			s2ID = matchedWarrant.Slot2PrincipalID
+		}
+
+		if err := o.Store.UpsertRemediation(ctx, &item); err != nil {
+			return nil, err
+		}
+		_ = o.Store.AppendTrace(ctx, models.TraceEvent{
+			TraceID:       "trc-" + uuid.NewString()[:8],
+			RemediationID: remID,
+			Engine:        "N4",
+			StepCode:      "SECRET_EXPOSURE_FINGERPRINTED_AND_SANITIZED",
+			Outcome:       "PASS",
+			ActorOrToken:  "warrant-extractor",
+			EvidenceHash:  secretSet.TypedOutputSHA256,
+			Fields: map[string]string{
+				"finding_id":        sf.FindingID,
+				"detector":          sf.DetectorTool,
+				"rule_id":           sf.RuleID,
+				"secret_resource":   sf.SecretResourceName,
+				"secret_fp_sha256":  sf.SecretFingerprintSHA256[:16],
+				"plaintext_dropped": "true",
+			},
+			OccurredAt: now,
+		})
+
+		// Immediate N3 Egress & Cloud Metadata (169.254.169.254) Quarantine while rotating credentials
+		bridgeID := "brg-sec-" + uuid.NewString()[:8]
+		bridge, err := o.Shield.CompileAndApplyBridge(ctx, adapters.BridgeApplyRequest{
+			BridgeID:              bridgeID,
+			RemediationID:         remID,
+			ServiceID:             svc.ServiceID,
+			Namespace:             svc.Namespace,
+			CVEID:                 sf.FindingID,
+			CWEID:                 "CWE-798",
+			AffectedPort:          8080,
+			AllowedEgressServices: svc.AllowedEgressServices,
+			SLABridgeMinutes:      item.BridgeSLAMIN,
+			BlockerReasonCode:     "SECRET_ROTATION_IN_PROGRESS",
+		})
+		if err != nil {
+			return nil, err
+		}
+		_ = o.Store.UpsertBridge(ctx, *bridge)
+		bridgedTime := time.Now().UTC()
+		item.Stage = models.StageBridgedContained
+		item.StatusHealth = models.HealthBridged
+		item.BridgeID = bridge.BridgeID
+		item.BridgedAt = &bridgedTime
+		_ = o.Store.UpsertRemediation(ctx, &item)
+
+		// Fail closed if no active SECRET-ROTATION-STATELESS warrant covers this service
+		if wErr != nil {
+			item.StatusHealth = models.HealthExceptionRouted
+			item.BlockerCode = "NO_ACTIVE_SECRET_ROTATION_WARRANT_FAIL_CLOSED"
+			_ = o.Store.UpsertRemediation(ctx, &item)
+			results = append(results, item)
+			continue
+		}
+		if _, revErr := o.N1Warrant.ReverifyWarrantForExecution(ctx, item.WarrantID, svc.ServiceID, 0, svc.Replicas, models.RemediationKindSecretRotation); revErr != nil {
+			item.StatusHealth = models.HealthExceptionRouted
+			item.BlockerCode = revErr.Error()
+			_ = o.Store.UpsertRemediation(ctx, &item)
+			results = append(results, item)
+			continue
+		}
+
+		// Respect Emergency Freeze
+		freeze := o.N1Warrant.CurrentFreezeState()
+		if freeze.Mode != models.FreezeModeOperational {
+			item.StatusHealth = models.HealthFrozen
+			item.BlockerCode = freeze.Mode
+			_ = o.Store.UpsertRemediation(ctx, &item)
+			results = append(results, item)
+			continue
+		}
+
+		// Rotate ExternalSecret / Workload SA Token & Rolling Restart under N4 Task Warrant
+		rotRes, err := o.Deploy.RotateWorkloadSecret(ctx, svc.ServiceID, sf.SecretResourceKind, sf.SecretResourceName)
+		if err != nil {
+			return nil, err
+		}
+		_ = o.N4AgentCP.RecordGovernedAdapterAction(
+			ctx, item.WarrantID, remID, "secret_rotator", svc.ServiceID,
+			"ROTATE_AND_REVOKE_WORKLOAD_SECRET", s1ID, s2ID, "INTERNAL_CLUSTER_ONLY",
+			sf.SecretFingerprintSHA256, rotRes.NewSecretVersionHash,
+		)
+		item.CanaryWeight = 100
+		_ = o.Store.AppendTrace(ctx, models.TraceEvent{
+			TraceID:       "trc-" + uuid.NewString()[:8],
+			RemediationID: remID,
+			Engine:        "N4",
+			StepCode:      "WORKLOAD_SECRET_ROTATED_AND_REVOKED",
+			Outcome:       "PASS",
+			ActorOrToken:  sf.SecretResourceName,
+			EvidenceHash:  rotRes.NewSecretVersionHash,
+			Fields: map[string]string{
+				"resource_kind":   sf.SecretResourceKind,
+				"resource_name":   sf.SecretResourceName,
+				"restarted_pods":  fmt.Sprintf("%d", rotRes.RestartedPods),
+				"revoked_old_tok": fmt.Sprintf("%t", rotRes.PreviousTokenRevoked),
+			},
+			OccurredAt: rotRes.RotatedAt,
+		})
+
+		verBundle, err := o.N3Verify.VerifyAndRetireSecretRotationBridge(ctx, &item, svc, rotRes)
+		if err != nil {
+			results = append(results, item)
+			continue
+		}
+		if _, err := o.N5Ledger.MintOSCALAttestation(ctx, &item, svc, verBundle); err != nil {
+			results = append(results, item)
+			continue
+		}
+		results = append(results, item)
+	}
+	return results, nil
 }

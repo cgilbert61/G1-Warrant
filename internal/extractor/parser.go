@@ -59,7 +59,18 @@ var allowedVectors = map[string]bool{
 	"PROTO_DESERIALIZE":   true,
 	"TLS_HEARTBEAT":       true,
 	"HTTP2_RAPID_RESET":   true,
+	"SSRF_METADATA":       true,
+	"UNRESTRICTED_UPLOAD": true,
+	"ERROR_STACK_TRACE":   true,
 	"GENERIC_RCE":         true,
+}
+
+// chainedExploitCWEs are "medium" / non-RCE CWE classes actively weaponized by autonomous LLM intrusion
+// frameworks (ARTEX / GTIG / Phoenix findings) for compiler/SQL feedback, metadata pivoting, and webshell drops.
+var chainedExploitCWEs = map[string]bool{
+	"CWE-209": true, // Generation of Error Message Containing Sensitive Information (stack traces)
+	"CWE-918": true, // Server-Side Request Forgery (SSRF -> 169.254.169.254 / internal APIs)
+	"CWE-434": true, // Unrestricted Upload of File with Dangerous Type (JSP/PHP webshell drop)
 }
 
 // SelfBinaryDigest computes the SHA-256 hex digest of the running extractor binary.
@@ -317,20 +328,21 @@ func ParseUntrustedSARIFWithOptions(raw []byte, extractorDigest string, opts SAR
 			seen[dedupKey] = true
 
 			findings = append(findings, models.ExtractedFinding{
-				RuleID:           ruleID,
-				CVEID:            cve,
-				CWEID:            cwe,
-				CVSSScore:        cvss,
-				IsKEV:            isKEV,
-				TargetServiceID:  svcID,
-				PackagePURL:      purl,
-				VulnerableDigest: vulnDigest,
-				PatchedDigest:    patchedDigest,
-				VulnerableSymbol: vulnSym,
-				ExploitVector:    vec,
-				AffectedPort:     port,
-				BlockedPaths:     blockedPaths,
-				ArtifactPaths:    artPaths,
+				RuleID:                ruleID,
+				CVEID:                 cve,
+				CWEID:                 cwe,
+				CVSSScore:             cvss,
+				IsKEV:                 isKEV,
+				TargetServiceID:       svcID,
+				PackagePURL:           purl,
+				VulnerableDigest:      vulnDigest,
+				PatchedDigest:         patchedDigest,
+				VulnerableSymbol:      vulnSym,
+				ExploitVector:         vec,
+				AffectedPort:          port,
+				BlockedPaths:          blockedPaths,
+				ArtifactPaths:         artPaths,
+				ChainedExploitEnabler: chainedExploitCWEs[strings.ToUpper(cwe)],
 			})
 		}
 	}
@@ -417,6 +429,8 @@ func ParseUntrustedDiff(raw []byte, extractorDigest string) (*models.ExtractedPa
 
 	lines := strings.Split(req.UnifiedDiff, "\n")
 	filesChanged := 0
+	touchedSet := map[string]bool{}
+	forbiddenSet := map[string]bool{}
 	ddlSet := map[string]bool{}
 	ddlCount := 0
 	ormSet := map[string]bool{}
@@ -424,16 +438,48 @@ func ParseUntrustedDiff(raw []byte, extractorDigest string) (*models.ExtractedPa
 	serialBreaks := 0
 	apiCompatible := true
 	syscallSet := map[string]bool{}
+	inDockerfile := false
+
+	checkTouchedPath := func(rawPath string) {
+		clean := strings.TrimPrefix(strings.TrimSpace(rawPath), "./")
+		clean = strings.TrimPrefix(clean, "/")
+		if clean == "" || clean == "dev/null" {
+			inDockerfile = false
+			return
+		}
+		touchedSet[clean] = true
+		baseLower := strings.ToLower(clean)
+		inDockerfile = strings.Contains(baseLower, "dockerfile")
+		for _, pref := range models.DefaultForbiddenDiffPrefixes {
+			pLow := strings.ToLower(pref)
+			if strings.HasPrefix(baseLower, pLow) || baseLower == strings.TrimSuffix(pLow, "/") || strings.Contains(baseLower, "/"+pLow) {
+				forbiddenSet[clean] = true
+			}
+		}
+	}
 
 	for _, line := range lines {
-		if strings.HasPrefix(line, "diff --git ") || strings.HasPrefix(line, "+++ b/") {
-			if strings.HasPrefix(line, "+++ b/") {
+		if strings.HasPrefix(line, "diff --git ") {
+			parts := strings.Fields(line)
+			if len(parts) >= 4 {
+				checkTouchedPath(strings.TrimPrefix(parts[3], "b/"))
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "+++ ") {
+			target := strings.TrimSpace(strings.TrimPrefix(line, "+++ "))
+			target = strings.TrimPrefix(target, "b/")
+			if target != "/dev/null" {
 				filesChanged++
+				checkTouchedPath(target)
 			}
 			continue
 		}
 		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
 			added := line[1:]
+			if inDockerfile && strings.HasPrefix(strings.ToUpper(strings.TrimSpace(added)), "RUN ") {
+				forbiddenSet["DOCKERFILE_RUN_HOOK"] = true
+			}
 			for code, rx := range reDDLStatements {
 				if rx.MatchString(added) {
 					ddlSet[code] = true
@@ -477,22 +523,26 @@ func ParseUntrustedDiff(raw []byte, extractorDigest string) (*models.ExtractedPa
 	ddlList := sortedKeys(ddlSet)
 	ormList := sortedKeys(ormSet)
 	sysList := sortedKeys(syscallSet)
-	stateless := ddlCount == 0 && ormCount == 0 && serialBreaks == 0 && apiCompatible
+	touchedList := sortedKeys(touchedSet)
+	forbiddenList := sortedKeys(forbiddenSet)
+	stateless := ddlCount == 0 && ormCount == 0 && serialBreaks == 0 && apiCompatible && len(forbiddenList) == 0
 
 	out := &models.ExtractedPatchMetadata{
-		SchemaVersion:         "g1.extractor.diff.v1",
-		PatchedDigest:         patchedDigest,
-		FilesChanged:          filesChanged,
-		DDLMigrations:         ddlCount,
-		DetectedDDLKeywords:   ddlList,
-		ORMModelMutations:     ormCount,
-		DetectedORMTokens:     ormList,
-		SerializationBreaks:   serialBreaks,
-		APIBackwardCompatible: apiCompatible,
-		DeclaredSyscallDelta:  sysList,
-		StatelessEligible:     stateless,
-		RawInputSHA256:        rawSHA,
-		ExtractorDigest:       extractorDigest,
+		SchemaVersion:          "g1.extractor.diff.v1",
+		PatchedDigest:          patchedDigest,
+		FilesChanged:           filesChanged,
+		TouchedFiles:           touchedList,
+		ForbiddenConfigTouches: forbiddenList,
+		DDLMigrations:          ddlCount,
+		DetectedDDLKeywords:    ddlList,
+		ORMModelMutations:      ormCount,
+		DetectedORMTokens:      ormList,
+		SerializationBreaks:    serialBreaks,
+		APIBackwardCompatible:  apiCompatible,
+		DeclaredSyscallDelta:   sysList,
+		StatelessEligible:      stateless,
+		RawInputSHA256:         rawSHA,
+		ExtractorDigest:        extractorDigest,
 	}
 	typedHash, _, err := crypto.CanonicalSHA256Hex(out)
 	if err != nil {
@@ -649,7 +699,199 @@ func NewHTTPHandler(extractorDigest string) http.Handler {
 		}
 		writeJSON(w, http.StatusOK, res)
 	})
+	mux.HandleFunc("POST /extract/secrets", func(w http.ResponseWriter, r *http.Request) {
+		body, err := readBounded(w, r, 4<<20)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		defaultSvc := r.URL.Query().Get("target_service")
+		res, err := ParseUntrustedSecretFindings(body, extractorDigest, defaultSvc)
+		if err != nil {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, res)
+	})
 	return mux
+}
+
+// ParseUntrustedSecretFindings parses Gitleaks (JSON array or SARIF 2.1.0), GitGuardian, or cloud secret-exposure
+// scan outputs, irreversibly hashes raw secret tokens into SHA-256 fingerprints, strips all commit prose/raw secrets,
+// and emits bounded ExtractedSecretFindingSet records for SECRET-ROTATION-STATELESS warrant execution.
+func ParseUntrustedSecretFindings(raw []byte, extractorDigest, defaultServiceID string) (*models.ExtractedSecretFindingSet, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return nil, errors.New("empty secret scan input")
+	}
+	rawSHA := crypto.SHA256Hex(raw)
+	defaultSvc := strings.ToLower(strings.TrimSpace(defaultServiceID))
+
+	type rawSecretItem struct {
+		RuleID       string `json:"RuleID"`
+		RuleIDAlt    string `json:"rule_id"`
+		Detector     string `json:"detector_name"`
+		Secret       string `json:"Secret"`
+		Match        string `json:"Match"`
+		Fingerprint  string `json:"Fingerprint"`
+		File         string `json:"File"`
+		FileAlt      string `json:"file_path"`
+		ServiceID    string `json:"service_id"`
+		ResourceKind string `json:"secret_resource_kind"`
+		ResourceName string `json:"secret_resource_name"`
+	}
+
+	var items []rawSecretItem
+	detector := "Gitleaks"
+
+	if strings.HasPrefix(trimmed, "[") {
+		if err := json.Unmarshal(raw, &items); err != nil {
+			return nil, fmt.Errorf("invalid Gitleaks JSON array: %w", err)
+		}
+	} else {
+		// Check if SARIF 2.1.0 (e.g. gitleaks detect --report-format sarif) or GitGuardian/wrapper JSON
+		var wrapper struct {
+			Version   string          `json:"version"`
+			Detector  string          `json:"detector_tool"`
+			Findings  []rawSecretItem `json:"findings"`
+			Incidents []rawSecretItem `json:"incidents"`
+			Runs      []struct {
+				Tool struct {
+					Driver struct {
+						Name string `json:"name"`
+					} `json:"driver"`
+				} `json:"tool"`
+				Results []struct {
+					RuleID       string            `json:"ruleId"`
+					Fingerprints map[string]string `json:"partialFingerprints"`
+					Locations    []sarifLocation   `json:"locations"`
+					Properties   struct {
+						ServiceID    string `json:"service_id"`
+						ResourceKind string `json:"secret_resource_kind"`
+						ResourceName string `json:"secret_resource_name"`
+					} `json:"properties"`
+				} `json:"results"`
+			} `json:"runs"`
+		}
+		if err := json.Unmarshal(raw, &wrapper); err != nil {
+			return nil, fmt.Errorf("invalid secret scan JSON: %w", err)
+		}
+		if wrapper.Detector != "" {
+			detector = sanitizeToken(wrapper.Detector, 40)
+		}
+		switch {
+		case len(wrapper.Runs) > 0:
+			if n := sanitizeToken(wrapper.Runs[0].Tool.Driver.Name, 40); n != "" {
+				detector = n
+			}
+			for _, run := range wrapper.Runs {
+				for _, r := range run.Results {
+					fp := ""
+					for _, v := range r.Fingerprints {
+						fp = v
+						break
+					}
+					uri := ""
+					if len(r.Locations) > 0 {
+						uri = r.Locations[0].PhysicalLocation.ArtifactLocation.URI
+					}
+					items = append(items, rawSecretItem{
+						RuleID:       r.RuleID,
+						Fingerprint:  fp,
+						File:         uri,
+						ServiceID:    r.Properties.ServiceID,
+						ResourceKind: r.Properties.ResourceKind,
+						ResourceName: r.Properties.ResourceName,
+					})
+				}
+			}
+		case len(wrapper.Findings) > 0:
+			items = wrapper.Findings
+		case len(wrapper.Incidents) > 0:
+			detector = "GitGuardian"
+			items = wrapper.Incidents
+		}
+	}
+
+	if len(items) == 0 {
+		return nil, errors.New("secret scan contains zero actionable findings")
+	}
+
+	outFindings := make([]models.ExtractedSecretFinding, 0, len(items))
+	seen := map[string]bool{}
+	for idx, it := range items {
+		rule := sanitizeToken(nonEmptyStr(it.RuleID, nonEmptyStr(it.RuleIDAlt, it.Detector)), 64)
+		if rule == "" {
+			rule = "generic-credential-leak"
+		}
+		svcID := strings.ToLower(strings.TrimSpace(nonEmptyStr(it.ServiceID, defaultSvc)))
+		if !reServiceID.MatchString(svcID) {
+			return nil, fmt.Errorf("invalid or missing target service_id %q for secret finding", sanitizeToken(svcID, 40))
+		}
+		fileClean := ""
+		rawFile := nonEmptyStr(it.File, it.FileAlt)
+		if reSafePath.MatchString(rawFile) {
+			fileClean = rawFile
+		}
+
+		// Compute irreversible SHA-256 fingerprint over secret material without retaining plaintext
+		fpSeed := nonEmptyStr(it.Secret, nonEmptyStr(it.Match, nonEmptyStr(it.Fingerprint, fmt.Sprintf("%s|%s|%d", svcID, rule, idx))))
+		secretFP := crypto.SHA256Hex([]byte("g1-secret-fp:" + fpSeed))
+
+		resKind := strings.ToUpper(strings.TrimSpace(it.ResourceKind))
+		switch resKind {
+		case "EXTERNAL_SECRET", "WORKLOAD_SA_TOKEN", "K8S_SECRET":
+		default:
+			if strings.Contains(strings.ToLower(rule), "jwt") || strings.Contains(strings.ToLower(rule), "k8s") || strings.Contains(strings.ToLower(rule), "service-account") {
+				resKind = "WORKLOAD_SA_TOKEN"
+			} else {
+				resKind = "EXTERNAL_SECRET"
+			}
+		}
+
+		resName := sanitizeToken(it.ResourceName, 63)
+		if resName == "" {
+			resName = fmt.Sprintf("extsec-%s-%s", svcID, strings.ToLower(sanitizeToken(rule, 24)))
+		}
+
+		dedup := svcID + "|" + resName + "|" + secretFP
+		if seen[dedup] {
+			continue
+		}
+		seen[dedup] = true
+
+		outFindings = append(outFindings, models.ExtractedSecretFinding{
+			FindingID:               "SEC-" + strings.ToUpper(secretFP[:10]),
+			DetectorTool:            detector,
+			RuleID:                  rule,
+			TargetServiceID:         svcID,
+			SecretResourceKind:      resKind,
+			SecretResourceName:      resName,
+			SecretFingerprintSHA256: secretFP,
+			FilePath:                fileClean,
+		})
+	}
+
+	out := &models.ExtractedSecretFindingSet{
+		SchemaVersion:   "g1.extractor.secrets.v1",
+		DetectorTool:    detector,
+		Findings:        outFindings,
+		RawInputSHA256:  rawSHA,
+		ExtractorDigest: extractorDigest,
+	}
+	typedHash, _, err := crypto.CanonicalSHA256Hex(out)
+	if err != nil {
+		return nil, err
+	}
+	out.TypedOutputSHA256 = typedHash
+	return out, nil
+}
+
+func nonEmptyStr(a, b string) string {
+	if strings.TrimSpace(a) != "" {
+		return strings.TrimSpace(a)
+	}
+	return strings.TrimSpace(b)
 }
 
 func readBounded(w http.ResponseWriter, r *http.Request, maxBytes int64) ([]byte, error) {

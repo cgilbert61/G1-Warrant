@@ -52,17 +52,18 @@ func (cp *ControlPlane) MintTaskWarrant(warrantID, remediationID, workerName, ta
 	}
 	now := time.Now().UTC()
 	payload := models.EphemeralTaskWarrantPayload{
-		TaskTokenID:      "tsk-" + uuid.NewString()[:8],
-		WarrantID:        warrantID,
-		RemediationID:    remediationID,
-		WorkerName:       workerName,
-		TargetAsset:      targetAsset,
-		AllowedAction:    allowedAction,
-		Slot1PrincipalID: slot1ID,
-		Slot2PrincipalID: slot2ID,
-		TTLSeconds:       ttlSec,
-		IssuedUnix:       now.Unix(),
-		ExpiresUnix:      now.Add(time.Duration(ttlSec) * time.Second).Unix(),
+		TaskTokenID:           "tsk-" + uuid.NewString()[:8],
+		WarrantID:             warrantID,
+		RemediationID:         remediationID,
+		WorkerName:            workerName,
+		TargetAsset:           targetAsset,
+		AllowedAction:         allowedAction,
+		ForbiddenPathPrefixes: models.DefaultForbiddenDiffPrefixes,
+		Slot1PrincipalID:      slot1ID,
+		Slot2PrincipalID:      slot2ID,
+		TTLSeconds:            ttlSec,
+		IssuedUnix:            now.Unix(),
+		ExpiresUnix:           now.Add(time.Duration(ttlSec) * time.Second).Unix(),
 	}
 	env, _, err := crypto.NewUnsignedEnvelope(crypto.PayloadTypeTaskWarrant, payload)
 	if err != nil {
@@ -399,6 +400,13 @@ func (cp *ControlPlane) ExtractDiffGoverned(ctx context.Context, warrantID, reme
 		return nil, fmt.Errorf("decode ExtractedPatchMetadata: %w", err)
 	}
 
+	status := "EXECUTED"
+	violationCode := ""
+	if len(meta.ForbiddenConfigTouches) > 0 {
+		status = "SECURITY_VIOLATION"
+		violationCode = "FORBIDDEN_BUILD_OR_AGENT_CONFIG_MUTATION:" + strings.Join(meta.ForbiddenConfigTouches, ",")
+	}
+
 	entry := &models.AgentLedgerEntry{
 		ActionID:          "act-" + uuid.NewString()[:8],
 		TaskTokenID:       tok.TaskTokenID,
@@ -414,6 +422,82 @@ func (cp *ControlPlane) ExtractDiffGoverned(ctx context.Context, warrantID, reme
 		ExtractorDigest:   meta.ExtractorDigest,
 		TypedOutputSHA256: meta.TypedOutputSHA256,
 		TokenTTLSec:       tok.TTLSeconds,
+		Status:            status,
+		ViolationCode:     violationCode,
+		ExecutedAt:        time.Now().UTC(),
+	}
+	if err := cp.store.AppendAgentAction(ctx, entry); err != nil {
+		return nil, err
+	}
+	if cp.onBroadcast != nil {
+		if status == "SECURITY_VIOLATION" {
+			cp.onBroadcast("AGENT_SECURITY_VIOLATION", entry)
+		} else {
+			cp.onBroadcast("AGENT_ACTION_LOGGED", entry)
+		}
+	}
+	if status == "SECURITY_VIOLATION" {
+		return &meta, fmt.Errorf("N4_FORBIDDEN_CONFIG_POISONING_BLOCKED (%s)", violationCode)
+	}
+	return &meta, nil
+}
+
+// ExtractSecretFindingsGoverned pipes Gitleaks/GitGuardian/cloud secret-exposure scan JSON through warrant-extractor
+// (hashing and stripping raw credentials) and records the cryptographic lineage in agent_action_ledger.
+func (cp *ControlPlane) ExtractSecretFindingsGoverned(ctx context.Context, warrantID, remediationID, targetAsset, s1ID, s2ID string, rawSecrets []byte) (*models.ExtractedSecretFindingSet, error) {
+	env, _, err := cp.MintTaskWarrant(warrantID, remediationID, "warrant-extractor", targetAsset, "EXTRACT_SECRET_EXPOSURE", s1ID, s2ID, 60)
+	if err != nil {
+		return nil, err
+	}
+	tok, err := cp.VerifyAndConsumeTaskWarrant(ctx, env, targetAsset, "EXTRACT_SECRET_EXPOSURE")
+	if err != nil {
+		return nil, err
+	}
+
+	q := url.Values{}
+	if targetAsset != "" && targetAsset != "secret-intake-stream" {
+		q.Set("target_service", targetAsset)
+	}
+	endpoint := cp.extractorURL + "/extract/secrets"
+	if enc := q.Encode(); enc != "" {
+		endpoint += "?" + enc
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(rawSecrets))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := cp.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("warrant-extractor /extract/secrets unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	respBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("warrant-extractor rejected secret scan (HTTP %d): %s", resp.StatusCode, string(respBytes))
+	}
+
+	var out models.ExtractedSecretFindingSet
+	if err := json.Unmarshal(respBytes, &out); err != nil {
+		return nil, fmt.Errorf("decode ExtractedSecretFindingSet: %w", err)
+	}
+
+	entry := &models.AgentLedgerEntry{
+		ActionID:          "act-" + uuid.NewString()[:8],
+		TaskTokenID:       tok.TaskTokenID,
+		WarrantID:         warrantID,
+		RemediationID:     remediationID,
+		WorkerName:        "warrant-extractor",
+		TargetAsset:       targetAsset,
+		ActionType:        "EXTRACT_SECRET_EXPOSURE",
+		Slot1PrincipalID:  s1ID,
+		Slot2PrincipalID:  s2ID,
+		EgressProfile:     "ZERO_EGRESS_ISOLATED",
+		RawInputSHA256:    out.RawInputSHA256,
+		ExtractorDigest:   out.ExtractorDigest,
+		TypedOutputSHA256: out.TypedOutputSHA256,
+		TokenTTLSec:       tok.TTLSeconds,
 		Status:            "EXECUTED",
 		ExecutedAt:        time.Now().UTC(),
 	}
@@ -423,7 +507,7 @@ func (cp *ControlPlane) ExtractDiffGoverned(ctx context.Context, warrantID, reme
 	if cp.onBroadcast != nil {
 		cp.onBroadcast("AGENT_ACTION_LOGGED", entry)
 	}
-	return &meta, nil
+	return &out, nil
 }
 
 func nonEmpty(v, fallback string) string {

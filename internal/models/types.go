@@ -47,11 +47,42 @@ const (
 	ContainmentModeSignedRulepackL7    = "SIGNED_RULEPACK_L7_SHIELD"
 )
 
-// Closure Assurance Tiers Distinguishing Differential PoC Proof from Passive Digest/SBOM Proof (N3/N5)
+// Closure Assurance Tiers Distinguishing Differential PoC Proof, Passive Digest/SBOM Proof, and Secret Rotation (N3/N5)
 const (
 	AssuranceTier1PassiveDigestSBOM = "ASSURANCE_TIER_1_PASSIVE_DIGEST_SBOM"
 	AssuranceTier2DifferentialTwin  = "ASSURANCE_TIER_2_DIFFERENTIAL_TWIN"
+	AssuranceTierSecretRotated      = "ASSURANCE_TIER_SECRET_ROTATED"
 )
+
+// Warrant Classes & Remediation Kinds (N1–N4)
+const (
+	WarrantClassSecretRotation = "SECRET-ROTATION-STATELESS"
+
+	RemediationKindImagePatch     = "IMAGE_PATCH"
+	RemediationKindSecretRotation = "SECRET_ROTATION"
+	RemediationKindInPodDrift     = "IN_POD_DRIFT_QUARANTINE"
+
+	DriftKindBannedDigest       = "BANNED_IMAGE_DIGEST"
+	DriftKindFilesystemWebshell = "FILESYSTEM_WEBSHELL_DROP"
+	DriftKindUntrackedProcess   = "UNTRACKED_PROCESS_EXEC"
+)
+
+// DefaultForbiddenDiffPrefixes lists CI/CD workflows, container build hooks, Makefile targets,
+// and autonomous coding-agent configuration files that upstream N4 patch workers are cryptographically forbidden to touch.
+var DefaultForbiddenDiffPrefixes = []string{
+	".github/",
+	".gitlab-ci",
+	"Dockerfile",
+	"Makefile",
+	"AGENTS.md",
+	"CLAUDE.md",
+	".cursor",
+	".gemini/",
+	".windsurf",
+	".copilot/",
+	".vscode/",
+	".git/",
+}
 
 // ExtractedFinding is a prose-free, strictly bounded canonical vulnerability record
 // emitted exclusively by the isolated warrant-extractor service.
@@ -67,9 +98,10 @@ type ExtractedFinding struct {
 	PatchedDigest    string   `json:"patched_digest"`
 	VulnerableSymbol string   `json:"vulnerable_symbol"`
 	ExploitVector    string   `json:"exploit_vector"` // "HTTP_PATH_TRAVERSAL" | "JNDI_LOOKUP" | "PROTO_DESERIALIZE" | "TLS_HEARTBEAT" | "HTTP2_RAPID_RESET"
-	AffectedPort     int      `json:"affected_port"`
-	BlockedPaths     []string `json:"blocked_paths"`
-	ArtifactPaths    []string `json:"artifact_paths"`
+	AffectedPort          int      `json:"affected_port"`
+	BlockedPaths          []string `json:"blocked_paths"`
+	ArtifactPaths         []string `json:"artifact_paths"`
+	ChainedExploitEnabler bool     `json:"chained_exploit_enabler,omitempty"`
 }
 
 // ExtractedFindingSet wraps extracted findings with input/output cryptographic digests.
@@ -84,20 +116,45 @@ type ExtractedFindingSet struct {
 
 // ExtractedPatchMetadata is the prose-free canonical diff analysis emitted by warrant-extractor.
 type ExtractedPatchMetadata struct {
-	SchemaVersion         string   `json:"schema_version"`
-	PatchedDigest         string   `json:"patched_digest"`
-	FilesChanged          int      `json:"files_changed"`
-	DDLMigrations         int      `json:"ddl_migrations"`
-	DetectedDDLKeywords   []string `json:"detected_ddl_keywords"`
-	ORMModelMutations     int      `json:"orm_model_mutations"`
-	DetectedORMTokens     []string `json:"detected_orm_tokens"`
-	SerializationBreaks   int      `json:"serialization_breaks"`
-	APIBackwardCompatible bool     `json:"api_backward_compatible"`
-	DeclaredSyscallDelta  []string `json:"declared_syscall_delta"`
-	StatelessEligible     bool     `json:"stateless_eligible"`
-	RawInputSHA256        string   `json:"raw_input_sha256"`
-	TypedOutputSHA256     string   `json:"typed_output_sha256"`
-	ExtractorDigest       string   `json:"extractor_digest"`
+	SchemaVersion          string   `json:"schema_version"`
+	PatchedDigest          string   `json:"patched_digest"`
+	FilesChanged           int      `json:"files_changed"`
+	TouchedFiles           []string `json:"touched_files,omitempty"`
+	ForbiddenConfigTouches []string `json:"forbidden_config_touches,omitempty"`
+	DDLMigrations          int      `json:"ddl_migrations"`
+	DetectedDDLKeywords    []string `json:"detected_ddl_keywords"`
+	ORMModelMutations      int      `json:"orm_model_mutations"`
+	DetectedORMTokens      []string `json:"detected_orm_tokens"`
+	SerializationBreaks    int      `json:"serialization_breaks"`
+	APIBackwardCompatible  bool     `json:"api_backward_compatible"`
+	DeclaredSyscallDelta   []string `json:"declared_syscall_delta"`
+	StatelessEligible      bool     `json:"stateless_eligible"`
+	RawInputSHA256         string   `json:"raw_input_sha256"`
+	TypedOutputSHA256      string   `json:"typed_output_sha256"`
+	ExtractorDigest        string   `json:"extractor_digest"`
+}
+
+// ExtractedSecretFinding is a zero-secret, prose-free credential exposure record emitted by warrant-extractor
+// from Gitleaks, GitGuardian, or cloud secret-exposure scanners (raw secret material is irreversibly hashed and stripped).
+type ExtractedSecretFinding struct {
+	FindingID               string `json:"finding_id"`
+	DetectorTool            string `json:"detector_tool"` // "Gitleaks" | "GitGuardian" | "CloudSecretScanner"
+	RuleID                  string `json:"rule_id"`       // e.g. "github-pat", "aws-access-token", "k8s-sa-jwt"
+	TargetServiceID         string `json:"target_service_id"`
+	SecretResourceKind      string `json:"secret_resource_kind"` // "EXTERNAL_SECRET" | "WORKLOAD_SA_TOKEN" | "K8S_SECRET"
+	SecretResourceName      string `json:"secret_resource_name"`
+	SecretFingerprintSHA256 string `json:"secret_fingerprint_sha256"`
+	FilePath                string `json:"file_path,omitempty"`
+}
+
+// ExtractedSecretFindingSet wraps sanitized secret-exposure findings with cryptographic input/output lineage.
+type ExtractedSecretFindingSet struct {
+	SchemaVersion     string                   `json:"schema_version"`
+	DetectorTool      string                   `json:"detector_tool"`
+	Findings          []ExtractedSecretFinding `json:"findings"`
+	RawInputSHA256    string                   `json:"raw_input_sha256"`
+	TypedOutputSHA256 string                   `json:"typed_output_sha256"`
+	ExtractorDigest   string                   `json:"extractor_digest"`
 }
 
 // ExtractedAdvisory represents bounded CycloneDX/VEX or CISA KEV metadata stripped of prose.
@@ -151,6 +208,8 @@ type WarrantPayload struct {
 	MaxBlastRadiusReplicas int      `json:"max_blast_radius_replicas"`
 	AllowStatefulPatches   bool     `json:"allow_stateful_patches"`
 	AllowGuardedCanary     bool     `json:"allow_guarded_canary,omitempty"`
+	AllowSecretRotation    bool     `json:"allow_secret_rotation,omitempty"`
+	AutoRemediateCWEs      []string `json:"auto_remediate_cwes,omitempty"`
 	MinCanarySamples       int      `json:"min_canary_samples,omitempty"`
 	StageDwellSeconds      int      `json:"stage_dwell_seconds,omitempty"`
 	SLABridgeMinutes       int      `json:"sla_bridge_minutes"`
@@ -169,6 +228,8 @@ type WarrantRecord struct {
 	MaxBlastRadiusReplicas int             `json:"max_blast_radius_replicas"`
 	AllowStatefulPatches   bool            `json:"allow_stateful_patches"`
 	AllowGuardedCanary     bool            `json:"allow_guarded_canary"`
+	AllowSecretRotation    bool            `json:"allow_secret_rotation"`
+	AutoRemediateCWEs      []string        `json:"auto_remediate_cwes,omitempty"`
 	MinCanarySamples       int             `json:"min_canary_samples"`
 	StageDwellSeconds      int             `json:"stage_dwell_seconds"`
 	SLABridgeMinutes       int             `json:"sla_bridge_minutes"`
@@ -235,6 +296,9 @@ type EstateService struct {
 	ReadonlyShadowReplica      bool                   `json:"readonly_shadow_replica"`
 	ShadowDBMode               string                 `json:"shadow_db_mode"` // "EPHEMERAL_COW_BRANCH" | "READONLY_REPLICA" | "NONE"
 	RollbackAutomationVerified bool                   `json:"rollback_automation_verified"`
+	ReadOnlyRootFilesystem     bool                   `json:"readonly_root_filesystem"`
+	NoExecTmpMounts            bool                   `json:"noexec_tmp_mounts"`
+	AllowedEgressServices      []string               `json:"allowed_egress_services,omitempty"`
 	BaselineSyscalls           []string               `json:"baseline_syscalls"`
 	VolatileJSONPaths          []string               `json:"volatile_json_paths,omitempty"`
 	Eligible                   bool                   `json:"eligible"`
@@ -290,14 +354,17 @@ type ShadowComparisonReport struct {
 
 // RemediationItem represents an end-to-end remediation progressing across the 5-stage Race Pipeline.
 type RemediationItem struct {
-	RemediationID    string                  `json:"remediation_id"`
-	CVEID            string                  `json:"cve_id"`
-	CWEID            string                  `json:"cwe_id"`
-	IsKEV            bool                    `json:"is_kev"`
-	CVSSScore        float64                 `json:"cvss_score"`
-	ServiceID        string                  `json:"service_id"`
-	WarrantID        string                  `json:"warrant_id"`
-	VulnerableDigest string                  `json:"vulnerable_digest"`
+	RemediationID         string                  `json:"remediation_id"`
+	RemediationKind       string                  `json:"remediation_kind,omitempty"`
+	CVEID                 string                  `json:"cve_id"`
+	CWEID                 string                  `json:"cwe_id"`
+	IsKEV                 bool                    `json:"is_kev"`
+	ChainedExploitEnabler bool                    `json:"chained_exploit_enabler,omitempty"`
+	CVSSScore             float64                 `json:"cvss_score"`
+	ServiceID             string                  `json:"service_id"`
+	WarrantID             string                  `json:"warrant_id"`
+	SecretResourceName    string                  `json:"secret_resource_name,omitempty"`
+	VulnerableDigest      string                  `json:"vulnerable_digest"`
 	PatchedDigest    string                  `json:"patched_digest"`
 	PackagePURL      string                  `json:"package_purl"`
 	VulnerableSymbol string                  `json:"vulnerable_symbol"`
@@ -366,9 +433,11 @@ type ContainmentBridge struct {
 	ServiceID          string     `json:"service_id"`
 	CVEID              string     `json:"cve_id"`
 	BridgeType         string     `json:"bridge_type"`      // "CILIUM_L7_NETPOL" | "ENVOY_MTLS_WAF" | "K8S_NETPOL"
-	ContainmentMode    string     `json:"containment_mode"` // "ZERO_PROSE_EGRESS_MESH_QUARANTINE" | "SIGNED_RULEPACK_L7_SHIELD"
-	RulepackID         string     `json:"rulepack_id,omitempty"`
-	Status             string     `json:"status"` // "ARMED" | "RETIRED" | "REARMED_DRIFT"
+	ContainmentMode      string     `json:"containment_mode"` // "ZERO_PROSE_EGRESS_MESH_QUARANTINE" | "SIGNED_RULEPACK_L7_SHIELD"
+	RulepackID           string     `json:"rulepack_id,omitempty"`
+	MetadataPlaneBlocked bool       `json:"metadata_plane_blocked"`
+	AllowedEgressPeers   []string   `json:"allowed_egress_peers,omitempty"`
+	Status               string     `json:"status"` // "ARMED" | "RETIRED" | "REARMED_DRIFT"
 	SLABridgeMinutes   int        `json:"sla_minutes"`
 	BlockerReasonCode  string     `json:"blocker_reason_code"`
 	CiliumManifestYAML string     `json:"cilium_manifest_yaml"`
@@ -397,34 +466,52 @@ type AdmissionLockout struct {
 	LastDriftAt     *time.Time `json:"last_drift_at,omitempty"`
 }
 
-// DriftIncident records a sub-second runtime drift detection and automatic Shield re-arming event.
+// DriftIncident records a sub-second runtime drift detection (banned image digest OR in-pod Tetragon/eBPF
+// filesystem webshell / untracked process violation) and automatic Shield re-arming + pod cordon/recycle.
 type DriftIncident struct {
 	IncidentID         string     `json:"incident_id"`
+	DriftKind          string     `json:"drift_kind"` // "BANNED_IMAGE_DIGEST" | "FILESYSTEM_WEBSHELL_DROP" | "UNTRACKED_PROCESS_EXEC"
 	LockoutID          string     `json:"lockout_id"`
 	RemediationID      string     `json:"remediation_id"`
 	ServiceID          string     `json:"service_id"`
 	CVEID              string     `json:"cve_id"`
 	DetectedDigest     string     `json:"detected_digest"`
+	ViolatingArtifact  string     `json:"violating_artifact,omitempty"`
 	RoguePodName       string     `json:"rogue_pod_name"`
+	PodCordoned        bool       `json:"pod_cordoned"`
+	PodRecycled        bool       `json:"pod_recycled"`
 	RearmedBridgeID    string     `json:"rearmed_bridge_id"`
 	DetectionLatencyMs int64      `json:"detection_latency_ms"`
 	DetectedAt         time.Time  `json:"detected_at"`
 	ResolvedAt         *time.Time `json:"resolved_at,omitempty"`
 }
 
+// TetragonDriftEvent represents a Cilium Tetragon / eBPF runtime immutability alert emitted when
+// a running container writes a file (e.g., artex-probe, JSP webshell) or spawns an untracked binary.
+type TetragonDriftEvent struct {
+	ServiceID          string `json:"service_id"`
+	Namespace          string `json:"namespace,omitempty"`
+	PodName            string `json:"pod_name"`
+	RunningDigest      string `json:"running_digest,omitempty"`
+	ViolationType      string `json:"violation_type"` // "FILESYSTEM_WRITE" | "UNTRACKED_EXEC"
+	TargetPathOrBinary string `json:"target_path_or_binary"`
+	ObservedAtUnixMs   int64  `json:"observed_at_unix_ms,omitempty"`
+}
+
 // EphemeralTaskWarrantPayload is the JCS body of an N4 short-lived (TTL <= 300s) task token.
 type EphemeralTaskWarrantPayload struct {
-	TaskTokenID      string `json:"task_token_id"`
-	WarrantID        string `json:"warrant_id"`
-	RemediationID    string `json:"remediation_id"`
-	WorkerName       string `json:"worker_name"`
-	TargetAsset      string `json:"target_asset"`
-	AllowedAction    string `json:"allowed_action"`
-	Slot1PrincipalID string `json:"slot1_principal_id"`
-	Slot2PrincipalID string `json:"slot2_principal_id"`
-	TTLSeconds       int    `json:"ttl_seconds"`
-	IssuedUnix       int64  `json:"issued_unix"`
-	ExpiresUnix      int64  `json:"expires_unix"`
+	TaskTokenID           string   `json:"task_token_id"`
+	WarrantID             string   `json:"warrant_id"`
+	RemediationID         string   `json:"remediation_id"`
+	WorkerName            string   `json:"worker_name"`
+	TargetAsset           string   `json:"target_asset"`
+	AllowedAction         string   `json:"allowed_action"`
+	ForbiddenPathPrefixes []string `json:"forbidden_path_prefixes,omitempty"`
+	Slot1PrincipalID      string   `json:"slot1_principal_id"`
+	Slot2PrincipalID      string   `json:"slot2_principal_id"`
+	TTLSeconds            int      `json:"ttl_seconds"`
+	IssuedUnix            int64    `json:"issued_unix"`
+	ExpiresUnix           int64    `json:"expires_unix"`
 }
 
 // AgentLedgerEntry is an immutable, hash-chained row in agent_action_ledger (N4).

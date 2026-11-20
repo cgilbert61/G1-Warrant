@@ -117,10 +117,10 @@ Production SDKs and CLIs ship **zero built-in demo signers**. Operators generate
 | `warrant warrants [list \| verify \| draft \| sign --key <k> \| submit]` | Inspect, verify, or execute `2-of-2` Standing Warrant ceremonies. |
 | `warrant exceptions [list \| approve <id> --slot1-key <so> --slot2-key <ao> \| reject <id> ...]` | Inspect or dual-key resolve stateful/above-ceiling remediation exceptions. |
 | `warrant pipeline [list \| trace <id> \| rollback <id>]` | View Race Pipeline items, millisecond traces, or execute atomic 3-step `QUARANTINED_ROLLBACK` (`Contain-Before-Unban`). |
-| `warrant estate` / `warrant shadow` | Inspect 3-Tier Graduated Fleet Autonomy Scorecard and Differential Shadow canary reports. |
-| `warrant bridges` / `warrant lockouts` / `warrant drift` | Inspect Zero-Prose vs. Signed-Rulepack shields, `ValidatingAdmissionPolicy` lockouts, and drift re-arm events. |
-| `warrant simulate <scenario>` | Run deterministic drills: `inject-kev`, `bad-syscall`, `stateful-ddl`, or `runtime-drift`. |
-| `warrant intake sarif <file.sarif>` | Submit an untrusted `SARIF 2.1.0` report through `warrant-extractor` into the Race Pipeline. |
+| `warrant estate` / `warrant shadow` | Inspect 3-Tier Graduated Fleet Autonomy Scorecard (5 mandatory gates incl. `readOnlyRootFilesystem` + `noexec /tmp`) and Differential Shadow canary reports. |
+| `warrant bridges` / `warrant lockouts` / `warrant drift` | Inspect Zero-Prose vs. Signed-Rulepack shields (`169.254.169.254` metadata quarantine), `ValidatingAdmissionPolicy` lockouts, and Tetragon/image drift events. |
+| `warrant simulate <scenario>` | Run deterministic drills: `inject-kev`, `bad-syscall`, `stateful-ddl`, `runtime-drift`, `secret-exposure`, `in-pod-webshell`, or `poisoned-config`. |
+| `warrant intake [sarif\|secrets] <file>` | Submit untrusted `SARIF 2.1.0` vulnerability scans or Gitleaks/GitGuardian secret-exposure findings (`SECRET-ROTATION-STATELESS`). |
 | `warrant feeds [status \| mode \| sync-kev \| sync-osv \| ingest-osv]` | Toggle `offline` vs `live` feeds and sync real CISA KEV & Google OSV.dev advisories. |
 | `warrant freeze [hold \| rollback \| thaw --slot1-key <so> --slot2-key <ao>]` | Trigger single-operator emergency freeze/rollback or `2-of-2` DSSE fleet thaw. |
 | `warrant oscal [export <id> \| verify-offline <bundle.json>]` | Export DSSE-signed NIST OSCAL `1.1.2` POA&M packages and verify signatures air-gapped. |

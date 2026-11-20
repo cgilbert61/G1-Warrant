@@ -46,6 +46,8 @@ func TestPolicyEngine_AC5GateAndVerify(t *testing.T) {
 			OtelHealthProbes:           true,
 			ReadonlyShadowReplica:      true,
 			RollbackAutomationVerified: true,
+			ReadOnlyRootFilesystem:     true,
+			NoExecTmpMounts:            true,
 		},
 		Patch: GatePatchInput{
 			DDLMigrations:         0,

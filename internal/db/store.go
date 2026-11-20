@@ -311,6 +311,10 @@ func (s *Store) AppendWarrantEnvelope(ctx context.Context, w *models.WarrantReco
 	if err != nil {
 		return err
 	}
+	cwesJSON, _ := json.Marshal(w.AutoRemediateCWEs)
+	if len(w.AutoRemediateCWEs) == 0 {
+		cwesJSON = []byte("[]")
+	}
 	envJSON, err := crypto.CanonicalizeStruct(w.DSSEEnvelope)
 	if err != nil {
 		return err
@@ -322,22 +326,27 @@ func (s *Store) AppendWarrantEnvelope(ctx context.Context, w *models.WarrantReco
 	if w.StageDwellSeconds <= 0 {
 		w.StageDwellSeconds = 300
 	}
+	if w.WarrantClass == models.WarrantClassSecretRotation {
+		w.AllowSecretRotation = true
+	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO warrant_envelopes (
 			warrant_id, warrant_class, scope_services, max_cvss, kev_eligible,
-			max_blast_radius_replicas, allow_stateful_patches, allow_guarded_canary, min_canary_samples, stage_dwell_seconds,
+			max_blast_radius_replicas, allow_stateful_patches, allow_guarded_canary,
+			allow_secret_rotation, auto_remediate_cwes, min_canary_samples, stage_dwell_seconds,
 			sla_bridge_minutes, max_p99_latency_ms,
 			issued_at, expires_at, dsse_envelope,
 			slot1_principal_id, slot1_email, slot1_key_fp, slot1_role,
 			slot2_principal_id, slot2_email, slot2_key_fp, slot2_role,
 			prev_hash, entry_hash, created_at
 		) VALUES (
-			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
-			$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
+			$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28
 		)
 	`,
 		w.WarrantID, w.WarrantClass, scopeJSON, w.MaxCVSS, w.KEVEligible,
-		w.MaxBlastRadiusReplicas, w.AllowStatefulPatches, w.AllowGuardedCanary, w.MinCanarySamples, w.StageDwellSeconds,
+		w.MaxBlastRadiusReplicas, w.AllowStatefulPatches, w.AllowGuardedCanary,
+		w.AllowSecretRotation, cwesJSON, w.MinCanarySamples, w.StageDwellSeconds,
 		w.SLABridgeMinutes, w.MaxP99LatencyMs,
 		w.IssuedAt, w.ExpiresAt, envJSON,
 		w.Slot1PrincipalID, w.Slot1Email, w.Slot1KeyFP, w.Slot1Role,

@@ -25,10 +25,17 @@ type AC5Input struct {
 	Slot2                  SignerInput `json:"slot2"`
 	NowUnix                int64       `json:"now_unix"`
 	ExpiresUnix            int64       `json:"expires_unix"`
+	WarrantClass           string      `json:"warrant_class,omitempty"`
+	AllowSecretRotation    bool        `json:"allow_secret_rotation,omitempty"`
+	ActionKind             string      `json:"action_kind,omitempty"`
 	ScopeServices          []string    `json:"scope_services"`
 	TargetService          string      `json:"target_service"`
+	MinCVSS                float64     `json:"min_cvss,omitempty"`
 	MaxCVSS                float64     `json:"max_cvss"`
 	FindingCVSS            float64     `json:"finding_cvss"`
+	FindingIsKEV           bool        `json:"finding_is_kev,omitempty"`
+	FindingCWE             string      `json:"finding_cwe,omitempty"`
+	AutoRemediateCWEs      []string    `json:"auto_remediate_cwes,omitempty"`
 	MaxBlastRadiusReplicas int         `json:"max_blast_radius_replicas"`
 	TargetReplicas         int         `json:"target_replicas"`
 }
@@ -44,8 +51,9 @@ type SignerInput struct {
 
 // AC5Decision is the deterministic policy decision from data.warrant.ac5.
 type AC5Decision struct {
-	Allow      bool     `json:"allow"`
-	Violations []string `json:"violations"`
+	Allow              bool     `json:"allow"`
+	ChainedCWEElevated bool     `json:"chained_cwe_elevated"`
+	Violations         []string `json:"violations"`
 }
 
 // GateInput represents structured input to data.warrant.gate.
@@ -65,13 +73,16 @@ type GateServiceInput struct {
 	ReadonlyShadowReplica      bool    `json:"readonly_shadow_replica"`
 	ShadowDBMode               string  `json:"shadow_db_mode,omitempty"`
 	RollbackAutomationVerified bool    `json:"rollback_automation_verified"`
+	ReadOnlyRootFilesystem     bool    `json:"readonly_root_filesystem"`
+	NoExecTmpMounts            bool    `json:"noexec_tmp_mounts"`
 }
 
 type GatePatchInput struct {
-	DDLMigrations         int  `json:"ddl_migrations"`
-	ORMModelMutations     int  `json:"orm_model_mutations"`
-	SerializationBreaks   int  `json:"serialization_breaks"`
-	APIBackwardCompatible bool `json:"api_backward_compatible"`
+	DDLMigrations          int      `json:"ddl_migrations"`
+	ORMModelMutations      int      `json:"orm_model_mutations"`
+	SerializationBreaks    int      `json:"serialization_breaks"`
+	APIBackwardCompatible  bool     `json:"api_backward_compatible"`
+	ForbiddenConfigTouches []string `json:"forbidden_config_touches,omitempty"`
 }
 
 type GateShadowInput struct {
@@ -103,6 +114,8 @@ type GateDecision struct {
 
 // VerifyInput represents structured input to data.warrant.verify.
 type VerifyInput struct {
+	RemediationKind          string `json:"remediation_kind,omitempty"`
+	SecretRotatedAndRevoked  bool   `json:"secret_rotated_and_revoked,omitempty"`
 	HasSignedProbe           bool   `json:"has_signed_probe"`
 	UnpatchedTwinStatus      string `json:"unpatched_twin_status"`
 	TwinReplayStatus         string `json:"twin_replay_status"`
@@ -177,10 +190,12 @@ func (e *Engine) EvalAC5(ctx context.Context, in AC5Input) (*AC5Decision, error)
 		return nil, fmt.Errorf("unexpected ac5 result type %T", rs[0].Expressions[0].Value)
 	}
 	allow, _ := m["allow"].(bool)
+	elevated, _ := m["chained_cwe_elevated"].(bool)
 	violations := extractSortedStrings(m["violations"])
 	return &AC5Decision{
-		Allow:      allow,
-		Violations: violations,
+		Allow:              allow,
+		ChainedCWEElevated: elevated,
+		Violations:         violations,
 	}, nil
 }
 

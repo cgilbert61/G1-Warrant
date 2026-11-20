@@ -117,8 +117,11 @@ func (e *Engine) SubmitDualSignedWarrant(ctx context.Context, env crypto.Envelop
 		},
 		NowUnix:                time.Now().UTC().Unix(),
 		ExpiresUnix:            expiresAt.Unix(),
+		WarrantClass:           wp.WarrantClass,
+		AllowSecretRotation:    wp.AllowSecretRotation || wp.WarrantClass == models.WarrantClassSecretRotation,
 		ScopeServices:          wp.ScopeServices,
 		MaxCVSS:                wp.MaxCVSS,
+		AutoRemediateCWEs:      wp.AutoRemediateCWEs,
 		MaxBlastRadiusReplicas: wp.MaxBlastRadiusReplicas,
 	})
 	if err != nil {
@@ -150,6 +153,8 @@ func (e *Engine) SubmitDualSignedWarrant(ctx context.Context, env crypto.Envelop
 		MaxBlastRadiusReplicas: wp.MaxBlastRadiusReplicas,
 		AllowStatefulPatches:   wp.AllowStatefulPatches,
 		AllowGuardedCanary:     wp.AllowGuardedCanary,
+		AllowSecretRotation:    wp.AllowSecretRotation || wp.WarrantClass == models.WarrantClassSecretRotation,
+		AutoRemediateCWEs:      wp.AutoRemediateCWEs,
 		MinCanarySamples:       wp.MinCanarySamples,
 		StageDwellSeconds:      wp.StageDwellSeconds,
 		SLABridgeMinutes:       wp.SLABridgeMinutes,
@@ -176,8 +181,9 @@ func (e *Engine) SubmitDualSignedWarrant(ctx context.Context, env crypto.Envelop
 }
 
 // ReverifyWarrantForExecution cryptographically re-verifies both Standing Warrant signatures
-// against live principal_revocations and OPA AC-5 rules at N2/N5 execution time.
-func (e *Engine) ReverifyWarrantForExecution(ctx context.Context, warrantID, targetServiceID string, findingCVSS float64, targetReplicas int) (*models.WarrantRecord, error) {
+// against live principal_revocations and OPA AC-5 rules at N2/N4/N5 execution time.
+// Optional actionAndCWE args: [0]=actionKind ("IMAGE_PATCH"|"SECRET_ROTATION"), [1]=findingCWE.
+func (e *Engine) ReverifyWarrantForExecution(ctx context.Context, warrantID, targetServiceID string, findingCVSS float64, targetReplicas int, actionAndCWE ...string) (*models.WarrantRecord, error) {
 	w, err := e.store.GetWarrant(ctx, warrantID)
 	if err != nil {
 		return nil, fmt.Errorf("N1_WARRANT_NOT_FOUND: %w", err)
@@ -186,6 +192,15 @@ func (e *Engine) ReverifyWarrantForExecution(ctx context.Context, warrantID, tar
 	dualRes, err := crypto.VerifyDualHumanCeremony(&w.DSSEEnvelope, crypto.PayloadTypeWarrant, resolver, e.webauthnCfg)
 	if err != nil {
 		return nil, fmt.Errorf("N1_WARRANT_REVERIFY_FAILED: %w", err)
+	}
+
+	actionKind := models.RemediationKindImagePatch
+	if len(actionAndCWE) > 0 && actionAndCWE[0] != "" {
+		actionKind = actionAndCWE[0]
+	}
+	findingCWE := ""
+	if len(actionAndCWE) > 1 {
+		findingCWE = actionAndCWE[1]
 	}
 
 	ac5Dec, err := e.policy.EvalAC5(ctx, policy.AC5Input{
@@ -205,10 +220,15 @@ func (e *Engine) ReverifyWarrantForExecution(ctx context.Context, warrantID, tar
 		},
 		NowUnix:                time.Now().UTC().Unix(),
 		ExpiresUnix:            w.ExpiresAt.Unix(),
+		WarrantClass:           w.WarrantClass,
+		AllowSecretRotation:    w.AllowSecretRotation,
+		ActionKind:             actionKind,
 		ScopeServices:          w.ScopeServices,
 		TargetService:          targetServiceID,
 		MaxCVSS:                w.MaxCVSS,
 		FindingCVSS:            findingCVSS,
+		FindingCWE:             findingCWE,
+		AutoRemediateCWEs:      w.AutoRemediateCWEs,
 		MaxBlastRadiusReplicas: w.MaxBlastRadiusReplicas,
 		TargetReplicas:         targetReplicas,
 	})

@@ -6,9 +6,13 @@ default allow_bridge_retirement := false
 default allow_attestation_mint := false
 default assurance_tier := "UNVERIFIED"
 
+is_secret_rotation if {
+	object.get(input, "remediation_kind", "IMAGE_PATCH") == "SECRET_ROTATION"
+}
+
 # Case A: Signed Regression Probe Present -> Differential Twin Proof Required
-# Must FIRST reproduce on unpatched vulnerable_digest (positive control) AND be blocked on patched_digest!
 has_probe if {
+	not is_secret_rotation
 	object.get(input, "has_signed_probe", true) == true
 }
 
@@ -20,15 +24,29 @@ differential_twin_valid if {
 
 # Case B: Advisory-Only Finding (No Weaponized PoC Available) -> Passive Digest & Provenance Proof
 passive_sbom_valid if {
+	not is_secret_rotation
 	not has_probe
 	object.get(input, "provenance_verified", false) == true
 	input.twin_replay_status == "NO_PROBE_PASSIVE_ONLY"
 }
 
-assurance_tier := "ASSURANCE_TIER_2_DIFFERENTIAL_TWIN" if {
+# Case C: Autonomous Credential / Secret Rotation Proof
+secret_rotation_valid if {
+	is_secret_rotation
+	object.get(input, "secret_rotated_and_revoked", false) == true
+}
+
+assurance_tier := "ASSURANCE_TIER_SECRET_ROTATED" if {
+	secret_rotation_valid
+} else := "ASSURANCE_TIER_2_DIFFERENTIAL_TWIN" if {
 	differential_twin_valid
 } else := "ASSURANCE_TIER_1_PASSIVE_DIGEST_SBOM" if {
 	passive_sbom_valid
+}
+
+blockers contains "SECRET_ROTATION_INCOMPLETE" if {
+	is_secret_rotation
+	object.get(input, "secret_rotated_and_revoked", false) != true
 }
 
 blockers contains "BROKEN_PROBE_POSITIVE_CONTROL_FAILED" if {
@@ -42,6 +60,7 @@ blockers contains "TWIN_REPLAY_NOT_BLOCKED" if {
 }
 
 blockers contains "PASSIVE_CLOSURE_MISSING_PROVENANCE" if {
+	not is_secret_rotation
 	not has_probe
 	object.get(input, "provenance_verified", false) != true
 }
@@ -59,6 +78,7 @@ blockers contains "VULNERABLE_SYMBOLS_STILL_LOADED" if {
 }
 
 blockers contains "ADMISSION_LOCKOUT_NOT_ENFORCED" if {
+	not is_secret_rotation
 	input.admission_lockout_enforced != true
 }
 
@@ -80,6 +100,12 @@ allow_bridge_retirement if {
 	input.attested_pods == input.total_pods
 	input.vulnerable_symbols_loaded == 0
 	input.admission_lockout_enforced == true
+}
+
+allow_bridge_retirement if {
+	secret_rotation_valid
+	input.total_pods > 0
+	input.attested_pods == input.total_pods
 }
 
 allow_attestation_mint if {

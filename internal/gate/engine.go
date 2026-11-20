@@ -71,6 +71,7 @@ func GradeServiceReadiness(svc *models.EstateService) {
 		}
 	}
 	shadowCapable := svc.ReadonlyShadowReplica || svc.ShadowDBMode == "EPHEMERAL_COW_BRANCH" || svc.ShadowDBMode == "READONLY_REPLICA"
+	immutableFS := svc.ReadOnlyRootFilesystem && svc.NoExecTmpMounts
 
 	checks := []models.EligibilityCheckItem{
 		{
@@ -101,13 +102,20 @@ func GradeServiceReadiness(svc *models.EstateService) {
 			RequiredThreshold: "true",
 			ActionCode:        ternary(svc.RollbackAutomationVerified, "NONE", "VERIFY_DETERMINISTIC_SUB_10S_ROLLBACK_HOOK"),
 		},
+		{
+			CriterionCode:     "IMMUTABLE_ROOTFS_NOEXEC_TMP",
+			Passed:            immutableFS,
+			ObservedValue:     fmt.Sprintf("readOnlyRootFs=%t, noexecTmp=%t", svc.ReadOnlyRootFilesystem, svc.NoExecTmpMounts),
+			RequiredThreshold: "readOnlyRootFilesystem=true && noexec /tmp",
+			ActionCode:        ternary(immutableFS, "NONE", "ENFORCE_READONLY_ROOTFS_AND_NOEXEC_TMP_MOUNT"),
+		},
 	}
 	svc.EligibilityChecklist = checks
 	switch {
-	case covOK && svc.OtelHealthProbes && shadowCapable && svc.RollbackAutomationVerified:
+	case covOK && svc.OtelHealthProbes && shadowCapable && svc.RollbackAutomationVerified && immutableFS:
 		svc.AutonomyTier = models.AutonomyTier1FullAutonomous
 		svc.Eligible = true
-	case svc.OtelHealthProbes && svc.RollbackAutomationVerified:
+	case svc.OtelHealthProbes && svc.RollbackAutomationVerified && immutableFS:
 		svc.AutonomyTier = models.AutonomyTier2GuardedCanary
 		svc.Eligible = false
 	default:
@@ -354,12 +362,15 @@ func (e *Engine) EvaluateAndRollout(ctx context.Context, item *models.Remediatio
 			ReadonlyShadowReplica:      svc.ReadonlyShadowReplica,
 			ShadowDBMode:               svc.ShadowDBMode,
 			RollbackAutomationVerified: svc.RollbackAutomationVerified,
+			ReadOnlyRootFilesystem:     svc.ReadOnlyRootFilesystem,
+			NoExecTmpMounts:            svc.NoExecTmpMounts,
 		},
 		Patch: policy.GatePatchInput{
-			DDLMigrations:         patchMeta.DDLMigrations,
-			ORMModelMutations:     patchMeta.ORMModelMutations,
-			SerializationBreaks:   patchMeta.SerializationBreaks,
-			APIBackwardCompatible: patchMeta.APIBackwardCompatible,
+			DDLMigrations:          patchMeta.DDLMigrations,
+			ORMModelMutations:      patchMeta.ORMModelMutations,
+			SerializationBreaks:    patchMeta.SerializationBreaks,
+			APIBackwardCompatible:  patchMeta.APIBackwardCompatible,
+			ForbiddenConfigTouches: patchMeta.ForbiddenConfigTouches,
 		},
 		Shadow: policy.GateShadowInput{
 			MaxP99LatencyMs:  w.MaxP99LatencyMs,
@@ -482,6 +493,8 @@ func (e *Engine) EvaluateAndRollout(ctx context.Context, item *models.Remediatio
 				ReadonlyShadowReplica:      stageResp.ReadonlyDBBound,
 				ShadowDBMode:               svc.ShadowDBMode,
 				RollbackAutomationVerified: true,
+				ReadOnlyRootFilesystem:     svc.ReadOnlyRootFilesystem,
+				NoExecTmpMounts:            svc.NoExecTmpMounts,
 			},
 			Patch: policy.GatePatchInput{
 				DDLMigrations:         0,

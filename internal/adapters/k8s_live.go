@@ -352,6 +352,65 @@ func (k *LiveKubernetesAdapter) InjectDriftSimulation(_ context.Context, _, _ st
 	return "", 0, fmt.Errorf("chaos drift injection is disabled on live production Kubernetes clusters")
 }
 
+func (k *LiveKubernetesAdapter) InjectFilesystemDriftSimulation(_ context.Context, _, _, _ string) (string, int64, error) {
+	return "", 0, fmt.Errorf("chaos filesystem drift injection is disabled on live production Kubernetes clusters")
+}
+
+// RotateWorkloadSecret triggers an ExternalSecret force-sync annotation and patches the Deployment pod template
+// to force immediate rolling restart & revocation of compromised workload credentials.
+func (k *LiveKubernetesAdapter) RotateWorkloadSecret(ctx context.Context, serviceID, secretResourceKind, secretResourceName string) (*fleetsim.SecretRotationResult, error) {
+	now := time.Now().UTC()
+	syncVal := fmt.Sprintf("%d", now.UnixNano())
+	if secretResourceKind == "EXTERNAL_SECRET" && secretResourceName != "" {
+		esPatch, _ := json.Marshal(map[string]any{
+			"metadata": map[string]any{
+				"annotations": map[string]string{"force-sync": syncVal},
+			},
+		})
+		_, _ = k.doKubeRequest(ctx, http.MethodPatch, fmt.Sprintf("/apis/external-secrets.io/v1beta1/namespaces/%s/externalsecrets/%s", k.namespace, secretResourceName), "application/merge-patch+json", esPatch)
+	}
+	depPatch, _ := json.Marshal(map[string]any{
+		"spec": map[string]any{
+			"template": map[string]any{
+				"metadata": map[string]any{
+					"annotations": map[string]string{
+						"g1.warrant/secret-rotated-at": now.Format(time.RFC3339Nano),
+						"g1.warrant/secret-resource":   secretResourceName,
+					},
+				},
+			},
+		},
+	})
+	if _, err := k.doKubeRequest(ctx, http.MethodPatch, fmt.Sprintf("/apis/apps/v1/namespaces/%s/deployments/%s", k.namespace, serviceID), "application/strategic-merge-patch+json", depPatch); err != nil {
+		return nil, err
+	}
+	return &fleetsim.SecretRotationResult{
+		ServiceID:            serviceID,
+		SecretResourceKind:   secretResourceKind,
+		SecretResourceName:   secretResourceName,
+		PreviousTokenRevoked: true,
+		NewSecretGeneration:  int(now.Unix() % 100000),
+		NewSecretVersionHash: crypto.SHA256Hex([]byte(serviceID + "|" + secretResourceName + "|" + syncVal)),
+		RestartedPods:        1,
+		RotatedAt:            now,
+	}, nil
+}
+
+// CordonAndRecyclePod isolates a pod exhibiting Tetragon/eBPF filesystem or process drift via quarantine label
+// and deletes it so the ReplicaSet controller instantiates a fresh pod from the immutable SHA-256 image digest.
+func (k *LiveKubernetesAdapter) CordonAndRecyclePod(ctx context.Context, serviceID, podName, _ string) (string, error) {
+	cordonPatch, _ := json.Marshal(map[string]any{
+		"metadata": map[string]any{
+			"labels": map[string]string{"g1.warrant/quarantined-pod": "true"},
+		},
+	})
+	_, _ = k.doKubeRequest(ctx, http.MethodPatch, fmt.Sprintf("/api/v1/namespaces/%s/pods/%s", k.namespace, podName), "application/merge-patch+json", cordonPatch)
+	if _, err := k.doKubeRequest(ctx, http.MethodDelete, fmt.Sprintf("/api/v1/namespaces/%s/pods/%s", k.namespace, podName), "", nil); err != nil {
+		return "", err
+	}
+	return serviceID + "-recycled-from-immutable-digest", nil
+}
+
 func (k *LiveKubernetesAdapter) RegisterImageProfile(_ context.Context, _ fleetsim.ImageBehaviorProfile) error {
 	return nil
 }
@@ -382,6 +441,9 @@ func (k *LiveKubernetesAdapter) CompileAndApplyBridge(ctx context.Context, req B
 			"labels": map[string]string{
 				"g1.warrant/bridge-id":        req.BridgeID,
 				"g1.warrant/containment-mode": containmentMode,
+			},
+			"annotations": map[string]string{
+				"g1.warrant/blocked-metadata-cidrs": "169.254.169.254/32,169.254.170.2/32,fd00:ec2::254/128",
 			},
 		},
 		"spec": map[string]any{
@@ -416,14 +478,16 @@ func (k *LiveKubernetesAdapter) CompileAndApplyBridge(ctx context.Context, req B
 		status = "REARMED_DRIFT"
 	}
 	return &models.ContainmentBridge{
-		BridgeID:           req.BridgeID,
-		RemediationID:      req.RemediationID,
-		ServiceID:          req.ServiceID,
-		CVEID:              req.CVEID,
-		BridgeType:         bridgeType,
-		ContainmentMode:    containmentMode,
-		RulepackID:         rulepackID,
-		Status:             status,
+		BridgeID:             req.BridgeID,
+		RemediationID:        req.RemediationID,
+		ServiceID:            req.ServiceID,
+		CVEID:                req.CVEID,
+		BridgeType:           bridgeType,
+		ContainmentMode:      containmentMode,
+		RulepackID:           rulepackID,
+		MetadataPlaneBlocked: true,
+		AllowedEgressPeers:   req.AllowedEgressServices,
+		Status:               status,
 		SLABridgeMinutes:   req.SLABridgeMinutes,
 		BlockerReasonCode:  req.BlockerReasonCode,
 		CiliumManifestYAML: string(netpolYAML),

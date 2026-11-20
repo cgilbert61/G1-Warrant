@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/g1163rt-labs/g1-warrant/internal/crypto"
@@ -17,7 +18,8 @@ func (s *Store) ListWarrants(ctx context.Context) ([]models.WarrantRecord, error
 	rows, err := s.pool.Query(ctx, `
 		SELECT w.warrant_id, w.warrant_class, w.scope_services, w.max_cvss, w.kev_eligible,
 		       w.max_blast_radius_replicas, w.allow_stateful_patches,
-		       w.allow_guarded_canary, w.min_canary_samples, w.stage_dwell_seconds,
+		       w.allow_guarded_canary, w.allow_secret_rotation, w.auto_remediate_cwes,
+		       w.min_canary_samples, w.stage_dwell_seconds,
 		       w.sla_bridge_minutes, w.max_p99_latency_ms,
 		       w.issued_at, w.expires_at, w.dsse_envelope,
 		       w.slot1_principal_id, w.slot1_email, w.slot1_key_fp, w.slot1_role,
@@ -42,11 +44,12 @@ func (s *Store) ListWarrants(ctx context.Context) ([]models.WarrantRecord, error
 	out := []models.WarrantRecord{}
 	for rows.Next() {
 		var w models.WarrantRecord
-		var scopeRaw, envRaw []byte
+		var scopeRaw, cwesRaw, envRaw []byte
 		if err := rows.Scan(
 			&w.WarrantID, &w.WarrantClass, &scopeRaw, &w.MaxCVSS, &w.KEVEligible,
 			&w.MaxBlastRadiusReplicas, &w.AllowStatefulPatches,
-			&w.AllowGuardedCanary, &w.MinCanarySamples, &w.StageDwellSeconds,
+			&w.AllowGuardedCanary, &w.AllowSecretRotation, &cwesRaw,
+			&w.MinCanarySamples, &w.StageDwellSeconds,
 			&w.SLABridgeMinutes, &w.MaxP99LatencyMs,
 			&w.IssuedAt, &w.ExpiresAt, &envRaw,
 			&w.Slot1PrincipalID, &w.Slot1Email, &w.Slot1KeyFP, &w.Slot1Role,
@@ -56,6 +59,7 @@ func (s *Store) ListWarrants(ctx context.Context) ([]models.WarrantRecord, error
 			return nil, err
 		}
 		_ = json.Unmarshal(scopeRaw, &w.ScopeServices)
+		_ = json.Unmarshal(cwesRaw, &w.AutoRemediateCWEs)
 		_ = json.Unmarshal(envRaw, &w.DSSEEnvelope)
 		switch {
 		case w.RevocationReason != "":
@@ -85,14 +89,45 @@ func (s *Store) GetWarrant(ctx context.Context, warrantID string) (*models.Warra
 	return nil, fmt.Errorf("warrant %q not found", warrantID)
 }
 
-// FindMatchingWarrant locates the newest ACTIVE Standing Warrant covering serviceID and cvssScore.
-func (s *Store) FindMatchingWarrant(ctx context.Context, serviceID string, cvssScore float64) (*models.WarrantRecord, error) {
+// FindMatchingWarrant locates the newest ACTIVE image-patch Standing Warrant covering serviceID and cvssScore/CWE.
+func (s *Store) FindMatchingWarrant(ctx context.Context, serviceID string, cvssScore float64, cweOpt ...string) (*models.WarrantRecord, error) {
 	all, err := s.ListWarrants(ctx)
 	if err != nil {
 		return nil, err
 	}
+	targetCWE := ""
+	if len(cweOpt) > 0 {
+		targetCWE = strings.ToUpper(strings.TrimSpace(cweOpt[0]))
+	}
+
+	// Pass 1: Prefer warrant explicitly matching targetCWE in AutoRemediateCWEs when finding is an attack-path CWE
+	if targetCWE != "" {
+		for _, w := range all {
+			if w.LiveStatus != "ACTIVE" || w.WarrantClass == models.WarrantClassSecretRotation || cvssScore > w.MaxCVSS {
+				continue
+			}
+			cweMatched := false
+			for _, c := range w.AutoRemediateCWEs {
+				if strings.EqualFold(c, targetCWE) {
+					cweMatched = true
+					break
+				}
+			}
+			if !cweMatched {
+				continue
+			}
+			for _, svc := range w.ScopeServices {
+				if svc == "*" || svc == serviceID {
+					cp := w
+					return &cp, nil
+				}
+			}
+		}
+	}
+
+	// Pass 2: Standard scope + CVSS ceiling match (excluding dedicated SECRET-ROTATION-STATELESS warrants)
 	for _, w := range all {
-		if w.LiveStatus != "ACTIVE" || cvssScore > w.MaxCVSS {
+		if w.LiveStatus != "ACTIVE" || w.WarrantClass == models.WarrantClassSecretRotation || cvssScore > w.MaxCVSS {
 			continue
 		}
 		for _, svc := range w.ScopeServices {
@@ -103,6 +138,29 @@ func (s *Store) FindMatchingWarrant(ctx context.Context, serviceID string, cvssS
 		}
 	}
 	return nil, fmt.Errorf("NO_MATCHING_ACTIVE_WARRANT for service=%s cvss=%.1f", serviceID, cvssScore)
+}
+
+// FindMatchingSecretWarrant locates the newest ACTIVE SECRET-ROTATION-STATELESS (or allow_secret_rotation) warrant for serviceID.
+func (s *Store) FindMatchingSecretWarrant(ctx context.Context, serviceID string) (*models.WarrantRecord, error) {
+	all, err := s.ListWarrants(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, w := range all {
+		if w.LiveStatus != "ACTIVE" {
+			continue
+		}
+		if w.WarrantClass != models.WarrantClassSecretRotation && !w.AllowSecretRotation {
+			continue
+		}
+		for _, svc := range w.ScopeServices {
+			if svc == "*" || svc == serviceID {
+				cp := w
+				return &cp, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("NO_ACTIVE_SECRET_ROTATION_WARRANT for service=%s", serviceID)
 }
 
 // GetFreezeState fetches the singleton emergency freeze state.
@@ -192,6 +250,10 @@ func (s *Store) UpsertEstateService(ctx context.Context, svc models.EstateServic
 	if len(svc.VolatileJSONPaths) == 0 {
 		volPathsJSON = []byte("[]")
 	}
+	egressJSON, _ := json.Marshal(svc.AllowedEgressServices)
+	if len(svc.AllowedEgressServices) == 0 {
+		egressJSON = []byte(`["kube-dns.kube-system.svc.cluster.local"]`)
+	}
 	if svc.AutonomyTier == "" {
 		if svc.Eligible {
 			svc.AutonomyTier = models.AutonomyTier1FullAutonomous
@@ -213,8 +275,9 @@ func (s *Store) UpsertEstateService(ctx context.Context, svc models.EstateServic
 		INSERT INTO estate_services (
 			service_id, display_name, namespace, tier, warrant_class, current_digest, current_purl, sbom_purls,
 			replicas, test_coverage_pct, otel_health_probes, readonly_shadow_replica, shadow_db_mode,
-			rollback_automation_verified, baseline_syscalls, volatile_json_paths, eligible, autonomy_tier, eligibility_checklist, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+			rollback_automation_verified, readonly_root_filesystem, noexec_tmp_mounts, allowed_egress_services,
+			baseline_syscalls, volatile_json_paths, eligible, autonomy_tier, eligibility_checklist, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
 		ON CONFLICT (service_id) DO UPDATE SET
 			display_name = EXCLUDED.display_name,
 			namespace = EXCLUDED.namespace,
@@ -229,6 +292,9 @@ func (s *Store) UpsertEstateService(ctx context.Context, svc models.EstateServic
 			readonly_shadow_replica = EXCLUDED.readonly_shadow_replica,
 			shadow_db_mode = EXCLUDED.shadow_db_mode,
 			rollback_automation_verified = EXCLUDED.rollback_automation_verified,
+			readonly_root_filesystem = EXCLUDED.readonly_root_filesystem,
+			noexec_tmp_mounts = EXCLUDED.noexec_tmp_mounts,
+			allowed_egress_services = EXCLUDED.allowed_egress_services,
 			baseline_syscalls = EXCLUDED.baseline_syscalls,
 			volatile_json_paths = EXCLUDED.volatile_json_paths,
 			eligible = EXCLUDED.eligible,
@@ -238,7 +304,8 @@ func (s *Store) UpsertEstateService(ctx context.Context, svc models.EstateServic
 	`,
 		svc.ServiceID, svc.DisplayName, svc.Namespace, svc.Tier, svc.WarrantClass, svc.CurrentDigest, svc.CurrentPURL, sbomJSON,
 		svc.Replicas, svc.TestCoveragePct, svc.OtelHealthProbes, svc.ReadonlyShadowReplica, svc.ShadowDBMode,
-		svc.RollbackAutomationVerified, syscallsJSON, volPathsJSON, svc.Eligible, svc.AutonomyTier, checklistJSON, svc.UpdatedAt,
+		svc.RollbackAutomationVerified, svc.ReadOnlyRootFilesystem, svc.NoExecTmpMounts, egressJSON,
+		syscallsJSON, volPathsJSON, svc.Eligible, svc.AutonomyTier, checklistJSON, svc.UpdatedAt,
 	)
 	return err
 }
@@ -248,7 +315,8 @@ func (s *Store) ListEstateServices(ctx context.Context) ([]models.EstateService,
 	rows, err := s.pool.Query(ctx, `
 		SELECT service_id, display_name, namespace, tier, warrant_class, current_digest, current_purl, sbom_purls,
 		       replicas, test_coverage_pct, otel_health_probes, readonly_shadow_replica, shadow_db_mode,
-		       rollback_automation_verified, baseline_syscalls, volatile_json_paths, eligible, autonomy_tier, eligibility_checklist, updated_at
+		       rollback_automation_verified, readonly_root_filesystem, noexec_tmp_mounts, allowed_egress_services,
+		       baseline_syscalls, volatile_json_paths, eligible, autonomy_tier, eligibility_checklist, updated_at
 		FROM estate_services ORDER BY tier ASC, service_id ASC
 	`)
 	if err != nil {
@@ -258,15 +326,17 @@ func (s *Store) ListEstateServices(ctx context.Context) ([]models.EstateService,
 	out := []models.EstateService{}
 	for rows.Next() {
 		var svc models.EstateService
-		var sbomRaw, sysRaw, volRaw, checkRaw []byte
+		var sbomRaw, egressRaw, sysRaw, volRaw, checkRaw []byte
 		if err := rows.Scan(
 			&svc.ServiceID, &svc.DisplayName, &svc.Namespace, &svc.Tier, &svc.WarrantClass, &svc.CurrentDigest, &svc.CurrentPURL, &sbomRaw,
 			&svc.Replicas, &svc.TestCoveragePct, &svc.OtelHealthProbes, &svc.ReadonlyShadowReplica, &svc.ShadowDBMode,
-			&svc.RollbackAutomationVerified, &sysRaw, &volRaw, &svc.Eligible, &svc.AutonomyTier, &checkRaw, &svc.UpdatedAt,
+			&svc.RollbackAutomationVerified, &svc.ReadOnlyRootFilesystem, &svc.NoExecTmpMounts, &egressRaw,
+			&sysRaw, &volRaw, &svc.Eligible, &svc.AutonomyTier, &checkRaw, &svc.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(sbomRaw, &svc.SBOMPURLs)
+		_ = json.Unmarshal(egressRaw, &svc.AllowedEgressServices)
 		_ = json.Unmarshal(sysRaw, &svc.BaselineSyscalls)
 		_ = json.Unmarshal(volRaw, &svc.VolatileJSONPaths)
 		_ = json.Unmarshal(checkRaw, &svc.EligibilityChecklist)
@@ -306,10 +376,13 @@ func (s *Store) UpsertRemediation(ctx context.Context, item *models.RemediationI
 	if item.AssuranceTier == "" {
 		item.AssuranceTier = "PENDING"
 	}
+	if item.RemediationKind == "" {
+		item.RemediationKind = models.RemediationKindImagePatch
+	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO remediation_items (
-			remediation_id, cve_id, cwe_id, is_kev, cvss_score, service_id, warrant_id,
-			vulnerable_digest, patched_digest, package_purl, vulnerable_symbol, exploit_vector,
+			remediation_id, remediation_kind, cve_id, cwe_id, is_kev, chained_exploit_enabler, cvss_score, service_id, warrant_id,
+			secret_resource_name, vulnerable_digest, patched_digest, package_purl, vulnerable_symbol, exploit_vector,
 			stage, status_health, blocker_code, canary_weight,
 			stateless_passed, schema_diff_passed, syscall_diff_passed,
 			twin_replay_status, assurance_tier, pod_sweep_matched, pod_sweep_total,
@@ -317,10 +390,12 @@ func (s *Store) UpsertRemediation(ctx context.Context, item *models.RemediationI
 			patch_metadata, shadow_report, created_at, bridged_at, closed_at, updated_at
 		) VALUES (
 			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-			$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33
+			$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36
 		)
 		ON CONFLICT (remediation_id) DO UPDATE SET
+			remediation_kind = EXCLUDED.remediation_kind,
 			warrant_id = EXCLUDED.warrant_id,
+			secret_resource_name = EXCLUDED.secret_resource_name,
 			patched_digest = EXCLUDED.patched_digest,
 			stage = EXCLUDED.stage,
 			status_health = EXCLUDED.status_health,
@@ -342,8 +417,8 @@ func (s *Store) UpsertRemediation(ctx context.Context, item *models.RemediationI
 			closed_at = EXCLUDED.closed_at,
 			updated_at = EXCLUDED.updated_at
 	`,
-		item.RemediationID, item.CVEID, item.CWEID, item.IsKEV, item.CVSSScore, item.ServiceID, item.WarrantID,
-		item.VulnerableDigest, item.PatchedDigest, item.PackagePURL, item.VulnerableSymbol, item.ExploitVector,
+		item.RemediationID, item.RemediationKind, item.CVEID, item.CWEID, item.IsKEV, item.ChainedExploitEnabler, item.CVSSScore, item.ServiceID, item.WarrantID,
+		item.SecretResourceName, item.VulnerableDigest, item.PatchedDigest, item.PackagePURL, item.VulnerableSymbol, item.ExploitVector,
 		item.Stage, item.StatusHealth, item.BlockerCode, item.CanaryWeight,
 		item.StatelessPassed, item.SchemaDiffPassed, item.SyscallPassed,
 		item.TwinReplayStatus, item.AssuranceTier, item.PodSweepMatched, item.PodSweepTotal,
@@ -356,8 +431,8 @@ func (s *Store) UpsertRemediation(ctx context.Context, item *models.RemediationI
 // ListRemediations returns all Race Pipeline remediation items ordered newest first.
 func (s *Store) ListRemediations(ctx context.Context) ([]models.RemediationItem, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT remediation_id, cve_id, cwe_id, is_kev, cvss_score, service_id, warrant_id,
-		       vulnerable_digest, patched_digest, package_purl, vulnerable_symbol, exploit_vector,
+		SELECT remediation_id, remediation_kind, cve_id, cwe_id, is_kev, chained_exploit_enabler, cvss_score, service_id, warrant_id,
+		       secret_resource_name, vulnerable_digest, patched_digest, package_purl, vulnerable_symbol, exploit_vector,
 		       stage, status_health, blocker_code, canary_weight,
 		       stateless_passed, schema_diff_passed, syscall_diff_passed,
 		       twin_replay_status, assurance_tier, pod_sweep_matched, pod_sweep_total,
@@ -374,8 +449,8 @@ func (s *Store) ListRemediations(ctx context.Context) ([]models.RemediationItem,
 		var r models.RemediationItem
 		var patchRaw, shadowRaw []byte
 		if err := rows.Scan(
-			&r.RemediationID, &r.CVEID, &r.CWEID, &r.IsKEV, &r.CVSSScore, &r.ServiceID, &r.WarrantID,
-			&r.VulnerableDigest, &r.PatchedDigest, &r.PackagePURL, &r.VulnerableSymbol, &r.ExploitVector,
+			&r.RemediationID, &r.RemediationKind, &r.CVEID, &r.CWEID, &r.IsKEV, &r.ChainedExploitEnabler, &r.CVSSScore, &r.ServiceID, &r.WarrantID,
+			&r.SecretResourceName, &r.VulnerableDigest, &r.PatchedDigest, &r.PackagePURL, &r.VulnerableSymbol, &r.ExploitVector,
 			&r.Stage, &r.StatusHealth, &r.BlockerCode, &r.CanaryWeight,
 			&r.StatelessPassed, &r.SchemaDiffPassed, &r.SyscallPassed,
 			&r.TwinReplayStatus, &r.AssuranceTier, &r.PodSweepMatched, &r.PodSweepTotal,
@@ -460,21 +535,29 @@ func (s *Store) UpsertBridge(ctx context.Context, b models.ContainmentBridge) er
 	if b.ContainmentMode == "" {
 		b.ContainmentMode = models.ContainmentModeZeroProseQuarantine
 	}
+	peersJSON, _ := json.Marshal(b.AllowedEgressPeers)
+	if len(b.AllowedEgressPeers) == 0 {
+		peersJSON = []byte(`["kube-dns.kube-system.svc.cluster.local"]`)
+	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO containment_bridges (
-			bridge_id, remediation_id, service_id, cve_id, bridge_type, containment_mode, rulepack_id, status,
+			bridge_id, remediation_id, service_id, cve_id, bridge_type, containment_mode, rulepack_id,
+			metadata_plane_blocked, allowed_egress_peers, status,
 			sla_minutes, blocker_reason_code, cilium_manifest_yaml, k8s_netpol_yaml, envoy_filter_json,
 			armed_at, retired_at, rearmed_count
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
 		ON CONFLICT (bridge_id) DO UPDATE SET
 			containment_mode = EXCLUDED.containment_mode,
 			rulepack_id = EXCLUDED.rulepack_id,
+			metadata_plane_blocked = EXCLUDED.metadata_plane_blocked,
+			allowed_egress_peers = EXCLUDED.allowed_egress_peers,
 			status = EXCLUDED.status,
 			blocker_reason_code = EXCLUDED.blocker_reason_code,
 			retired_at = EXCLUDED.retired_at,
 			rearmed_count = EXCLUDED.rearmed_count
 	`,
-		b.BridgeID, b.RemediationID, b.ServiceID, b.CVEID, b.BridgeType, b.ContainmentMode, b.RulepackID, b.Status,
+		b.BridgeID, b.RemediationID, b.ServiceID, b.CVEID, b.BridgeType, b.ContainmentMode, b.RulepackID,
+		b.MetadataPlaneBlocked, peersJSON, b.Status,
 		b.SLABridgeMinutes, b.BlockerReasonCode, b.CiliumManifestYAML, b.K8sNetpolYAML, b.EnvoyFilterJSON,
 		b.ArmedAt, b.RetiredAt, b.RearmedCount,
 	)
@@ -484,7 +567,8 @@ func (s *Store) UpsertBridge(ctx context.Context, b models.ContainmentBridge) er
 // ListBridges lists all containment bridges ordered by active status then armed_at.
 func (s *Store) ListBridges(ctx context.Context) ([]models.ContainmentBridge, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT bridge_id, remediation_id, service_id, cve_id, bridge_type, containment_mode, rulepack_id, status,
+		SELECT bridge_id, remediation_id, service_id, cve_id, bridge_type, containment_mode, rulepack_id,
+		       metadata_plane_blocked, allowed_egress_peers, status,
 		       sla_minutes, blocker_reason_code, cilium_manifest_yaml, k8s_netpol_yaml, envoy_filter_json,
 		       armed_at, retired_at, rearmed_count
 		FROM containment_bridges
@@ -497,13 +581,16 @@ func (s *Store) ListBridges(ctx context.Context) ([]models.ContainmentBridge, er
 	out := []models.ContainmentBridge{}
 	for rows.Next() {
 		var b models.ContainmentBridge
+		var peersRaw []byte
 		if err := rows.Scan(
-			&b.BridgeID, &b.RemediationID, &b.ServiceID, &b.CVEID, &b.BridgeType, &b.ContainmentMode, &b.RulepackID, &b.Status,
+			&b.BridgeID, &b.RemediationID, &b.ServiceID, &b.CVEID, &b.BridgeType, &b.ContainmentMode, &b.RulepackID,
+			&b.MetadataPlaneBlocked, &peersRaw, &b.Status,
 			&b.SLABridgeMinutes, &b.BlockerReasonCode, &b.CiliumManifestYAML, &b.K8sNetpolYAML, &b.EnvoyFilterJSON,
 			&b.ArmedAt, &b.RetiredAt, &b.RearmedCount,
 		); err != nil {
 			return nil, err
 		}
+		_ = json.Unmarshal(peersRaw, &b.AllowedEgressPeers)
 		out = append(out, b)
 	}
 	return out, rows.Err()
@@ -574,35 +661,43 @@ func (s *Store) ListLockouts(ctx context.Context) ([]models.AdmissionLockout, er
 	return out, rows.Err()
 }
 
-// RecordDriftIncident inserts a runtime drift incident and increments the lockout drift counter.
+// RecordDriftIncident inserts a runtime drift incident and increments the lockout drift counter when applicable.
 func (s *Store) RecordDriftIncident(ctx context.Context, inc models.DriftIncident) error {
 	if inc.DetectedAt.IsZero() {
 		inc.DetectedAt = time.Now().UTC()
 	}
+	if inc.DriftKind == "" {
+		inc.DriftKind = models.DriftKindBannedDigest
+	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO drift_incidents (
-			incident_id, lockout_id, remediation_id, service_id, cve_id,
-			detected_digest, rogue_pod_name, rearmed_bridge_id, detection_latency_ms, detected_at, resolved_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+			incident_id, drift_kind, lockout_id, remediation_id, service_id, cve_id,
+			detected_digest, violating_artifact, rogue_pod_name, pod_cordoned, pod_recycled,
+			rearmed_bridge_id, detection_latency_ms, detected_at, resolved_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 		ON CONFLICT (incident_id) DO NOTHING
 	`,
-		inc.IncidentID, inc.LockoutID, inc.RemediationID, inc.ServiceID, inc.CVEID,
-		inc.DetectedDigest, inc.RoguePodName, inc.RearmedBridgeID, inc.DetectionLatencyMs, inc.DetectedAt, inc.ResolvedAt,
+		inc.IncidentID, inc.DriftKind, inc.LockoutID, inc.RemediationID, inc.ServiceID, inc.CVEID,
+		inc.DetectedDigest, inc.ViolatingArtifact, inc.RoguePodName, inc.PodCordoned, inc.PodRecycled,
+		inc.RearmedBridgeID, inc.DetectionLatencyMs, inc.DetectedAt, inc.ResolvedAt,
 	)
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, `
-		UPDATE admission_lockouts SET drift_count = drift_count + 1, last_drift_at = $2 WHERE lockout_id = $1
-	`, inc.LockoutID, inc.DetectedAt)
-	return err
+	if inc.LockoutID != "" && inc.LockoutID != "TETRAGON_EBPF_RUNTIME" {
+		_, _ = s.pool.Exec(ctx, `
+			UPDATE admission_lockouts SET drift_count = drift_count + 1, last_drift_at = $2 WHERE lockout_id = $1
+		`, inc.LockoutID, inc.DetectedAt)
+	}
+	return nil
 }
 
 // ListDriftIncidents lists all runtime drift violations newest first.
 func (s *Store) ListDriftIncidents(ctx context.Context) ([]models.DriftIncident, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT incident_id, lockout_id, remediation_id, service_id, cve_id,
-		       detected_digest, rogue_pod_name, rearmed_bridge_id, detection_latency_ms, detected_at, resolved_at
+		SELECT incident_id, drift_kind, lockout_id, remediation_id, service_id, cve_id,
+		       detected_digest, violating_artifact, rogue_pod_name, pod_cordoned, pod_recycled,
+		       rearmed_bridge_id, detection_latency_ms, detected_at, resolved_at
 		FROM drift_incidents ORDER BY detected_at DESC
 	`)
 	if err != nil {
@@ -613,8 +708,9 @@ func (s *Store) ListDriftIncidents(ctx context.Context) ([]models.DriftIncident,
 	for rows.Next() {
 		var inc models.DriftIncident
 		if err := rows.Scan(
-			&inc.IncidentID, &inc.LockoutID, &inc.RemediationID, &inc.ServiceID, &inc.CVEID,
-			&inc.DetectedDigest, &inc.RoguePodName, &inc.RearmedBridgeID, &inc.DetectionLatencyMs, &inc.DetectedAt, &inc.ResolvedAt,
+			&inc.IncidentID, &inc.DriftKind, &inc.LockoutID, &inc.RemediationID, &inc.ServiceID, &inc.CVEID,
+			&inc.DetectedDigest, &inc.ViolatingArtifact, &inc.RoguePodName, &inc.PodCordoned, &inc.PodRecycled,
+			&inc.RearmedBridgeID, &inc.DetectionLatencyMs, &inc.DetectedAt, &inc.ResolvedAt,
 		); err != nil {
 			return nil, err
 		}

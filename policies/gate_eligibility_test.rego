@@ -14,12 +14,15 @@ clean_gate_input := {
 		"readonly_shadow_replica": true,
 		"shadow_db_mode": "EPHEMERAL_COW_BRANCH",
 		"rollback_automation_verified": true,
+		"readonly_root_filesystem": true,
+		"noexec_tmp_mounts": true,
 	},
 	"patch": {
 		"ddl_migrations": 0,
 		"orm_model_mutations": 0,
 		"serialization_breaks": 0,
 		"api_backward_compatible": true,
+		"forbidden_config_touches": [],
 	},
 	"shadow": {
 		"schema_breaking_diffs": 0,
@@ -40,6 +43,28 @@ test_clean_stateless_patch_autonomous_allowed if {
 	not gate.trigger_canary_rollback with input as clean_gate_input
 }
 
+test_mutable_rootfs_blocks_autonomous_rollout if {
+	mutable_fs := object.union(clean_gate_input, {
+		"service": object.union(clean_gate_input.service, {
+			"readonly_root_filesystem": false,
+		}),
+	})
+	not gate.allow_autonomous_rollout with input as mutable_fs
+	gate.autonomy_tier == "TIER_3_CONTAIN_AND_CAB" with input as mutable_fs
+	"SERVICE_MUTABLE_ROOTFS_OR_EXEC_TMP" in gate.reasons with input as mutable_fs
+}
+
+test_forbidden_agent_or_workflow_config_blocks_rollout if {
+	poisoned := object.union(clean_gate_input, {
+		"patch": object.union(clean_gate_input.patch, {
+			"forbidden_config_touches": [".github/workflows/ci.yml", "AGENTS.md"],
+		}),
+	})
+	not gate.patch_stateless with input as poisoned
+	not gate.allow_autonomous_rollout with input as poisoned
+	"FORBIDDEN_BUILD_OR_AGENT_CONFIG_TOUCHED" in gate.reasons with input as poisoned
+}
+
 test_brownfield_service_qualifies_for_tier2_guarded_canary if {
 	brownfield := object.union(clean_gate_input, {
 		"allow_guarded_canary": true,
@@ -49,6 +74,8 @@ test_brownfield_service_qualifies_for_tier2_guarded_canary if {
 			"readonly_shadow_replica": false,
 			"shadow_db_mode": "NONE",
 			"rollback_automation_verified": true,
+			"readonly_root_filesystem": true,
+			"noexec_tmp_mounts": true,
 		},
 	})
 	gate.autonomy_tier == "TIER_2_GUARDED_CANARY" with input as brownfield

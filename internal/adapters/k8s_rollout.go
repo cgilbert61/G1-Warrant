@@ -283,3 +283,81 @@ func (k *K8sRolloutAdapter) RegisterImageProfile(ctx context.Context, prof fleet
 	}
 	return nil
 }
+
+func (k *K8sRolloutAdapter) RotateWorkloadSecret(ctx context.Context, serviceID, secretResourceKind, secretResourceName string) (*fleetsim.SecretRotationResult, error) {
+	body, _ := json.Marshal(map[string]string{
+		"secret_resource_kind": secretResourceKind,
+		"secret_resource_name": secretResourceName,
+	})
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/v1/secrets/%s/rotate", k.fleetBaseURL, serviceID), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := k.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("rotate workload secret HTTP error: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("rotate workload secret returned HTTP %d", resp.StatusCode)
+	}
+	var out fleetsim.SecretRotationResult
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (k *K8sRolloutAdapter) CordonAndRecyclePod(ctx context.Context, serviceID, podName, cleanDigest string) (string, error) {
+	body, _ := json.Marshal(map[string]string{
+		"pod_name":     podName,
+		"clean_digest": cleanDigest,
+	})
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/v1/workloads/%s/cordon-recycle", k.fleetBaseURL, serviceID), bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := k.httpClient.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("cordon and recycle pod HTTP error: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("cordon and recycle pod returned HTTP %d", resp.StatusCode)
+	}
+	var out struct {
+		RecycledPod string `json:"recycled_pod"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	return out.RecycledPod, nil
+}
+
+func (k *K8sRolloutAdapter) InjectFilesystemDriftSimulation(ctx context.Context, serviceID, filePath, processName string) (string, int64, error) {
+	body, _ := json.Marshal(map[string]string{
+		"file_path": filePath,
+		"process":   processName,
+	})
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/v1/drift/%s/inject-webshell", k.fleetBaseURL, serviceID), bytes.NewReader(body))
+	if err != nil {
+		return "", 0, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := k.httpClient.Do(httpReq)
+	if err != nil {
+		return "", 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return "", 0, fmt.Errorf("filesystem drift simulation failed with HTTP %d", resp.StatusCode)
+	}
+	var out struct {
+		PodName        string `json:"pod_name"`
+		InjectedUnixMs int64  `json:"injected_unix_ms"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", 0, err
+	}
+	return out.PodName, out.InjectedUnixMs, nil
+}

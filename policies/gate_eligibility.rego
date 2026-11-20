@@ -4,6 +4,7 @@ import rego.v1
 
 default service_eligible := false
 default guarded_canary_eligible := false
+default immutable_fs_ready := false
 default autonomy_tier := "TIER_3_CONTAIN_AND_CAB"
 default patch_stateless := false
 default shadow_safe := false
@@ -12,19 +13,28 @@ default trigger_canary_rollback := false
 default route_to_exception_cockpit := false
 default allow_autonomous_rollout := false
 
+# Mandatory 5th Estate Readiness Gate: Immutable Container Root Filesystem + Non-Executable /tmp
+# Defeats iterative autonomous webshell/probe droppers (e.g., ARTEX artex-probe & JSP webshells) on contact.
+immutable_fs_ready if {
+	object.get(input.service, "readonly_root_filesystem", false) == true
+	object.get(input.service, "noexec_tmp_mounts", false) == true
+}
+
 # Tier 1: Greenfield full shadow + canary autonomous eligibility
 tier1_ready if {
 	input.service.test_coverage_pct >= 80
 	input.service.otel_health_probes == true
 	input.service.readonly_shadow_replica == true
 	input.service.rollback_automation_verified == true
+	immutable_fs_ready
 }
 
-# Tier 2: Brownfield guarded canary eligibility (OTel SLI probes + verified <60s rollback hook)
+# Tier 2: Brownfield guarded canary eligibility (OTel SLI probes + verified rollback + immutable rootfs)
 guarded_canary_eligible if {
 	not tier1_ready
 	input.service.otel_health_probes == true
 	input.service.rollback_automation_verified == true
+	immutable_fs_ready
 	input.allow_guarded_canary == true
 }
 
@@ -42,11 +52,17 @@ service_eligible if {
 	guarded_canary_eligible
 }
 
+# Build & Coding-Agent Config Poisoning Lockout (GTIG Countermeasure)
+forbidden_config_violation if {
+	count(object.get(input.patch, "forbidden_config_touches", [])) > 0
+}
+
 patch_stateless if {
 	input.patch.ddl_migrations == 0
 	input.patch.orm_model_mutations == 0
 	input.patch.serialization_breaks == 0
 	input.patch.api_backward_compatible == true
+	not forbidden_config_violation
 }
 
 freeze_blocked if {
@@ -134,6 +150,14 @@ reasons contains "SERVICE_MISSING_SHADOW_REPLICA" if {
 
 reasons contains "SERVICE_UNVERIFIED_ROLLBACK" if {
 	input.service.rollback_automation_verified != true
+}
+
+reasons contains "SERVICE_MUTABLE_ROOTFS_OR_EXEC_TMP" if {
+	not immutable_fs_ready
+}
+
+reasons contains "FORBIDDEN_BUILD_OR_AGENT_CONFIG_TOUCHED" if {
+	forbidden_config_violation
 }
 
 reasons contains "STATEFUL_PATCH_DDL_DETECTED" if {

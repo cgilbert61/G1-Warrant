@@ -51,6 +51,6 @@ make license-check
 # Execute all 9 Federal DevSecOps gates locally
 make compliance-check
 
-# Execute OPA Rego + Go -race 7-invariant + live-feed E2E test suite
+# Execute OPA Rego (21/21) + Go -race 8-invariant + live-feed E2E test suite
 make docker-test
 ```

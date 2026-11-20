@@ -56,6 +56,11 @@ func (c *CiliumShieldAdapter) CompileAndApplyBridge(ctx context.Context, req Bri
 	if req.AffectedPort <= 0 {
 		req.AffectedPort = 8080
 	}
+	allowedPeers := req.AllowedEgressServices
+	if len(allowedPeers) == 0 {
+		allowedPeers = []string{"kube-dns.kube-system.svc.cluster.local"}
+	}
+	metadataCIDRs := []string{"169.254.169.254/32", "169.254.170.2/32", "fd00:ec2::254/128"}
 
 	matchedRP := c.rulepacks.Lookup(req.CVEID, req.CWEID, req.ExploitVector)
 	containmentMode := models.ContainmentModeZeroProseQuarantine
@@ -117,9 +122,29 @@ func (c *CiliumShieldAdapter) CompileAndApplyBridge(ctx context.Context, req Bri
 					"toPorts":      []map[string]any{ingressPortSpec},
 				},
 			},
+			"egress": []map[string]any{
+				{
+					"toEndpoints": []map[string]any{
+						{
+							"matchLabels": map[string]string{
+								"io.kubernetes.pod.namespace": req.Namespace,
+							},
+						},
+						{
+							"matchLabels": map[string]string{
+								"io.kubernetes.pod.namespace": "kube-system",
+								"k8s-app":                     "kube-dns",
+							},
+						},
+					},
+				},
+			},
 			"egressDeny": []map[string]any{
 				{
 					"toEntities": []string{"world"},
+				},
+				{
+					"toCIDR": metadataCIDRs,
 				},
 			},
 		},
@@ -136,6 +161,9 @@ func (c *CiliumShieldAdapter) CompileAndApplyBridge(ctx context.Context, req Bri
 		"metadata": map[string]any{
 			"name":      fmt.Sprintf("g1-netpol-%s", req.BridgeID),
 			"namespace": req.Namespace,
+			"annotations": map[string]string{
+				"g1.warrant/blocked-metadata-cidrs": "169.254.169.254/32,169.254.170.2/32,fd00:ec2::254/128",
+			},
 		},
 		"spec": map[string]any{
 			"podSelector": map[string]any{
@@ -173,10 +201,12 @@ func (c *CiliumShieldAdapter) CompileAndApplyBridge(ctx context.Context, req Bri
 		return nil, fmt.Errorf("marshal NetworkPolicy YAML: %w", err)
 	}
 
-	// 3. Edge Envoy filter config (SPIFFE mTLS peer enforcement + optional signed L7 rulepack)
+	// 3. Edge Envoy filter config (SPIFFE mTLS peer enforcement + metadata/callback severance + optional signed L7 rulepack)
 	envoyRules := map[string]any{
-		"mode":                 containmentMode,
-		"mtls_spiffe_required": fmt.Sprintf("spiffe://cluster.local/ns/%s/sa/*", req.Namespace),
+		"mode":                    containmentMode,
+		"mtls_spiffe_required":    fmt.Sprintf("spiffe://cluster.local/ns/%s/sa/*", req.Namespace),
+		"blocked_metadata_cidrs":  metadataCIDRs,
+		"allowed_internal_egress": allowedPeers,
 	}
 	if containmentMode == models.ContainmentModeSignedRulepackL7 {
 		envoyRules["signed_rulepack_id"] = rulepackID
@@ -222,14 +252,16 @@ func (c *CiliumShieldAdapter) CompileAndApplyBridge(ctx context.Context, req Bri
 	}
 
 	return &models.ContainmentBridge{
-		BridgeID:           req.BridgeID,
-		RemediationID:      req.RemediationID,
-		ServiceID:          req.ServiceID,
-		CVEID:              req.CVEID,
-		BridgeType:         bridgeType,
-		ContainmentMode:    containmentMode,
-		RulepackID:         rulepackID,
-		Status:             status,
+		BridgeID:             req.BridgeID,
+		RemediationID:        req.RemediationID,
+		ServiceID:            req.ServiceID,
+		CVEID:                req.CVEID,
+		BridgeType:           bridgeType,
+		ContainmentMode:      containmentMode,
+		RulepackID:           rulepackID,
+		MetadataPlaneBlocked: true,
+		AllowedEgressPeers:   allowedPeers,
+		Status:               status,
 		SLABridgeMinutes:   req.SLABridgeMinutes,
 		BlockerReasonCode:  req.BlockerReasonCode,
 		CiliumManifestYAML: string(ciliumYAMLBytes),

@@ -321,6 +321,38 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		writeAPIJSON(w, http.StatusCreated, items)
 	})
 
+	// Secret-Exposure Intake (Gitleaks SARIF / Gitleaks JSON / GitGuardian / Cloud Secret Scanners)
+	mux.HandleFunc("POST /api/v1/intake/secrets", func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, err)
+			return
+		}
+		targetSvc := r.URL.Query().Get("target_service")
+		items, err := o.ExecuteSecretRotationRemediation(r.Context(), raw, targetSvc)
+		if err != nil {
+			writeAPIError(w, http.StatusUnprocessableEntity, err)
+			return
+		}
+		writeAPIJSON(w, http.StatusCreated, items)
+	})
+
+	// Cilium Tetragon / eBPF Runtime Container Filesystem & Process Immutability Webhook
+	mux.HandleFunc("POST /api/v1/telemetry/tetragon", func(w http.ResponseWriter, r *http.Request) {
+		var ev models.TetragonDriftEvent
+		if err := decodeJSONBody(w, r, &ev); err != nil {
+			writeAPIError(w, http.StatusBadRequest, err)
+			return
+		}
+		inc, err := o.N3Verify.HandleTetragonDriftEvent(r.Context(), ev)
+		if err != nil {
+			writeAPIError(w, http.StatusUnprocessableEntity, err)
+			return
+		}
+		writeAPIJSON(w, http.StatusCreated, inc)
+	})
+
 	// Optional Live Threat & Scanner Feeds (CISA KEV, Google OSV.dev, Trivy Sidecar)
 	mux.HandleFunc("GET /api/v1/feeds/status", func(w http.ResponseWriter, r *http.Request) {
 		st, err := o.Store.GetLiveFeedStatus(r.Context())
@@ -475,6 +507,58 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 				"rogue_pod_name":   podName,
 				"injected_unix_ms": unixMs,
 			})
+
+		case "secret-exposure":
+			rawGitleaks := []byte(fmt.Sprintf(`[{
+				"RuleID": "github-pat",
+				"Secret": "SIMULATED_HARVESTED_CREDENTIAL_DRILL_%d",
+				"File": "deploy/env.bootstrap",
+				"service_id": "payments-ledger-api",
+				"secret_resource_kind": "EXTERNAL_SECRET",
+				"secret_resource_name": "extsec-payments-vault-creds"
+			}]`, seq))
+			items, err := o.ExecuteSecretRotationRemediation(ctx, rawGitleaks, "payments-ledger-api")
+			if err != nil {
+				writeAPIError(w, http.StatusUnprocessableEntity, err)
+				return
+			}
+			writeAPIJSON(w, http.StatusOK, map[string]any{"scenario": scenario, "items": items})
+
+		case "in-pod-webshell":
+			probePath := fmt.Sprintf("/var/www/html/artex-probe-%02d.jsp", seq)
+			podName, unixMs, err := o.Deploy.InjectFilesystemDriftSimulation(ctx, "checkout-cart-svc", probePath, "/bin/sh")
+			if err != nil {
+				writeAPIError(w, http.StatusInternalServerError, err)
+				return
+			}
+			_ = o.N3Verify.CheckFleetDriftOnce(ctx)
+			writeAPIJSON(w, http.StatusOK, map[string]any{
+				"scenario":         scenario,
+				"service_id":       "checkout-cart-svc",
+				"rogue_pod_name":   podName,
+				"violating_path":   probePath,
+				"injected_unix_ms": unixMs,
+			})
+
+		case "poisoned-config":
+			cve := fmt.Sprintf("CVE-2026-%05d", 62000+seq)
+			svc, err := o.Store.GetEstateService(ctx, "payments-ledger-api")
+			if err != nil {
+				writeAPIError(w, http.StatusInternalServerError, err)
+				return
+			}
+			badHash := crypto.SHA256Hex([]byte(fmt.Sprintf("poisoned-cfg-%d", seq)))
+			sarif := BuildDeterministicSARIF(
+				cve, "CWE-209", 5.3, false, "payments-ledger-api",
+				svc.CurrentDigest, "sha256:"+badHash,
+				"", "ERROR_STACK_TRACE", 8080,
+			)
+			items, err := o.ExecuteSARIFRemediation(ctx, sarif, "POISONED_BUILD_CONFIG")
+			if err != nil {
+				writeAPIError(w, http.StatusUnprocessableEntity, err)
+				return
+			}
+			writeAPIJSON(w, http.StatusOK, map[string]any{"scenario": scenario, "items": items})
 
 		default:
 			writeAPIError(w, http.StatusBadRequest, fmt.Errorf("unknown simulation scenario %q", scenario))

@@ -63,6 +63,16 @@ class TestG1WarrantCryptoAndSDK(unittest.TestCase):
         with self.assertRaises(ValueError):
             verify_oscal_bundle_offline(bundle, other.public_key_b64)
 
+    def test_secret_rotation_and_chained_cwe_warrant_draft(self) -> None:
+        env = draft_warrant_envelope(
+            scope_services=["payments-ledger-api"],
+            warrant_class="SECRET-ROTATION-STATELESS",
+            auto_remediate_cwes=["CWE-209", "CWE-918", "CWE-434"],
+        )
+        decoded = json.loads(base64.b64decode(env["payload"]).decode("utf-8"))
+        self.assertTrue(decoded["allow_secret_rotation"])
+        self.assertEqual(decoded["auto_remediate_cwes"], ["CWE-209", "CWE-918", "CWE-434"])
+
     def test_live_server_integration_if_running(self) -> None:
         cli = WarrantClient("http://localhost:8080", timeout=2.0)
         try:

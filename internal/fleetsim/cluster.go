@@ -22,12 +22,28 @@ type ImageBehaviorProfile struct {
 
 // PodState represents a simulated Kubernetes Pod in fleet-sim.
 type PodState struct {
-	PodName       string    `json:"pod_name"`
-	NodeName      string    `json:"node_name"`
-	RunningDigest string    `json:"running_digest"`
-	LoadedLibs    []string  `json:"loaded_libs"`
-	LoadedSymbols []string  `json:"loaded_symbols"`
-	StartedAt     time.Time `json:"started_at"`
+	PodName                string    `json:"pod_name"`
+	NodeName               string    `json:"node_name"`
+	RunningDigest          string    `json:"running_digest"`
+	LoadedLibs             []string  `json:"loaded_libs"`
+	LoadedSymbols          []string  `json:"loaded_symbols"`
+	FilesystemMutatedPaths []string  `json:"filesystem_mutated_paths,omitempty"`
+	UntrackedProcesses     []string  `json:"untracked_processes,omitempty"`
+	SecretGeneration       int       `json:"secret_generation,omitempty"`
+	Cordoned               bool      `json:"cordoned,omitempty"`
+	StartedAt              time.Time `json:"started_at"`
+}
+
+// SecretRotationResult captures rapid ExternalSecret / ServiceAccount token revocation & rolling restart proof.
+type SecretRotationResult struct {
+	ServiceID            string    `json:"service_id"`
+	SecretResourceKind   string    `json:"secret_resource_kind"`
+	SecretResourceName   string    `json:"secret_resource_name"`
+	PreviousTokenRevoked bool      `json:"previous_token_revoked"`
+	NewSecretGeneration  int       `json:"new_secret_generation"`
+	NewSecretVersionHash string    `json:"new_secret_version_hash"`
+	RestartedPods        int       `json:"restarted_pods"`
+	RotatedAt            time.Time `json:"rotated_at"`
 }
 
 // BridgePolicyState represents an active CiliumNetworkPolicy + Envoy mTLS bridge on fleet-sim.
@@ -63,9 +79,10 @@ type WorkloadState struct {
 	CanaryWeight               int       `json:"canary_weight"`
 	ReadonlyShadowBound        bool      `json:"readonly_shadow_bound"`
 	OutboundMutationSinkActive bool      `json:"outbound_mutation_sink_active"`
-	BaselineSyscalls           []string  `json:"baseline_syscalls"`
+	BaselineSyscalls           []string   `json:"baseline_syscalls"`
+	SecretGeneration           int        `json:"secret_generation"`
 	Pods                       []PodState `json:"pods"`
-	LastDriftInjectedAtUnixMs  int64     `json:"last_drift_injected_at_unix_ms,omitempty"`
+	LastDriftInjectedAtUnixMs  int64      `json:"last_drift_injected_at_unix_ms,omitempty"`
 }
 
 // StageRolloutRequest drives shadow/canary traffic progression on fleet-sim.
@@ -597,6 +614,126 @@ func (cs *ClusterSimulator) Handler() http.Handler {
 			"rogue_pod_name":   wl.Pods[0].PodName,
 			"injected_digest":  req.BannedDigest,
 			"injected_unix_ms": nowMs,
+		})
+	})
+
+	// POST /v1/drift/{service_id}/inject-webshell simulates an ARTEX in-pod webshell / probe file drop
+	// while the pod continues reporting a valid container image digest.
+	mux.HandleFunc("POST /v1/drift/{service_id}/inject-webshell", func(w http.ResponseWriter, r *http.Request) {
+		svcID := r.PathValue("service_id")
+		var req struct {
+			FilePath string `json:"file_path"`
+			Process  string `json:"process"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.FilePath == "" {
+			req.FilePath = "/var/www/html/artex-probe-01.jsp"
+		}
+
+		cs.mu.Lock()
+		defer cs.mu.Unlock()
+		wl, ok := cs.workloads[svcID]
+		if !ok || len(wl.Pods) == 0 {
+			writeSimJSON(w, http.StatusNotFound, map[string]string{"error": "workload not found"})
+			return
+		}
+		nowMs := time.Now().UTC().UnixMilli()
+		wl.Pods[0].FilesystemMutatedPaths = appendUnique(wl.Pods[0].FilesystemMutatedPaths, req.FilePath)
+		if req.Process != "" {
+			wl.Pods[0].UntrackedProcesses = appendUnique(wl.Pods[0].UntrackedProcesses, req.Process)
+		}
+		wl.LastDriftInjectedAtUnixMs = nowMs
+		writeSimJSON(w, http.StatusOK, map[string]any{
+			"service_id":       svcID,
+			"pod_name":         wl.Pods[0].PodName,
+			"running_digest":   wl.Pods[0].RunningDigest,
+			"mutated_path":     req.FilePath,
+			"injected_unix_ms": nowMs,
+		})
+	})
+
+	// POST /v1/workloads/{service_id}/cordon-recycle cordons a compromised pod and recycles a fresh clean replica.
+	mux.HandleFunc("POST /v1/workloads/{service_id}/cordon-recycle", func(w http.ResponseWriter, r *http.Request) {
+		svcID := r.PathValue("service_id")
+		var req struct {
+			PodName     string `json:"pod_name"`
+			CleanDigest string `json:"clean_digest"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+
+		cs.mu.Lock()
+		defer cs.mu.Unlock()
+		wl, ok := cs.workloads[svcID]
+		if !ok {
+			writeSimJSON(w, http.StatusNotFound, map[string]string{"error": "workload not found"})
+			return
+		}
+		cleanDigest := req.CleanDigest
+		if cleanDigest == "" {
+			cleanDigest = wl.BaselineDigest
+		}
+		recycledPod := ""
+		now := time.Now().UTC()
+		for i := range wl.Pods {
+			if wl.Pods[i].PodName == req.PodName || req.PodName == "" {
+				recycledPod = fmt.Sprintf("%s-clean-recycled-%s", svcID, uuid.NewString()[:6])
+				wl.Pods[i] = PodState{
+					PodName:                recycledPod,
+					NodeName:               wl.Pods[i].NodeName,
+					RunningDigest:          cleanDigest,
+					LoadedLibs:             wl.Pods[i].LoadedLibs,
+					LoadedSymbols:          []string{},
+					FilesystemMutatedPaths: nil,
+					UntrackedProcesses:     nil,
+					SecretGeneration:       wl.SecretGeneration,
+					Cordoned:               false,
+					StartedAt:              now,
+				}
+				break
+			}
+		}
+		wl.LastDriftInjectedAtUnixMs = 0
+		writeSimJSON(w, http.StatusOK, map[string]any{
+			"service_id":    svcID,
+			"cordoned_pod":  req.PodName,
+			"recycled_pod":  recycledPod,
+			"clean_digest":  cleanDigest,
+			"recycled_at":   now,
+		})
+	})
+
+	// POST /v1/secrets/{service_id}/rotate revokes compromised ExternalSecret / SA tokens and rolls all replicas.
+	mux.HandleFunc("POST /v1/secrets/{service_id}/rotate", func(w http.ResponseWriter, r *http.Request) {
+		svcID := r.PathValue("service_id")
+		var req struct {
+			SecretResourceKind string `json:"secret_resource_kind"`
+			SecretResourceName string `json:"secret_resource_name"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+
+		cs.mu.Lock()
+		defer cs.mu.Unlock()
+		wl, ok := cs.workloads[svcID]
+		if !ok {
+			writeSimJSON(w, http.StatusNotFound, map[string]string{"error": "workload not found"})
+			return
+		}
+		wl.SecretGeneration++
+		now := time.Now().UTC()
+		verHash := crypto.SHA256Hex([]byte(fmt.Sprintf("%s|%s|gen=%d|%d", svcID, req.SecretResourceName, wl.SecretGeneration, now.UnixNano())))
+		for i := range wl.Pods {
+			wl.Pods[i].SecretGeneration = wl.SecretGeneration
+			wl.Pods[i].StartedAt = now
+		}
+		writeSimJSON(w, http.StatusOK, SecretRotationResult{
+			ServiceID:            svcID,
+			SecretResourceKind:   req.SecretResourceKind,
+			SecretResourceName:   req.SecretResourceName,
+			PreviousTokenRevoked: true,
+			NewSecretGeneration:  wl.SecretGeneration,
+			NewSecretVersionHash: verHash,
+			RestartedPods:        len(wl.Pods),
+			RotatedAt:            now,
 		})
 	})
 

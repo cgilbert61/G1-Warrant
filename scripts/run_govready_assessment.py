@@ -112,15 +112,15 @@ EVALUATED_CONTROLS = [
         "ctl_id": "ca-7",
         "rev5_title": "Continuous Monitoring",
         "family": "Assessment, Authorization, and Monitoring",
-        "mechanism": "internal/adapters/k8s_live.go Streaming WATCH + internal/verify/engine.go Drift Watcher",
-        "narrative": "Streams event-driven Kubernetes Pod WATCH notifications (?watch=true&allowWatchBookmarks=true&resourceVersion=...) without polling overload, automatically re-arming Cilium containment bridges upon runtime digest drift even during Emergency Freeze."
+        "mechanism": "internal/adapters/k8s_live.go Streaming WATCH + eBPF/Tetragon In-Pod Drift Quarantine",
+        "narrative": "Streams event-driven Kubernetes Pod WATCH notifications (?watch=true&allowWatchBookmarks=true&resourceVersion=...) and eBPF/Tetragon container filesystem/process telemetry, automatically re-arming Cilium metadata/egress quarantine bridges, cordoning compromised pods, and recycling clean replicas upon image or in-pod webshell drift even during Emergency Freeze."
     },
     {
         "ctl_id": "cm-2",
         "rev5_title": "Baseline Configuration",
         "family": "Configuration Management",
-        "mechanism": "policies/gate_eligibility.rego + 3-Tier Graduated Fleet Autonomy Grader",
-        "narrative": "Grades enterprise services across three graduated autonomy tiers: TIER_1_FULL_AUTONOMOUS (>=80% coverage, OTel probes, CoW/shadow DB, verified rollback), TIER_2_GUARDED_CANARY (brownfield SLI-guarded canary when authorized by warrant), and TIER_3_CONTAIN_AND_CAB (non-disruptive L3/L4 egress quarantine + Four-Eyes CAB)."
+        "mechanism": "policies/gate_eligibility.rego + 5-Gate 3-Tier Graduated Fleet Autonomy Grader",
+        "narrative": "Grades enterprise services across three graduated autonomy tiers with a mandatory 5th immutable-filesystem gate (readOnlyRootFilesystem: true + noexec /tmp): TIER_1_FULL_AUTONOMOUS (>=80% coverage, OTel probes, CoW/shadow DB, verified rollback, immutable rootfs), TIER_2_GUARDED_CANARY (brownfield SLI-guarded canary with immutable rootfs), and TIER_3_CONTAIN_AND_CAB."
     },
     {
         "ctl_id": "cm-3(4)",
@@ -154,15 +154,15 @@ EVALUATED_CONTROLS = [
         "ctl_id": "sc-7(5)",
         "rev5_title": "Boundary Protection | Deny by Default — Allow by Exception",
         "family": "System and Communications Protection",
-        "mechanism": "internal/adapters/{cilium_shield,rulepacks}.go Two-Mode Containment Architecture",
-        "narrative": "Separates ZERO_PROSE_EGRESS_MESH_QUARANTINE (cutting external world egress to block reverse shells/JNDI callbacks while preserving mTLS mesh traffic without blind L7 route guessing) from SIGNED_RULEPACK_L7_SHIELD (enforcing Envoy/Cilium HTTP rules only when backed by an Ed25519 publisher-signed CWE/CVE rulepack)."
+        "mechanism": "internal/adapters/{cilium_shield,rulepacks}.go Metadata & Callback Quarantine + Signed Rulepacks",
+        "narrative": "Enforces default outbound cloud metadata severance (169.254.169.254/32, 169.254.170.2/32, fd00:ec2::254/128) and external callback blocking (toEntities: world) on every N3 containment bridge, restricting egress strictly to pre-declared internal cluster services while applying L7 Envoy/Cilium filters only when backed by an Ed25519 publisher-signed CWE/CVE rulepack."
     },
     {
         "ctl_id": "si-7(15)",
         "rev5_title": "Software, Firmware, and Information Integrity | Code Authentication",
         "family": "System and Information Integrity",
-        "mechanism": "internal/adapters/fix_provider.go + policies/verify_closure.rego Cryptographic Provenance",
-        "narrative": "Verifies publisher Ed25519 cryptographic provenance on every candidate patch artifact prior to canary execution and sweeps 100% of live Kubernetes pod containerStatuses imageID SHA-256 digests plus unloaded vulnerable symbols before retiring containment."
+        "mechanism": "internal/adapters/fix_provider.go + internal/agentcp/controlplane.go Build/Agent Config Lockout",
+        "narrative": "Verifies publisher Ed25519 provenance on every candidate patch artifact, cryptographically blocks AI diffs mutating CI/CD or coding-agent instructions (.github/, .gitlab-ci, Dockerfile, Makefile, AGENTS.md, CLAUDE.md, .cursor, .gemini/), and sweeps 100% of live pod containerStatuses imageID SHA-256 digests before retiring containment."
     },
     {
         "ctl_id": "sr-3",

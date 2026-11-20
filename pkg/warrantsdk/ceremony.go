@@ -114,6 +114,8 @@ type WarrantDraftOptions struct {
 	MaxBlastRadiusReplicas int
 	AllowStatefulPatches   bool
 	AllowGuardedCanary     bool
+	AllowSecretRotation    bool
+	AutoRemediateCWEs      []string
 	MinCanarySamples       int
 	StageDwellSeconds      int
 	SLABridgeMinutes       int
@@ -153,6 +155,9 @@ func DraftWarrantEnvelope(opts WarrantDraftOptions) (*Envelope, WarrantPayload, 
 	if opts.StageDwellSeconds <= 0 {
 		opts.StageDwellSeconds = 300
 	}
+	if opts.WarrantClass == WarrantClassSecretRotation {
+		opts.AllowSecretRotation = true
+	}
 	now := time.Now().UTC()
 	payload := WarrantPayload{
 		WarrantID:              opts.WarrantID,
@@ -163,6 +168,8 @@ func DraftWarrantEnvelope(opts WarrantDraftOptions) (*Envelope, WarrantPayload, 
 		MaxBlastRadiusReplicas: opts.MaxBlastRadiusReplicas,
 		AllowStatefulPatches:   opts.AllowStatefulPatches,
 		AllowGuardedCanary:     opts.AllowGuardedCanary,
+		AllowSecretRotation:    opts.AllowSecretRotation,
+		AutoRemediateCWEs:      opts.AutoRemediateCWEs,
 		MinCanarySamples:       opts.MinCanarySamples,
 		StageDwellSeconds:      opts.StageDwellSeconds,
 		SLABridgeMinutes:       opts.SLABridgeMinutes,

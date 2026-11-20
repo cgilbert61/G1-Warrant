@@ -191,6 +191,8 @@ def draft_warrant_envelope(
     kev_eligible: bool = True,
     max_blast_radius_replicas: int = 8,
     allow_stateful_patches: bool = False,
+    allow_secret_rotation: bool = False,
+    auto_remediate_cwes: list[str] | None = None,
     sla_bridge_minutes: int = 60,
     max_p99_latency_ms: float = 120.0,
     ttl_days: int = 30,
@@ -199,9 +201,11 @@ def draft_warrant_envelope(
     """Create an unsigned DSSEv1 Standing Warrant envelope ready for 2-of-2 AC-5 co-signing."""
     if not scope_services:
         raise ValueError("scope_services must contain at least one service ID or '*'")
+    if warrant_class == "SECRET-ROTATION-STATELESS":
+        allow_secret_rotation = True
     now = datetime.now(timezone.utc)
     exp = now + timedelta(days=ttl_days)
-    payload = {
+    payload: dict[str, Any] = {
         "warrant_id": warrant_id or f"wrt-{uuid.uuid4().hex[:8]}",
         "warrant_class": warrant_class,
         "scope_services": scope_services,
@@ -209,11 +213,14 @@ def draft_warrant_envelope(
         "kev_eligible": kev_eligible,
         "max_blast_radius_replicas": max_blast_radius_replicas,
         "allow_stateful_patches": allow_stateful_patches,
+        "allow_secret_rotation": allow_secret_rotation,
         "sla_bridge_minutes": sla_bridge_minutes,
         "max_p99_latency_ms": max_p99_latency_ms,
         "issued_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "expires_at": exp.strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+    if auto_remediate_cwes:
+        payload["auto_remediate_cwes"] = auto_remediate_cwes
     return draft_unsigned_envelope(PAYLOAD_TYPE_WARRANT, payload)
 
 

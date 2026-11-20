@@ -4,6 +4,7 @@ import data.warrant.verify
 import rego.v1
 
 verified_input := {
+	"remediation_kind": "IMAGE_PATCH",
 	"has_signed_probe": true,
 	"unpatched_twin_status": "EXPLOIT_SUCCEEDED",
 	"twin_replay_status": "EXPLOIT_BLOCKED",
@@ -20,6 +21,20 @@ test_full_verification_allows_retirement_and_mint if {
 	verify.allow_attestation_mint with input as verified_input
 	verify.assurance_tier == "ASSURANCE_TIER_2_DIFFERENTIAL_TWIN" with input as verified_input
 	count(verify.blockers) == 0 with input as verified_input
+}
+
+test_secret_rotation_closure_allows_retirement_and_mint if {
+	sec_rot := {
+		"remediation_kind": "SECRET_ROTATION",
+		"secret_rotated_and_revoked": true,
+		"attested_pods": 4,
+		"total_pods": 4,
+		"vulnerable_symbols_loaded": 0,
+		"warrant_reverified": true,
+	}
+	verify.allow_bridge_retirement with input as sec_rot
+	verify.allow_attestation_mint with input as sec_rot
+	verify.assurance_tier == "ASSURANCE_TIER_SECRET_ROTATED" with input as sec_rot
 }
 
 test_reject_broken_poc_positive_control_false_negative if {

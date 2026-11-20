@@ -71,6 +71,29 @@ func NewDefaultRulepackRegistry() *RulepackRegistry {
 			BlockedPaths:   []string{"/jndi-lookup"},
 			HasSignedProbe: true,
 		},
+		{
+			RulepackID:     "rpk-cwe209-error-stack-suppression-v1",
+			CWEID:          "CWE-209",
+			ExploitVector:  "ERROR_STACK_TRACE",
+			BlockedPaths:   []string{"/debug/vars", "/actuator/trace", "/_profiler"},
+			BlockedHeaders: []string{"X-Debug-Stacktrace: true"},
+			HasSignedProbe: true,
+		},
+		{
+			RulepackID:     "rpk-cwe918-ssrf-metadata-shield-v1",
+			CWEID:          "CWE-918",
+			ExploitVector:  "SSRF_METADATA",
+			BlockedPaths:   []string{"/proxy/fetch", "/webhook/test"},
+			BlockedHeaders: []string{"X-Forwarded-Host: 169.254.169.254"},
+			HasSignedProbe: true,
+		},
+		{
+			RulepackID:     "rpk-cwe434-webshell-upload-deny-v1",
+			CWEID:          "CWE-434",
+			ExploitVector:  "UNRESTRICTED_UPLOAD",
+			BlockedPaths:   []string{"/upload/*.jsp", "/upload/*.jspx", "/upload/*.php"},
+			HasSignedProbe: true,
+		},
 	}
 
 	for _, rp := range defaults {

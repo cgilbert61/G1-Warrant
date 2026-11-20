@@ -223,6 +223,48 @@ class WarrantClient:
         resp = self._request_raw("POST", path, body=raw, content_type="application/json")
         return json.loads(resp.decode("utf-8"))
 
+    def ingest_secret_scan(
+        self,
+        secret_scan_payload: bytes | str | Path | list[dict[str, Any]] | dict[str, Any],
+        target_service: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Submit Gitleaks (JSON/SARIF) or GitGuardian secret-exposure findings for zero-prose rotation."""
+        if isinstance(secret_scan_payload, Path):
+            raw = secret_scan_payload.read_bytes()
+        elif isinstance(secret_scan_payload, (dict, list)):
+            raw = json.dumps(secret_scan_payload).encode("utf-8")
+        elif isinstance(secret_scan_payload, str):
+            raw = secret_scan_payload.encode("utf-8")
+        else:
+            raw = secret_scan_payload
+
+        path = "/api/v1/intake/secrets"
+        if target_service:
+            path += "?" + urllib.parse.urlencode({"target_service": target_service})
+        resp = self._request_raw("POST", path, body=raw, content_type="application/json")
+        return json.loads(resp.decode("utf-8"))
+
+    def send_tetragon_event(
+        self,
+        service_id: str,
+        pod_name: str,
+        target_path_or_binary: str,
+        violation_type: str = "FILESYSTEM_WRITE",
+        running_digest: str = "",
+    ) -> dict[str, Any]:
+        """Submit an eBPF/Tetragon container filesystem write or untracked process event to N3."""
+        return self._request_json(
+            "POST",
+            "/api/v1/telemetry/tetragon",
+            {
+                "service_id": service_id,
+                "pod_name": pod_name,
+                "running_digest": running_digest,
+                "violation_type": violation_type,
+                "target_path_or_binary": target_path_or_binary,
+            },
+        )
+
     def simulate(self, scenario: str) -> dict[str, Any]:
         safe_sc = urllib.parse.quote(scenario, safe="")
         return self._request_json("POST", f"/api/v1/simulate/{safe_sc}", {})

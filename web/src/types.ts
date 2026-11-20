@@ -83,6 +83,8 @@ export interface WarrantRecord {
   kev_eligible: boolean;
   max_blast_radius_replicas: number;
   allow_stateful_patches: boolean;
+  allow_secret_rotation?: boolean;
+  auto_remediate_cwes?: string[];
   sla_bridge_minutes: number;
   max_p99_latency_ms: number;
   issued_at: string;
@@ -133,6 +135,9 @@ export interface EstateService {
   otel_health_probes: boolean;
   readonly_shadow_replica: boolean;
   rollback_automation_verified: boolean;
+  readonly_root_filesystem?: boolean;
+  noexec_tmp_mounts?: boolean;
+  allowed_egress_services?: string[];
   baseline_syscalls: string[];
   eligible: boolean;
   autonomy_tier?: string;
@@ -199,6 +204,9 @@ export interface RemediationItem {
   cvss_score: number;
   service_id: string;
   warrant_id: string;
+  remediation_kind?: string;
+  secret_resource_name?: string;
+  chained_exploit_enabler?: boolean;
   vulnerable_digest: string;
   patched_digest: string;
   package_purl: string;
@@ -267,6 +275,8 @@ export interface ContainmentBridge {
   bridge_type: string;
   containment_mode?: string;
   rulepack_id?: string;
+  metadata_plane_blocked?: boolean;
+  allowed_egress_peers?: string[];
   status: 'ARMED' | 'RETIRED' | 'REARMED_DRIFT';
   sla_minutes: number;
   blocker_reason_code: string;
@@ -299,6 +309,10 @@ export interface DriftIncident {
   remediation_id: string;
   service_id: string;
   cve_id: string;
+  drift_kind?: string;
+  violating_artifact?: string;
+  pod_cordoned?: boolean;
+  pod_recycled?: boolean;
   detected_digest: string;
   rogue_pod_name: string;
   rearmed_bridge_id: string;

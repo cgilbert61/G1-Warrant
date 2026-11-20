@@ -58,13 +58,33 @@ func TestGradeServiceReadiness(t *testing.T) {
 		OtelHealthProbes:           true,
 		ReadonlyShadowReplica:      false,
 		RollbackAutomationVerified: true,
+		ReadOnlyRootFilesystem:     true,
+		NoExecTmpMounts:            true,
 	}
 	GradeServiceReadiness(&svcTier2)
 	if svcTier2.Eligible {
 		t.Fatal("expected service with 71.4% coverage and missing shadow replica to be false for Tier 1 full shadow Eligible")
 	}
 	if svcTier2.AutonomyTier != models.AutonomyTier2GuardedCanary {
-		t.Fatalf("expected brownfield service with OTel + rollback hook to receive TIER_2_GUARDED_CANARY, got %s", svcTier2.AutonomyTier)
+		t.Fatalf("expected brownfield service with OTel + rollback + immutable rootfs to receive TIER_2_GUARDED_CANARY, got %s", svcTier2.AutonomyTier)
+	}
+	if len(svcTier2.EligibilityChecklist) != 5 {
+		t.Fatalf("expected 5 mandatory scorecard criteria including IMMUTABLE_ROOTFS_NOEXEC_TMP, got %d", len(svcTier2.EligibilityChecklist))
+	}
+
+	// Mutable rootfs even with 95% coverage MUST be downgraded to TIER_3_CONTAIN_AND_CAB
+	svcMutableFS := models.EstateService{
+		ServiceID:                  "mutable-webshell-target",
+		TestCoveragePct:            95.0,
+		OtelHealthProbes:           true,
+		ReadonlyShadowReplica:      true,
+		RollbackAutomationVerified: true,
+		ReadOnlyRootFilesystem:     false,
+		NoExecTmpMounts:            false,
+	}
+	GradeServiceReadiness(&svcMutableFS)
+	if svcMutableFS.Eligible || svcMutableFS.AutonomyTier != models.AutonomyTier3ContainAndCAB {
+		t.Fatalf("expected mutable rootfs workload to fail 5th gate into TIER_3_CONTAIN_AND_CAB, got %+v", svcMutableFS)
 	}
 
 	svcTier3 := models.EstateService{
