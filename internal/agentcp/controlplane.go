@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -400,6 +402,23 @@ func (cp *ControlPlane) ExtractDiffGoverned(ctx context.Context, warrantID, reme
 		return nil, fmt.Errorf("decode ExtractedPatchMetadata: %w", err)
 	}
 
+	// Defense-in-depth N4 path normalization & depth-agnostic build/agent config validation
+	if n4Violations := InspectDiffForForbiddenPaths(unifiedDiff, meta.TouchedFiles); len(n4Violations) > 0 {
+		merged := map[string]bool{}
+		for _, v := range meta.ForbiddenConfigTouches {
+			merged[v] = true
+		}
+		for _, v := range n4Violations {
+			merged[v] = true
+		}
+		meta.ForbiddenConfigTouches = make([]string, 0, len(merged))
+		for v := range merged {
+			meta.ForbiddenConfigTouches = append(meta.ForbiddenConfigTouches, v)
+		}
+		sort.Strings(meta.ForbiddenConfigTouches)
+		meta.StatelessEligible = false
+	}
+
 	status := "EXECUTED"
 	violationCode := ""
 	if len(meta.ForbiddenConfigTouches) > 0 {
@@ -525,4 +544,107 @@ func clampTTL(v int) int {
 		return 300
 	}
 	return v
+}
+
+// InspectDiffForForbiddenPaths normalizes every diff path (path.Clean), rejects '..' traversal and
+// git 120000 symlinks, and blocks protected build/agent files (Dockerfile*, Makefile, GNUmakefile,
+// AGENTS.md, CLAUDE.md, .github/, .gitlab-ci*, .cursor/, .gemini/) at ANY directory depth.
+func InspectDiffForForbiddenPaths(unifiedDiff string, extraPaths []string) []string {
+	violations := map[string]bool{}
+	currentFile := ""
+
+	inspectPath := func(raw string) {
+		trimmed := strings.Trim(strings.TrimSpace(raw), `"`)
+		trimmed = strings.ReplaceAll(trimmed, `\`, "/")
+		if trimmed == "" || trimmed == "/dev/null" || trimmed == "dev/null" {
+			currentFile = ""
+			return
+		}
+		for _, seg := range strings.Split(trimmed, "/") {
+			if seg == ".." {
+				violations["PATH_TRAVERSAL:"+trimmed] = true
+				currentFile = trimmed
+				return
+			}
+		}
+		cleaned := path.Clean(strings.TrimPrefix(strings.TrimPrefix(trimmed, "./"), "/"))
+		if cleaned == "." || cleaned == "dev/null" {
+			currentFile = ""
+			return
+		}
+		if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+			violations["PATH_TRAVERSAL:"+trimmed] = true
+			currentFile = trimmed
+			return
+		}
+		currentFile = cleaned
+		if isProtectedPathAnyDepth(cleaned) {
+			violations[cleaned] = true
+		}
+	}
+
+	for _, p := range extraPaths {
+		inspectPath(p)
+	}
+	for _, line := range strings.Split(unifiedDiff, "\n") {
+		tl := strings.TrimSpace(line)
+		if strings.HasPrefix(tl, "new file mode 120000") ||
+			strings.HasPrefix(tl, "old mode 120000") ||
+			strings.HasPrefix(tl, "new mode 120000") ||
+			(strings.HasPrefix(tl, "index ") && strings.HasSuffix(tl, " 120000")) {
+			lbl := currentFile
+			if lbl == "" {
+				lbl = "git-symlink"
+			}
+			violations["SYMLINK_MODE_120000:"+lbl] = true
+			continue
+		}
+		if strings.HasPrefix(line, "diff --git ") {
+			parts := strings.Fields(line)
+			if len(parts) >= 4 {
+				inspectPath(strings.TrimPrefix(parts[2], "a/"))
+				inspectPath(strings.TrimPrefix(parts[3], "b/"))
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "--- ") {
+			src := strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(line, "--- ")), "a/")
+			inspectPath(src)
+			continue
+		}
+		if strings.HasPrefix(line, "+++ ") {
+			dst := strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(line, "+++ ")), "b/")
+			inspectPath(dst)
+			continue
+		}
+	}
+
+	out := make([]string, 0, len(violations))
+	for v := range violations {
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func isProtectedPathAnyDepth(clean string) bool {
+	for _, seg := range strings.Split(clean, "/") {
+		sLow := strings.ToLower(strings.TrimSpace(seg))
+		switch sLow {
+		case "..", ".github", ".cursor", ".gemini", ".windsurf", ".copilot", ".vscode", ".git":
+			return true
+		}
+		if strings.HasPrefix(sLow, ".gitlab-ci") || strings.HasPrefix(sLow, ".cursor") {
+			return true
+		}
+	}
+	base := strings.ToLower(path.Base(clean))
+	if strings.HasPrefix(base, "dockerfile") || strings.HasSuffix(base, ".dockerfile") {
+		return true
+	}
+	switch base {
+	case "makefile", "gnumakefile", "agents.md", "claude.md":
+		return true
+	}
+	return strings.HasPrefix(base, ".gitlab-ci") || strings.HasPrefix(base, ".cursor")
 }

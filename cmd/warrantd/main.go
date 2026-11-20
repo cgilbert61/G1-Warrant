@@ -16,6 +16,11 @@ import (
 )
 
 func main() {
+	if err := server.ValidateStartupSecurityGuards(os.Getenv); err != nil {
+		log.Printf("%v", err)
+		os.Exit(1)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 

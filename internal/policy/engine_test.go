@@ -73,15 +73,15 @@ func TestPolicyEngine_AC5GateAndVerify(t *testing.T) {
 
 	// 1. Differential Twin Positive Control (Tier 2 Assurance)
 	verDec, err := eng.EvalVerify(ctx, VerifyInput{
-		HasSignedProbe:           true,
-		UnpatchedTwinStatus:      "EXPLOIT_SUCCEEDED",
-		TwinReplayStatus:         "EXPLOIT_BLOCKED",
-		ProvenanceVerified:       true,
-		AttestedPods:             4,
-		TotalPods:                4,
-		VulnerableSymbolsLoaded:  0,
-		AdmissionLockoutEnforced: true,
-		WarrantReverified:        true,
+		HasSignedProbe:            true,
+		UnpatchedTwinStatus:       "EXPLOIT_SUCCEEDED",
+		TwinReplayStatus:          "EXPLOIT_BLOCKED",
+		ProvenanceVerified:        true,
+		VulnerablePkgAbsentInSBOM: true,
+		AttestedPods:              4,
+		TotalPods:                 4,
+		AdmissionLockoutEnforced:  true,
+		WarrantReverified:         true,
 	})
 	if err != nil || !verDec.AllowBridgeRetirement || !verDec.AllowAttestationMint || verDec.AssuranceTier != "ASSURANCE_TIER_2_DIFFERENTIAL_TWIN" {
 		t.Fatalf("expected Tier 2 differential twin closure allow, got %+v err=%v", verDec, err)
@@ -89,32 +89,46 @@ func TestPolicyEngine_AC5GateAndVerify(t *testing.T) {
 
 	// 2. Broken PoC False-Negative Trap: probe failed against unpatched twin -> MUST block closure!
 	brokenDec, err := eng.EvalVerify(ctx, VerifyInput{
-		HasSignedProbe:           true,
-		UnpatchedTwinStatus:      "EXPLOIT_BLOCKED",
-		TwinReplayStatus:         "EXPLOIT_BLOCKED",
-		ProvenanceVerified:       true,
-		AttestedPods:             4,
-		TotalPods:                4,
-		VulnerableSymbolsLoaded:  0,
-		AdmissionLockoutEnforced: true,
-		WarrantReverified:        true,
+		HasSignedProbe:            true,
+		UnpatchedTwinStatus:       "EXPLOIT_BLOCKED",
+		TwinReplayStatus:          "EXPLOIT_BLOCKED",
+		ProvenanceVerified:        true,
+		VulnerablePkgAbsentInSBOM: true,
+		AttestedPods:              4,
+		TotalPods:                 4,
+		AdmissionLockoutEnforced:  true,
+		WarrantReverified:         true,
 	})
 	if err != nil || brokenDec.AllowAttestationMint {
 		t.Fatalf("expected broken probe failing positive control to block closure, got %+v err=%v", brokenDec, err)
 	}
 
-	// 3. Passive Provenance + 100% Pod Digest Closure (Tier 1 Assurance when no weaponized PoC exists)
+	// 3. Passive Provenance + SBOM Absence + 100% Pod Digest Closure (Tier 1 Assurance when no weaponized PoC exists)
 	passiveDec, err := eng.EvalVerify(ctx, VerifyInput{
-		HasSignedProbe:           false,
-		TwinReplayStatus:         "NO_PROBE_PASSIVE_ONLY",
-		ProvenanceVerified:       true,
-		AttestedPods:             4,
-		TotalPods:                4,
-		VulnerableSymbolsLoaded:  0,
-		AdmissionLockoutEnforced: true,
-		WarrantReverified:        true,
+		HasSignedProbe:            false,
+		TwinReplayStatus:          "NO_PROBE_PASSIVE_ONLY",
+		ProvenanceVerified:        true,
+		VulnerablePkgAbsentInSBOM: true,
+		AttestedPods:              4,
+		TotalPods:                 4,
+		AdmissionLockoutEnforced:  true,
+		WarrantReverified:         true,
 	})
 	if err != nil || !passiveDec.AllowAttestationMint || passiveDec.AssuranceTier != "ASSURANCE_TIER_1_PASSIVE_DIGEST_SBOM" {
 		t.Fatalf("expected Tier 1 passive digest closure allow, got %+v err=%v", passiveDec, err)
+	}
+
+	// 4. Secret Rotation Non-Equivalence Check: identical rotated & exposed SHA-256 MUST fail closed!
+	secSameDec, err := eng.EvalVerify(ctx, VerifyInput{
+		RemediationKind:         "SECRET_ROTATION",
+		SecretRotatedAndRevoked: true,
+		ExposedSecretSHA256:     "deadbeef00000000000000000000000000000000000000000000000000000001",
+		RotatedSecretSHA256:     "deadbeef00000000000000000000000000000000000000000000000000000001",
+		AttestedPods:            4,
+		TotalPods:               4,
+		WarrantReverified:       true,
+	})
+	if err != nil || secSameDec.AllowBridgeRetirement || secSameDec.AllowAttestationMint {
+		t.Fatalf("expected unrotated secret (identical SHA-256) to fail closed, got %+v err=%v", secSameDec, err)
 	}
 }

@@ -10,6 +10,15 @@ is_secret_rotation if {
 	object.get(input, "remediation_kind", "IMAGE_PATCH") == "SECRET_ROTATION"
 }
 
+exposed_secret_sha := trim_space(object.get(input, "exposed_secret_sha256", ""))
+rotated_secret_sha := trim_space(object.get(input, "rotated_secret_sha256", ""))
+
+secret_hashes_distinct_and_nonempty if {
+	exposed_secret_sha != ""
+	rotated_secret_sha != ""
+	lower(rotated_secret_sha) != lower(exposed_secret_sha)
+}
+
 # Case A: Signed Regression Probe Present -> Differential Twin Proof Required
 has_probe if {
 	not is_secret_rotation
@@ -22,18 +31,20 @@ differential_twin_valid if {
 	input.twin_replay_status == "EXPLOIT_BLOCKED"
 }
 
-# Case B: Advisory-Only Finding (No Weaponized PoC Available) -> Passive Digest & Provenance Proof
+# Case B: Advisory-Only Finding -> Strictly Verifiable Passive Digest, SBOM Absence & Lockout Proof
 passive_sbom_valid if {
 	not is_secret_rotation
 	not has_probe
 	object.get(input, "provenance_verified", false) == true
+	object.get(input, "vulnerable_pkg_absent_in_sbom", false) == true
 	input.twin_replay_status == "NO_PROBE_PASSIVE_ONLY"
 }
 
-# Case C: Autonomous Credential / Secret Rotation Proof
+# Case C: Autonomous Credential / Secret Rotation Proof (Requires Cryptographic Non-Equivalence)
 secret_rotation_valid if {
 	is_secret_rotation
 	object.get(input, "secret_rotated_and_revoked", false) == true
+	secret_hashes_distinct_and_nonempty
 }
 
 assurance_tier := "ASSURANCE_TIER_SECRET_ROTATED" if {
@@ -47,6 +58,11 @@ assurance_tier := "ASSURANCE_TIER_SECRET_ROTATED" if {
 blockers contains "SECRET_ROTATION_INCOMPLETE" if {
 	is_secret_rotation
 	object.get(input, "secret_rotated_and_revoked", false) != true
+}
+
+blockers contains "SECRET_VALUE_UNCHANGED_OR_EMPTY" if {
+	is_secret_rotation
+	not secret_hashes_distinct_and_nonempty
 }
 
 blockers contains "BROKEN_PROBE_POSITIVE_CONTROL_FAILED" if {
@@ -65,16 +81,17 @@ blockers contains "PASSIVE_CLOSURE_MISSING_PROVENANCE" if {
 	object.get(input, "provenance_verified", false) != true
 }
 
+blockers contains "SBOM_STILL_CONTAINS_VULNERABLE_PACKAGE" if {
+	not is_secret_rotation
+	object.get(input, "vulnerable_pkg_absent_in_sbom", false) != true
+}
+
 blockers contains "FLEET_DIGEST_SWEEP_INCOMPLETE" if {
 	input.total_pods <= 0
 }
 
 blockers contains "FLEET_DIGEST_SWEEP_INCOMPLETE" if {
 	input.attested_pods != input.total_pods
-}
-
-blockers contains "VULNERABLE_SYMBOLS_STILL_LOADED" if {
-	input.vulnerable_symbols_loaded > 0
 }
 
 blockers contains "ADMISSION_LOCKOUT_NOT_ENFORCED" if {
@@ -98,7 +115,7 @@ allow_bridge_retirement if {
 	closure_evidence_valid
 	input.total_pods > 0
 	input.attested_pods == input.total_pods
-	input.vulnerable_symbols_loaded == 0
+	object.get(input, "vulnerable_pkg_absent_in_sbom", false) == true
 	input.admission_lockout_enforced == true
 }
 

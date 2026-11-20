@@ -254,6 +254,9 @@ func (o *ControlPlaneOrchestrator) SeedEnterpriseEstate(ctx context.Context) err
 	}
 
 	for i := range estate {
+		if len(estate[i].UnorderedArrayPaths) == 0 {
+			estate[i].UnorderedArrayPaths = []string{"$.shard_nodes"}
+		}
 		gate.GradeServiceReadiness(&estate[i])
 		if err := o.Store.UpsertEstateService(ctx, estate[i]); err != nil {
 			return err

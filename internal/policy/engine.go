@@ -114,17 +114,19 @@ type GateDecision struct {
 
 // VerifyInput represents structured input to data.warrant.verify.
 type VerifyInput struct {
-	RemediationKind          string `json:"remediation_kind,omitempty"`
-	SecretRotatedAndRevoked  bool   `json:"secret_rotated_and_revoked,omitempty"`
-	HasSignedProbe           bool   `json:"has_signed_probe"`
-	UnpatchedTwinStatus      string `json:"unpatched_twin_status"`
-	TwinReplayStatus         string `json:"twin_replay_status"`
-	ProvenanceVerified       bool   `json:"provenance_verified"`
-	AttestedPods             int    `json:"attested_pods"`
-	TotalPods                int    `json:"total_pods"`
-	VulnerableSymbolsLoaded  int    `json:"vulnerable_symbols_loaded"`
-	AdmissionLockoutEnforced bool   `json:"admission_lockout_enforced"`
-	WarrantReverified        bool   `json:"warrant_reverified"`
+	RemediationKind           string `json:"remediation_kind,omitempty"`
+	SecretRotatedAndRevoked   bool   `json:"secret_rotated_and_revoked,omitempty"`
+	ExposedSecretSHA256       string `json:"exposed_secret_sha256,omitempty"`
+	RotatedSecretSHA256       string `json:"rotated_secret_sha256,omitempty"`
+	HasSignedProbe            bool   `json:"has_signed_probe"`
+	UnpatchedTwinStatus       string `json:"unpatched_twin_status"`
+	TwinReplayStatus          string `json:"twin_replay_status"`
+	ProvenanceVerified        bool   `json:"provenance_verified"`
+	VulnerablePkgAbsentInSBOM bool   `json:"vulnerable_pkg_absent_in_sbom"`
+	AttestedPods              int    `json:"attested_pods"`
+	TotalPods                 int    `json:"total_pods"`
+	AdmissionLockoutEnforced  bool   `json:"admission_lockout_enforced"`
+	WarrantReverified         bool   `json:"warrant_reverified"`
 }
 
 // VerifyDecision is the deterministic decision from data.warrant.verify.

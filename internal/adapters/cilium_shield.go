@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/g1163rt-labs/g1-warrant/internal/crypto"
@@ -61,6 +62,18 @@ func (c *CiliumShieldAdapter) CompileAndApplyBridge(ctx context.Context, req Bri
 		allowedPeers = []string{"kube-dns.kube-system.svc.cluster.local"}
 	}
 	metadataCIDRs := []string{"169.254.169.254/32", "169.254.170.2/32", "fd00:ec2::254/128"}
+	allowKubeAPI := req.AllowKubeAPIServerEgress
+	for _, peer := range allowedPeers {
+		pLow := strings.ToLower(strings.TrimSpace(peer))
+		if pLow == "kube-apiserver" || pLow == "kubernetes.default.svc" || pLow == "kubernetes.default.svc.cluster.local" {
+			allowKubeAPI = true
+			break
+		}
+	}
+	deniedEntities := []string{"world"}
+	if !allowKubeAPI {
+		deniedEntities = append(deniedEntities, "kube-apiserver")
+	}
 
 	matchedRP := c.rulepacks.Lookup(req.CVEID, req.CWEID, req.ExploitVector)
 	containmentMode := models.ContainmentModeZeroProseQuarantine
@@ -141,7 +154,7 @@ func (c *CiliumShieldAdapter) CompileAndApplyBridge(ctx context.Context, req Bri
 			},
 			"egressDeny": []map[string]any{
 				{
-					"toEntities": []string{"world"},
+					"toEntities": deniedEntities,
 				},
 				{
 					"toCIDR": metadataCIDRs,

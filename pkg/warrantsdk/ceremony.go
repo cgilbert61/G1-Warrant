@@ -219,6 +219,32 @@ type OfflineVerificationResult struct {
 	EntryHash         string `json:"entry_hash"`
 }
 
+// VerifyOSCALBundleWithKeyRing verifies an exported NIST OSCAL 1.1.2 POA&M bundle against an append-only
+// ring of historical and active Kernel Ed25519 public keys (preventing restart key-rotation invalidation).
+func VerifyOSCALBundleWithKeyRing(bundleJSON []byte, keyRing []KernelPublicKeyRecord) (*OfflineVerificationResult, error) {
+	var header struct {
+		DSSEEnvelope        Envelope                `json:"dsse_envelope"`
+		KernelPublicKeyRing []KernelPublicKeyRecord `json:"kernel_public_key_ring"`
+	}
+	if err := json.Unmarshal(bundleJSON, &header); err != nil {
+		return nil, fmt.Errorf("decode OSCAL bundle JSON: %w", err)
+	}
+	if len(header.DSSEEnvelope.Signatures) == 0 {
+		return nil, errors.New("DSSE envelope contains zero signatures")
+	}
+	targetKeyID := header.DSSEEnvelope.Signatures[0].KeyID
+	candidates := keyRing
+	if len(candidates) == 0 {
+		candidates = header.KernelPublicKeyRing
+	}
+	for _, rec := range candidates {
+		if rec.KeyID == targetKeyID {
+			return VerifyOSCALBundleOffline(bundleJSON, rec.PublicKeyB64)
+		}
+	}
+	return nil, fmt.Errorf("kernel signing key %q not found in verification public-key ring (%d keys)", targetKeyID, len(candidates))
+}
+
 // VerifyOSCALBundleOffline cryptographically verifies an exported NIST OSCAL 1.1.2 POA&M bundle
 // against the G1-Warrant Kernel Ed25519 public key with zero network calls.
 func VerifyOSCALBundleOffline(bundleJSON []byte, kernelPublicKeyB64 string) (*OfflineVerificationResult, error) {

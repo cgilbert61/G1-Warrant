@@ -115,6 +115,9 @@ class WarrantClient:
         snap = self.bootstrap()
         return str(snap["kernel_public_key"]["public_key_b64"])
 
+    def kernel_public_key_ring(self) -> list[dict[str, Any]]:
+        return self._request_json("GET", "/api/v1/kernel-keys")
+
     # ------------------------------------------------------------------
     # N1 Principals, Standing Warrants & Asymmetric Emergency Freeze
     # ------------------------------------------------------------------
@@ -251,8 +254,10 @@ class WarrantClient:
         target_path_or_binary: str,
         violation_type: str = "FILESYSTEM_WRITE",
         running_digest: str = "",
+        sensor_token: str | None = None,
     ) -> dict[str, Any]:
-        """Submit an eBPF/Tetragon container filesystem write or untracked process event to N3."""
+        """Submit an authenticated eBPF/Tetragon container filesystem write or untracked process event to N3."""
+        tok = sensor_token or os.environ.get("WARRANT_TETRAGON_SENSOR_TOKEN") or ""
         return self._request_json(
             "POST",
             "/api/v1/telemetry/tetragon",
@@ -263,6 +268,7 @@ class WarrantClient:
                 "violation_type": violation_type,
                 "target_path_or_binary": target_path_or_binary,
             },
+            bearer_override=tok,
         )
 
     def simulate(self, scenario: str) -> dict[str, Any]:

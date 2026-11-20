@@ -20,11 +20,14 @@ import (
 
 // VerificationBundle holds verified N3 outputs required by N5 to mint an OSCAL 1.1.2 POA&M package.
 type VerificationBundle struct {
-	TwinTranscriptSHA256 string
-	UnpatchedTwinStatus  string
-	AssuranceTier        string
-	PodManifest          []models.PodDigestEntry
-	Lockout              models.AdmissionLockout
+	TwinTranscriptSHA256      string
+	UnpatchedTwinStatus       string
+	AssuranceTier             string
+	ExposedSecretSHA256       string
+	RotatedSecretSHA256       string
+	VulnerablePkgAbsentInSBOM bool
+	PodManifest               []models.PodDigestEntry
+	Lockout                   models.AdmissionLockout
 }
 
 // Engine implements N3: Differential Twin Replay (with Positive-Control Verification),
@@ -129,22 +132,16 @@ func (e *Engine) VerifyLockAndRetireBridge(ctx context.Context, item *models.Rem
 		},
 	)
 
-	// Step 2: Passive Live Fleet Pod Digest & Unloaded Shared Symbol Sweep
+	// Step 2: Passive Live Fleet Pod imageID SHA-256 Digest & Patched SBOM Absence Sweep
 	wl, err := e.deploy.InspectLiveWorkload(ctx, svc.ServiceID)
 	if err != nil {
 		return nil, err
 	}
 	matchedPods := 0
-	vulnSymbolsLoaded := 0
 	podManifest := make([]models.PodDigestEntry, 0, len(wl.Pods))
 	for _, pod := range wl.Pods {
 		if pod.RunningDigest == item.PatchedDigest {
 			matchedPods++
-		}
-		for _, sym := range pod.LoadedSymbols {
-			if item.VulnerableSymbol != "" && sym == item.VulnerableSymbol {
-				vulnSymbolsLoaded++
-			}
 		}
 		podManifest = append(podManifest, models.PodDigestEntry{
 			PodName:       pod.PodName,
@@ -153,15 +150,19 @@ func (e *Engine) VerifyLockAndRetireBridge(ctx context.Context, item *models.Rem
 			LoadedLibs:    pod.LoadedLibs,
 		})
 	}
+	vulnPkgAbsentInSBOM := item.PatchedDigest != "" &&
+		item.PatchedDigest != item.VulnerableDigest &&
+		!sbomStillReferencesDigest(svc.SBOMPURLs, item.VulnerableDigest)
+
 	item.PodSweepMatched = matchedPods
 	item.PodSweepTotal = len(wl.Pods)
 	manifestHash, _, _ := crypto.CanonicalSHA256Hex(podManifest)
 	_ = e.recordTrace(ctx, item.RemediationID, "N3", "PASSIVE_FLEET_DIGEST_SWEEP",
-		ternary(matchedPods == len(wl.Pods) && vulnSymbolsLoaded == 0, "PASS", "BLOCK"),
+		ternary(matchedPods == len(wl.Pods) && vulnPkgAbsentInSBOM, "PASS", "BLOCK"),
 		"k8s_rollout", manifestHash,
 		map[string]string{
-			"matched_pods":              fmt.Sprintf("%d/%d", matchedPods, len(wl.Pods)),
-			"vulnerable_symbols_loaded": fmt.Sprintf("%d", vulnSymbolsLoaded),
+			"matched_pods":                  fmt.Sprintf("%d/%d", matchedPods, len(wl.Pods)),
+			"vulnerable_pkg_absent_in_sbom": fmt.Sprintf("%t", vulnPkgAbsentInSBOM),
 		},
 	)
 
@@ -187,15 +188,15 @@ func (e *Engine) VerifyLockAndRetireBridge(ctx context.Context, item *models.Rem
 
 	// Step 4: Evaluate OPA Verify Policy before retiring the active Shield containment bridge
 	verDec, err := e.policy.EvalVerify(ctx, policy.VerifyInput{
-		HasSignedProbe:           hasSignedProbe,
-		UnpatchedTwinStatus:      twinResp.UnpatchedStatus,
-		TwinReplayStatus:         twinResp.Status,
-		ProvenanceVerified:       true,
-		AttestedPods:             matchedPods,
-		TotalPods:                len(wl.Pods),
-		VulnerableSymbolsLoaded:  vulnSymbolsLoaded,
-		AdmissionLockoutEnforced: lockout.PolicyName != "",
-		WarrantReverified:        warrantOK,
+		HasSignedProbe:            hasSignedProbe,
+		UnpatchedTwinStatus:       twinResp.UnpatchedStatus,
+		TwinReplayStatus:          twinResp.Status,
+		ProvenanceVerified:        true,
+		VulnerablePkgAbsentInSBOM: vulnPkgAbsentInSBOM,
+		AttestedPods:              matchedPods,
+		TotalPods:                 len(wl.Pods),
+		AdmissionLockoutEnforced:  lockout.PolicyName != "",
+		WarrantReverified:         warrantOK,
 	})
 	if err != nil {
 		return nil, err
@@ -230,18 +231,38 @@ func (e *Engine) VerifyLockAndRetireBridge(ctx context.Context, item *models.Rem
 	e.emit("REMEDIATION_UPDATED", item)
 
 	return &VerificationBundle{
-		TwinTranscriptSHA256: twinResp.TranscriptSHA256,
-		UnpatchedTwinStatus:  twinResp.UnpatchedStatus,
-		AssuranceTier:        verDec.AssuranceTier,
-		PodManifest:          podManifest,
-		Lockout:              *lockout,
+		TwinTranscriptSHA256:      twinResp.TranscriptSHA256,
+		UnpatchedTwinStatus:       twinResp.UnpatchedStatus,
+		AssuranceTier:             verDec.AssuranceTier,
+		VulnerablePkgAbsentInSBOM: vulnPkgAbsentInSBOM,
+		PodManifest:               podManifest,
+		Lockout:                   *lockout,
 	}, nil
 }
 
-// VerifyAndRetireSecretRotationBridge verifies 100% live pod secret-generation convergence and old-token revocation
-// under a SECRET-ROTATION-STATELESS Standing Warrant, retires the temporary egress/metadata quarantine bridge,
-// and returns a VerificationBundle ready for N5 OSCAL 1.1.2 POA&M minting.
-func (e *Engine) VerifyAndRetireSecretRotationBridge(ctx context.Context, item *models.RemediationItem, svc *models.EstateService, rotRes *fleetsim.SecretRotationResult) (*VerificationBundle, error) {
+func sbomStillReferencesDigest(sbomPURLs []string, vulnDigest string) bool {
+	if strings.TrimSpace(vulnDigest) == "" {
+		return false
+	}
+	low := strings.ToLower(strings.TrimSpace(vulnDigest))
+	for _, p := range sbomPURLs {
+		if strings.Contains(strings.ToLower(p), low) {
+			return true
+		}
+	}
+	return false
+}
+
+// VerifyAndRetireSecretRotationBridge verifies 100% live pod secret-generation convergence, old-token revocation,
+// and cryptographic non-equivalence (rotated_secret_sha256 != exposed_secret_sha256 & non-empty) under a
+// SECRET-ROTATION-STATELESS Standing Warrant before retiring the temporary egress/metadata quarantine bridge.
+func (e *Engine) VerifyAndRetireSecretRotationBridge(
+	ctx context.Context,
+	item *models.RemediationItem,
+	svc *models.EstateService,
+	exposedSecretSHA256 string,
+	rotRes *fleetsim.SecretRotationResult,
+) (*VerificationBundle, error) {
 	item.Stage = models.StageVerifyingLocking
 	_ = e.store.UpsertRemediation(ctx, item)
 	e.emit("REMEDIATION_UPDATED", item)
@@ -263,7 +284,7 @@ func (e *Engine) VerifyAndRetireSecretRotationBridge(ctx context.Context, item *
 	matchedPods := 0
 	podManifest := make([]models.PodDigestEntry, 0, len(wl.Pods))
 	for _, pod := range wl.Pods {
-		if pod.SecretGeneration >= rotRes.NewSecretGeneration || rotRes.NewSecretGeneration > 0 {
+		if rotRes.NewSecretGeneration > 0 && pod.SecretGeneration >= rotRes.NewSecretGeneration {
 			matchedPods++
 		}
 		podManifest = append(podManifest, models.PodDigestEntry{
@@ -280,6 +301,8 @@ func (e *Engine) VerifyAndRetireSecretRotationBridge(ctx context.Context, item *
 	verDec, err := e.policy.EvalVerify(ctx, policy.VerifyInput{
 		RemediationKind:         models.RemediationKindSecretRotation,
 		SecretRotatedAndRevoked: rotRes.PreviousTokenRevoked,
+		ExposedSecretSHA256:     exposedSecretSHA256,
+		RotatedSecretSHA256:     rotRes.NewSecretVersionHash,
 		AttestedPods:            matchedPods,
 		TotalPods:               len(wl.Pods),
 		WarrantReverified:       warrantOK,
@@ -288,8 +311,10 @@ func (e *Engine) VerifyAndRetireSecretRotationBridge(ctx context.Context, item *
 		return nil, err
 	}
 	if !verDec.AllowBridgeRetirement {
+		item.StatusHealth = models.HealthExceptionRouted
 		item.BlockerCode = strings.Join(verDec.Blockers, ",")
 		_ = e.store.UpsertRemediation(ctx, item)
+		e.emit("REMEDIATION_UPDATED", item)
 		return nil, fmt.Errorf("N3_SECRET_ROTATION_BLOCKED: %s", item.BlockerCode)
 	}
 	item.AssuranceTier = verDec.AssuranceTier
@@ -311,7 +336,7 @@ func (e *Engine) VerifyAndRetireSecretRotationBridge(ctx context.Context, item *
 		RemediationID: item.RemediationID,
 		ServiceID:     svc.ServiceID,
 		CVEID:         item.CVEID,
-		BannedDigest:  "REVOKED_CREDENTIAL_GEN",
+		BannedDigest:  exposedSecretSHA256,
 		PatchedDigest: rotRes.NewSecretVersionHash,
 		PolicyName:    "cred-revoke-" + rotRes.SecretResourceName,
 		Status:        "ENFORCED",
@@ -324,6 +349,8 @@ func (e *Engine) VerifyAndRetireSecretRotationBridge(ctx context.Context, item *
 	return &VerificationBundle{
 		TwinTranscriptSHA256: rotRes.NewSecretVersionHash,
 		AssuranceTier:        verDec.AssuranceTier,
+		ExposedSecretSHA256:  exposedSecretSHA256,
+		RotatedSecretSHA256:  rotRes.NewSecretVersionHash,
 		PodManifest:          podManifest,
 		Lockout:              lockout,
 	}, nil

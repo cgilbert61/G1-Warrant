@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -250,6 +251,10 @@ func (s *Store) UpsertEstateService(ctx context.Context, svc models.EstateServic
 	if len(svc.VolatileJSONPaths) == 0 {
 		volPathsJSON = []byte("[]")
 	}
+	unordPathsJSON, _ := json.Marshal(svc.UnorderedArrayPaths)
+	if len(svc.UnorderedArrayPaths) == 0 {
+		unordPathsJSON = []byte("[]")
+	}
 	egressJSON, _ := json.Marshal(svc.AllowedEgressServices)
 	if len(svc.AllowedEgressServices) == 0 {
 		egressJSON = []byte(`["kube-dns.kube-system.svc.cluster.local"]`)
@@ -276,8 +281,9 @@ func (s *Store) UpsertEstateService(ctx context.Context, svc models.EstateServic
 			service_id, display_name, namespace, tier, warrant_class, current_digest, current_purl, sbom_purls,
 			replicas, test_coverage_pct, otel_health_probes, readonly_shadow_replica, shadow_db_mode,
 			rollback_automation_verified, readonly_root_filesystem, noexec_tmp_mounts, allowed_egress_services,
-			baseline_syscalls, volatile_json_paths, eligible, autonomy_tier, eligibility_checklist, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+			allow_kube_apiserver_egress, baseline_syscalls, volatile_json_paths, unordered_array_paths,
+			eligible, autonomy_tier, eligibility_checklist, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
 		ON CONFLICT (service_id) DO UPDATE SET
 			display_name = EXCLUDED.display_name,
 			namespace = EXCLUDED.namespace,
@@ -295,8 +301,10 @@ func (s *Store) UpsertEstateService(ctx context.Context, svc models.EstateServic
 			readonly_root_filesystem = EXCLUDED.readonly_root_filesystem,
 			noexec_tmp_mounts = EXCLUDED.noexec_tmp_mounts,
 			allowed_egress_services = EXCLUDED.allowed_egress_services,
+			allow_kube_apiserver_egress = EXCLUDED.allow_kube_apiserver_egress,
 			baseline_syscalls = EXCLUDED.baseline_syscalls,
 			volatile_json_paths = EXCLUDED.volatile_json_paths,
+			unordered_array_paths = EXCLUDED.unordered_array_paths,
 			eligible = EXCLUDED.eligible,
 			autonomy_tier = EXCLUDED.autonomy_tier,
 			eligibility_checklist = EXCLUDED.eligibility_checklist,
@@ -305,7 +313,8 @@ func (s *Store) UpsertEstateService(ctx context.Context, svc models.EstateServic
 		svc.ServiceID, svc.DisplayName, svc.Namespace, svc.Tier, svc.WarrantClass, svc.CurrentDigest, svc.CurrentPURL, sbomJSON,
 		svc.Replicas, svc.TestCoveragePct, svc.OtelHealthProbes, svc.ReadonlyShadowReplica, svc.ShadowDBMode,
 		svc.RollbackAutomationVerified, svc.ReadOnlyRootFilesystem, svc.NoExecTmpMounts, egressJSON,
-		syscallsJSON, volPathsJSON, svc.Eligible, svc.AutonomyTier, checklistJSON, svc.UpdatedAt,
+		svc.AllowKubeAPIServerEgress, syscallsJSON, volPathsJSON, unordPathsJSON,
+		svc.Eligible, svc.AutonomyTier, checklistJSON, svc.UpdatedAt,
 	)
 	return err
 }
@@ -316,7 +325,8 @@ func (s *Store) ListEstateServices(ctx context.Context) ([]models.EstateService,
 		SELECT service_id, display_name, namespace, tier, warrant_class, current_digest, current_purl, sbom_purls,
 		       replicas, test_coverage_pct, otel_health_probes, readonly_shadow_replica, shadow_db_mode,
 		       rollback_automation_verified, readonly_root_filesystem, noexec_tmp_mounts, allowed_egress_services,
-		       baseline_syscalls, volatile_json_paths, eligible, autonomy_tier, eligibility_checklist, updated_at
+		       allow_kube_apiserver_egress, baseline_syscalls, volatile_json_paths, unordered_array_paths,
+		       eligible, autonomy_tier, eligibility_checklist, updated_at
 		FROM estate_services ORDER BY tier ASC, service_id ASC
 	`)
 	if err != nil {
@@ -326,12 +336,13 @@ func (s *Store) ListEstateServices(ctx context.Context) ([]models.EstateService,
 	out := []models.EstateService{}
 	for rows.Next() {
 		var svc models.EstateService
-		var sbomRaw, egressRaw, sysRaw, volRaw, checkRaw []byte
+		var sbomRaw, egressRaw, sysRaw, volRaw, unordRaw, checkRaw []byte
 		if err := rows.Scan(
 			&svc.ServiceID, &svc.DisplayName, &svc.Namespace, &svc.Tier, &svc.WarrantClass, &svc.CurrentDigest, &svc.CurrentPURL, &sbomRaw,
 			&svc.Replicas, &svc.TestCoveragePct, &svc.OtelHealthProbes, &svc.ReadonlyShadowReplica, &svc.ShadowDBMode,
 			&svc.RollbackAutomationVerified, &svc.ReadOnlyRootFilesystem, &svc.NoExecTmpMounts, &egressRaw,
-			&sysRaw, &volRaw, &svc.Eligible, &svc.AutonomyTier, &checkRaw, &svc.UpdatedAt,
+			&svc.AllowKubeAPIServerEgress, &sysRaw, &volRaw, &unordRaw,
+			&svc.Eligible, &svc.AutonomyTier, &checkRaw, &svc.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -339,6 +350,7 @@ func (s *Store) ListEstateServices(ctx context.Context) ([]models.EstateService,
 		_ = json.Unmarshal(egressRaw, &svc.AllowedEgressServices)
 		_ = json.Unmarshal(sysRaw, &svc.BaselineSyscalls)
 		_ = json.Unmarshal(volRaw, &svc.VolatileJSONPaths)
+		_ = json.Unmarshal(unordRaw, &svc.UnorderedArrayPaths)
 		_ = json.Unmarshal(checkRaw, &svc.EligibilityChecklist)
 		out = append(out, svc)
 	}
@@ -1083,4 +1095,37 @@ func (s *Store) ComputeScoreboard(ctx context.Context) (*models.GlobalScoreboard
 		ActiveDriftViolationsCount: driftCount,
 		RollbackFailuresCount:      rollbackCount,
 	}, nil
+}
+
+// RegisterKernelPublicKey appends the active kernel attestation public key into the immutable kernel_public_keys ring.
+func (s *Store) RegisterKernelPublicKey(ctx context.Context, pk crypto.PrincipalKey, backendMode string) error {
+	pubB64 := base64.StdEncoding.EncodeToString(pk.PublicKeyBytes)
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO kernel_public_keys (key_id, alg, public_key_b64, key_fingerprint, backend_mode, registered_at)
+		VALUES ($1,$2,$3,$4,$5,$6)
+		ON CONFLICT (key_id) DO NOTHING
+	`, pk.KeyID, pk.Alg, pubB64, pk.KeyFingerprint, backendMode, time.Now().UTC())
+	return err
+}
+
+// ListKernelPublicKeys returns all historical and active kernel verification public keys newest first.
+func (s *Store) ListKernelPublicKeys(ctx context.Context) ([]models.KernelPublicKeyRecord, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT key_id, alg, public_key_b64, key_fingerprint, backend_mode, registered_at
+		FROM kernel_public_keys
+		ORDER BY registered_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []models.KernelPublicKeyRecord{}
+	for rows.Next() {
+		var r models.KernelPublicKeyRecord
+		if err := rows.Scan(&r.KeyID, &r.Alg, &r.PublicKeyB64, &r.KeyFingerprint, &r.BackendMode, &r.RegisteredAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }

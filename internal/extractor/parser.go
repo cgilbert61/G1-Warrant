@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path"
 	"regexp"
 	"sort"
 	"strconv"
@@ -404,6 +405,38 @@ func inferCVSSFromTagsAndLevel(tags []string, level string) float64 {
 	}
 }
 
+// IsProtectedBuildOrAgentPath checks normalized repository paths at ANY directory depth
+// (checking both directory segments and basenames) to block CI/CD, container build, Makefile,
+// and coding-agent instruction mutations in nested monorepo/multi-service layouts.
+func IsProtectedBuildOrAgentPath(cleanPath string) bool {
+	norm := strings.ReplaceAll(strings.TrimSpace(cleanPath), `\`, "/")
+	for _, seg := range strings.Split(norm, "/") {
+		sLow := strings.ToLower(strings.TrimSpace(seg))
+		if sLow == ".." {
+			return true
+		}
+		switch sLow {
+		case ".github", ".cursor", ".gemini", ".windsurf", ".copilot", ".vscode", ".git":
+			return true
+		}
+		if strings.HasPrefix(sLow, ".gitlab-ci") || strings.HasPrefix(sLow, ".cursor") {
+			return true
+		}
+	}
+	base := strings.ToLower(path.Base(norm))
+	if strings.HasPrefix(base, "dockerfile") || strings.HasSuffix(base, ".dockerfile") {
+		return true
+	}
+	switch base {
+	case "makefile", "gnumakefile", "agents.md", "claude.md":
+		return true
+	}
+	if strings.HasPrefix(base, ".gitlab-ci") || strings.HasPrefix(base, ".cursor") {
+		return true
+	}
+	return false
+}
+
 // DiffExtractRequest wraps an untrusted unified git diff and target patched OCI digest.
 type DiffExtractRequest struct {
 	PatchedDigest string `json:"patched_digest"`
@@ -440,29 +473,70 @@ func ParseUntrustedDiff(raw []byte, extractorDigest string) (*models.ExtractedPa
 	syscallSet := map[string]bool{}
 	inDockerfile := false
 
+	currentFile := ""
 	checkTouchedPath := func(rawPath string) {
-		clean := strings.TrimPrefix(strings.TrimSpace(rawPath), "./")
-		clean = strings.TrimPrefix(clean, "/")
-		if clean == "" || clean == "dev/null" {
+		trimmed := strings.Trim(strings.TrimSpace(rawPath), `"`)
+		trimmed = strings.ReplaceAll(trimmed, `\`, "/")
+		if trimmed == "" || trimmed == "/dev/null" || trimmed == "dev/null" {
 			inDockerfile = false
+			currentFile = ""
 			return
 		}
-		touchedSet[clean] = true
-		baseLower := strings.ToLower(clean)
-		inDockerfile = strings.Contains(baseLower, "dockerfile")
-		for _, pref := range models.DefaultForbiddenDiffPrefixes {
-			pLow := strings.ToLower(pref)
-			if strings.HasPrefix(baseLower, pLow) || baseLower == strings.TrimSuffix(pLow, "/") || strings.Contains(baseLower, "/"+pLow) {
-				forbiddenSet[clean] = true
+		// Reject raw '..' traversal segments BEFORE path.Clean collapses them
+		for _, rawSeg := range strings.Split(trimmed, "/") {
+			if rawSeg == ".." {
+				forbiddenSet["PATH_TRAVERSAL:"+trimmed] = true
+				touchedSet[trimmed] = true
+				currentFile = trimmed
+				return
 			}
+		}
+		clean := path.Clean(strings.TrimPrefix(strings.TrimPrefix(trimmed, "./"), "/"))
+		if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || clean == "dev/null" {
+			if clean == ".." || strings.HasPrefix(clean, "../") {
+				forbiddenSet["PATH_TRAVERSAL:"+trimmed] = true
+			}
+			inDockerfile = false
+			currentFile = ""
+			return
+		}
+		currentFile = clean
+		touchedSet[clean] = true
+
+		baseLower := strings.ToLower(path.Base(clean))
+		inDockerfile = strings.HasPrefix(baseLower, "dockerfile") || strings.HasSuffix(baseLower, ".dockerfile")
+
+		if IsProtectedBuildOrAgentPath(clean) {
+			forbiddenSet[clean] = true
 		}
 	}
 
 	for _, line := range lines {
+		trimmedLine := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmedLine, "new file mode 120000") ||
+			strings.HasPrefix(trimmedLine, "old mode 120000") ||
+			strings.HasPrefix(trimmedLine, "new mode 120000") ||
+			(strings.HasPrefix(trimmedLine, "index ") && strings.HasSuffix(trimmedLine, " 120000")) {
+			lbl := currentFile
+			if lbl == "" {
+				lbl = "git-symlink"
+			}
+			forbiddenSet["SYMLINK_MODE_120000:"+lbl] = true
+			continue
+		}
 		if strings.HasPrefix(line, "diff --git ") {
 			parts := strings.Fields(line)
 			if len(parts) >= 4 {
+				checkTouchedPath(strings.TrimPrefix(parts[2], "a/"))
 				checkTouchedPath(strings.TrimPrefix(parts[3], "b/"))
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "--- ") {
+			src := strings.TrimSpace(strings.TrimPrefix(line, "--- "))
+			src = strings.TrimPrefix(src, "a/")
+			if src != "/dev/null" && src != "dev/null" {
+				checkTouchedPath(src)
 			}
 			continue
 		}

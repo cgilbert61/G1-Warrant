@@ -53,6 +53,7 @@ type (
 	AdmissionLockout         = models.AdmissionLockout
 	DriftIncident            = models.DriftIncident
 	TetragonDriftEvent       = models.TetragonDriftEvent
+	KernelPublicKeyRecord    = models.KernelPublicKeyRecord
 	AgentLedgerEntry         = models.AgentLedgerEntry
 	AttestationRecord        = models.AttestationRecord
 	AuditorShareToken        = models.AuditorShareToken

@@ -20,6 +20,7 @@ import (
 	"github.com/g1163rt-labs/g1-warrant/internal/gate"
 	"github.com/g1163rt-labs/g1-warrant/internal/models"
 	"github.com/g1163rt-labs/g1-warrant/internal/server"
+	"github.com/g1163rt-labs/g1-warrant/pkg/warrantsdk"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -155,6 +156,7 @@ func setupIsolatedHarness(t *testing.T) *testHarness {
 			ReadOnlyRootFilesystem:     true,
 			NoExecTmpMounts:            true,
 			AllowedEgressServices:      []string{"postgres-primary.fin-core.svc.cluster.local", "otel-collector.monitoring.svc.cluster.local"},
+			UnorderedArrayPaths:        []string{"$.shard_nodes"},
 			BaselineSyscalls:           stdSyscalls,
 		},
 		{
@@ -173,6 +175,7 @@ func setupIsolatedHarness(t *testing.T) *testHarness {
 			ReadOnlyRootFilesystem:     true,
 			NoExecTmpMounts:            true,
 			AllowedEgressServices:      []string{"redis-session.sec-authn.svc.cluster.local", "otel-collector.monitoring.svc.cluster.local"},
+			UnorderedArrayPaths:        []string{"$.shard_nodes"},
 			BaselineSyscalls:           stdSyscalls,
 		},
 	}
@@ -711,6 +714,7 @@ func TestInvariant7_ZeroProseAssuranceTiersQuarantinedRollbackAndExternalAnchor(
 		ReadOnlyRootFilesystem:     true,
 		NoExecTmpMounts:            true,
 		AllowedEgressServices:      []string{"orders-db.ops-fulfill.svc.cluster.local"},
+		UnorderedArrayPaths:        []string{"$.shard_nodes"},
 		BaselineSyscalls:           []string{"accept4", "close", "epoll_ctl", "epoll_wait", "fcntl", "fstat", "futex", "getsockopt", "mmap", "munmap", "nanosleep", "openat", "read", "recvfrom", "rt_sigaction", "rt_sigprocmask", "sendto", "setsockopt", "socket", "write"},
 	}
 	gate.GradeServiceReadiness(&brownfieldSvc)
@@ -1000,7 +1004,28 @@ func TestInvariant8_ARTEXCountermeasures_SecretRotationMetadataQuarantineInPodDr
 		TargetPathOrBinary: "/var/www/html/artex-probe-01.jsp",
 	}
 	tetBody, _ := json.Marshal(tetEv)
-	tetResp, err := http.Post(h.httpSrv.URL+"/api/v1/telemetry/tetragon", "application/json", bytes.NewReader(tetBody))
+	// Unauthenticated POST /api/v1/telemetry/tetragon MUST fail with 401 Unauthorized (prevents pod recycle DoS)
+	unauthResp, err := http.Post(h.httpSrv.URL+"/api/v1/telemetry/tetragon", "application/json", bytes.NewReader(tetBody))
+	if err != nil || unauthResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected unauthenticated tetragon webhook to return 401, got resp=%v err=%v", unauthResp, err)
+	}
+	_ = unauthResp.Body.Close()
+
+	// Auditor g1aud_* bearer token MUST also be rejected with 403 Forbidden
+	audReq, _ := http.NewRequest(http.MethodPost, h.httpSrv.URL+"/api/v1/telemetry/tetragon", bytes.NewReader(tetBody))
+	audReq.Header.Set("Content-Type", "application/json")
+	audReq.Header.Set("Authorization", "Bearer g1aud_fakeauditortoken1234567890")
+	audResp, err := http.DefaultClient.Do(audReq)
+	if err != nil || audResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected g1aud_* token on tetragon webhook to return 403, got resp=%v err=%v", audResp, err)
+	}
+	_ = audResp.Body.Close()
+
+	// Authenticated dedicated sensor token succeeds with 201 Created
+	tetReq, _ := http.NewRequest(http.MethodPost, h.httpSrv.URL+"/api/v1/telemetry/tetragon", bytes.NewReader(tetBody))
+	tetReq.Header.Set("Content-Type", "application/json")
+	tetReq.Header.Set("X-Tetragon-Sensor-Token", h.orch.TetragonSensorToken())
+	tetResp, err := http.DefaultClient.Do(tetReq)
 	if err != nil || tetResp.StatusCode != http.StatusCreated {
 		t.Fatalf("POST /api/v1/telemetry/tetragon failed: resp=%v err=%v", tetResp, err)
 	}
@@ -1100,6 +1125,133 @@ func TestInvariant8_ARTEXCountermeasures_SecretRotationMetadataQuarantineInPodDr
 	}
 	if !foundConfigViolation {
 		t.Fatalf("expected SECURITY_VIOLATION (FORBIDDEN_BUILD_OR_AGENT_CONFIG_MUTATION) in agent_action_ledger for %s", pItem.RemediationID)
+	}
+}
+
+// =========================================================================
+// INVARIANT 9 — Targeted Hardening Delta Regression Suite
+//   1) Startup Security Guard: WARRANT_ENABLE_TEST_SMARTCARDS=true fails closed
+//      when combined with WARRANT_CLUSTER_DRIVER=kubernetes or WARRANT_FEED_MODE=live
+//   2) Ephemeral Kernel Key Restart Ring: OSCAL 1.1.2 POA&M bundles minted before
+//      a warrantd restart remain cryptographically verifiable via kernel_public_keys
+//   3) ZERO_PROSE_EGRESS_MESH_QUARANTINE denies toEntities: ["kube-apiserver"]
+//   4) Order-Sensitive Canary Default: service without unordered_array_paths
+//      rolls back on reordered JSON array responses
+// =========================================================================
+func TestInvariant9_TargetedHardeningDelta_KeyRingStartupGuardAndOrderSensitiveCanary(t *testing.T) {
+	// 1. Startup Fail-Closed Guard
+	if err := server.ValidateStartupSecurityGuards(func(k string) string {
+		switch k {
+		case "WARRANT_ENABLE_TEST_SMARTCARDS":
+			return "true"
+		case "WARRANT_CLUSTER_DRIVER":
+			return "kubernetes"
+		default:
+			return ""
+		}
+	}); err == nil {
+		t.Fatal("expected ValidateStartupSecurityGuards to reject test smartcards with kubernetes driver")
+	}
+	if err := server.ValidateStartupSecurityGuards(func(k string) string {
+		switch k {
+		case "WARRANT_ENABLE_TEST_SMARTCARDS":
+			return "true"
+		case "WARRANT_FEED_MODE":
+			return "live"
+		default:
+			return ""
+		}
+	}); err == nil {
+		t.Fatal("expected ValidateStartupSecurityGuards to reject test smartcards with live feed mode")
+	}
+
+	h := setupIsolatedHarness(t)
+	mintDualWarrant(t, h, "wrt-inv9-ring", []string{"payments-ledger-api", "checkout-cart-svc"}, h.alice, h.bob)
+
+	// 2. Mint an OSCAL attestation on Orchestrator #1 (ephemeral memory key #1), then simulate
+	//    a warrantd restart with a brand-new random ephemeral memory key (Orchestrator #2)
+	sarif1 := server.BuildDeterministicSARIF(
+		"CVE-2026-99101", "CWE-000", 8.4, true, "payments-ledger-api",
+		"sha256:a100000000000000000000000000000000000000000000000000000000000001",
+		"sha256:a155555555555555555555555555555555555555555555555555555555555501",
+		"", "HTTP2_RAPID_RESET", 8080,
+	)
+	items1, err := h.orch.ExecuteSARIFRemediation(h.ctx, sarif1, "STATELESS_CLEAN")
+	if err != nil || len(items1) != 1 || items1[0].Stage != models.StageAttestedClosed {
+		t.Fatalf("ExecuteSARIFRemediation failed: items=%+v err=%v", items1, err)
+	}
+	// Check Step 4b: ZERO_PROSE_EGRESS_MESH_QUARANTINE bridge denied kube-apiserver
+	br, err := h.store.GetBridge(h.ctx, items1[0].BridgeID)
+	if err != nil || !strings.Contains(br.CiliumManifestYAML, "kube-apiserver") {
+		t.Fatalf("expected ZERO_PROSE_EGRESS_MESH_QUARANTINE bridge to deny kube-apiserver, got:\n%s", br.CiliumManifestYAML)
+	}
+
+	sdkCli1 := warrantsdk.NewClient(h.httpSrv.URL)
+	oscalBundleBeforeRestart, err := sdkCli1.ExportOSCALBundle(h.ctx, items1[0].AttestationID)
+	if err != nil {
+		t.Fatalf("ExportOSCALBundle failed: %v", err)
+	}
+
+	// Simulate warrantd restart with a fresh ephemeral Ed25519 key against the same PostgreSQL DB
+	extSrv := httptest.NewServer(extractor.NewHTTPHandler("sha256-extractor-restart-binary"))
+	defer extSrv.Close()
+	simSrv := httptest.NewServer(fleetsim.NewClusterSimulator().Handler())
+	defer simSrv.Close()
+
+	orch2, err := server.NewOrchestrator(h.ctx, h.store, extSrv.URL, simSrv.URL, "", h.orch.WebAuthnCfg)
+	if err != nil {
+		t.Fatalf("NewOrchestrator #2 failed: %v", err)
+	}
+	srv2 := httptest.NewServer(orch2.BuildHTTPHandler())
+	defer srv2.Close()
+
+	sdkCli2 := warrantsdk.NewClient(srv2.URL)
+	ringAfterRestart, err := sdkCli2.KernelPublicKeyRing(h.ctx)
+	if err != nil || len(ringAfterRestart) < 2 {
+		t.Fatalf("expected >= 2 persisted kernel keys in append-only ring after restart, got %d err=%v", len(ringAfterRestart), err)
+	}
+	verRes, err := warrantsdk.VerifyOSCALBundleWithKeyRing(oscalBundleBeforeRestart, ringAfterRestart)
+	if err != nil || !verRes.Valid {
+		t.Fatalf("expected historical pre-restart OSCAL bundle to verify cleanly against persisted kernel_public_keys ring, got res=%+v err=%v", verRes, err)
+	}
+
+	// 3. Order-Sensitive Canary Default: register checkout-cart-svc WITHOUT UnorderedArrayPaths
+	strictOrderSvc := models.EstateService{
+		ServiceID:                  "checkout-cart-svc",
+		DisplayName:                "Strict Ledger Order Checkout",
+		Namespace:                  "commerce-edge",
+		Tier:                       "TIER_1_CRITICAL",
+		WarrantClass:               "KEV-TIER1-STATELESS",
+		CurrentDigest:              "sha256:d400000000000000000000000000000000000000000000000000000000000004",
+		CurrentPURL:                "pkg:oci/checkout-cart-svc@sha256:d400000000000000000000000000000000000000000000000000000000000004",
+		Replicas:                   6,
+		TestCoveragePct:            92.0,
+		OtelHealthProbes:           true,
+		ReadonlyShadowReplica:      true,
+		RollbackAutomationVerified: true,
+		ReadOnlyRootFilesystem:     true,
+		NoExecTmpMounts:            true,
+		UnorderedArrayPaths:        nil, // <-- Default order-sensitive! fleet-sim's reordered shard_nodes MUST trigger rollback!
+		BaselineSyscalls:           []string{"accept4", "close", "epoll_ctl", "epoll_wait", "fcntl", "fstat", "futex", "getsockopt", "mmap", "munmap", "nanosleep", "openat", "read", "recvfrom", "rt_sigaction", "rt_sigprocmask", "sendto", "setsockopt", "socket", "write"},
+	}
+	gate.GradeServiceReadiness(&strictOrderSvc)
+	if err := h.store.UpsertEstateService(h.ctx, strictOrderSvc); err != nil {
+		t.Fatal(err)
+	}
+
+	sarifOrder := server.BuildDeterministicSARIF(
+		"CVE-2026-99102", "CWE-787", 9.1, true, "checkout-cart-svc",
+		"sha256:d400000000000000000000000000000000000000000000000000000000000004",
+		"sha256:d466666666666666666666666666666666666666666666666666666666666604",
+		"", "TLS_HEARTBEAT", 8080,
+	)
+	orderItems, err := h.orch.ExecuteSARIFRemediation(h.ctx, sarifOrder, "STATELESS_CLEAN")
+	if err != nil || len(orderItems) != 1 {
+		t.Fatalf("ExecuteSARIFRemediation(strictOrderSvc) failed: %v", err)
+	}
+	if orderItems[0].Stage == models.StageAttestedClosed || orderItems[0].CanaryWeight != 0 {
+		t.Fatalf("expected order-sensitive default to block/rollback reordered shard_nodes array, got stage=%s weight=%d health=%s",
+			orderItems[0].Stage, orderItems[0].CanaryWeight, orderItems[0].StatusHealth)
 	}
 }
 

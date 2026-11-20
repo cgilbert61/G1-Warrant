@@ -583,14 +583,16 @@ func main() {
 				_ = fs.Parse(args[3:])
 			}
 			pkB64 := strings.TrimSpace(*pubKey)
-			if pkB64 == "" {
-				_, fetchedB64, _, kErr := cli.KernelPublicKey(ctx)
-				must(kErr)
-				pkB64 = fetchedB64
-			}
 			rawBundle, err := os.ReadFile(bundlePath)
 			must(err)
-			res, err := warrantsdk.VerifyOSCALBundleOffline(rawBundle, pkB64)
+			var res *warrantsdk.OfflineVerificationResult
+			if pkB64 != "" {
+				res, err = warrantsdk.VerifyOSCALBundleOffline(rawBundle, pkB64)
+			} else {
+				ring, rErr := cli.KernelPublicKeyRing(ctx)
+				must(rErr)
+				res, err = warrantsdk.VerifyOSCALBundleWithKeyRing(rawBundle, ring)
+			}
 			must(err)
 			printJSON(res)
 

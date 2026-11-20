@@ -19,6 +19,7 @@ type Client struct {
 	baseURL      string
 	httpClient   *http.Client
 	auditorToken string
+	sensorToken  string
 	userAgent    string
 }
 
@@ -46,6 +47,14 @@ func WithTimeout(d time.Duration) Option {
 func WithAuditorToken(bearer string) Option {
 	return func(c *Client) {
 		c.auditorToken = strings.TrimSpace(bearer)
+	}
+}
+
+// WithSensorToken attaches a dedicated Tetragon/eBPF sensor authentication token (g1tet_...)
+// required when submitting runtime drift events to POST /api/v1/telemetry/tetragon.
+func WithSensorToken(token string) Option {
+	return func(c *Client) {
+		c.sensorToken = strings.TrimSpace(token)
 	}
 }
 
@@ -121,6 +130,15 @@ func (c *Client) KernelPublicKey(ctx context.Context) (keyID string, pubKeyB64 s
 		return "", "", "", fmt.Errorf("warrantsdk: kernel_public_key missing in bootstrap response")
 	}
 	return keyID, pubKeyB64, fingerprint, nil
+}
+
+// KernelPublicKeyRing fetches the append-only ring of historical and active Kernel Ed25519 verification keys.
+func (c *Client) KernelPublicKeyRing(ctx context.Context) ([]KernelPublicKeyRecord, error) {
+	var ring []KernelPublicKeyRecord
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/kernel-keys", nil, &ring); err != nil {
+		return nil, err
+	}
+	return ring, nil
 }
 
 // ListPrincipals returns all registered cryptographic principals and WebAuthn/PIV authenticators.
@@ -600,6 +618,9 @@ func (c *Client) doRaw(ctx context.Context, method, path, contentType string, bo
 	}
 	if c.auditorToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.auditorToken)
+	}
+	if c.sensorToken != "" {
+		req.Header.Set("X-Tetragon-Sensor-Token", c.sensorToken)
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

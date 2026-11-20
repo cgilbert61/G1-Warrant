@@ -23,12 +23,43 @@ import (
 // LiveKubernetesAdapter drives a real Kubernetes + Cilium cluster via kube-apiserver REST endpoints
 // and event-driven chunked WATCH streams (?watch=true&resourceVersion=...) with zero sub-second polling.
 type LiveKubernetesAdapter struct {
-	apiServerURL string
-	bearerToken  string
-	namespace    string
-	httpClient   *http.Client
-	watchClient  *http.Client
-	rulepacks    *RulepackRegistry
+	apiServerURL     string
+	bearerToken      string
+	namespace        string
+	httpClient       *http.Client
+	watchClient      *http.Client
+	watchIdleTimeout time.Duration
+	rulepacks        *RulepackRegistry
+}
+
+// NewLiveKubernetesAdapter configures a LiveKubernetesAdapter with explicit timeouts (useful for unit tests and custom clusters).
+func NewLiveKubernetesAdapter(apiServerURL, bearerToken, namespace string, watchIdleTimeout time.Duration, transport *http.Transport, rulepacks *RulepackRegistry) *LiveKubernetesAdapter {
+	if namespace == "" {
+		namespace = "default"
+	}
+	if watchIdleTimeout <= 0 {
+		watchIdleTimeout = 90 * time.Second
+	}
+	if rulepacks == nil {
+		rulepacks = NewDefaultRulepackRegistry()
+	}
+	baseTransport := transport
+	if baseTransport == nil {
+		baseTransport = http.DefaultTransport.(*http.Transport).Clone()
+	}
+	watchTransport := baseTransport.Clone()
+	if watchTransport.ResponseHeaderTimeout == 0 {
+		watchTransport.ResponseHeaderTimeout = 15 * time.Second
+	}
+	return &LiveKubernetesAdapter{
+		apiServerURL:     strings.TrimRight(strings.TrimSpace(apiServerURL), "/"),
+		bearerToken:      bearerToken,
+		namespace:        namespace,
+		httpClient:       &http.Client{Transport: baseTransport, Timeout: 15 * time.Second},
+		watchClient:      &http.Client{Transport: watchTransport},
+		watchIdleTimeout: watchIdleTimeout,
+		rulepacks:        rulepacks,
+	}
 }
 
 // NewLiveKubernetesAdapterFromEnv configures a production Kubernetes & Cilium adapter from
@@ -79,30 +110,111 @@ func NewLiveKubernetesAdapterFromEnv(rulepacks *RulepackRegistry) (*LiveKubernet
 		rulepacks = NewDefaultRulepackRegistry()
 	}
 
-	return &LiveKubernetesAdapter{
-		apiServerURL: apiURL,
-		bearerToken:  token,
-		namespace:    ns,
-		httpClient:   &http.Client{Transport: transport, Timeout: 15 * time.Second},
-		watchClient:  &http.Client{Transport: transport}, // unbounded streaming timeout for WATCH
-		rulepacks:    rulepacks,
-	}, nil
+	return NewLiveKubernetesAdapter(apiURL, token, ns, 90*time.Second, transport, rulepacks), nil
 }
 
-// WatchPodDriftEvents opens an event-driven Kubernetes WATCH stream (`GET /api/v1/pods?watch=true&labelSelector=...`)
-// with automatic resourceVersion bookmarking instead of polling kube-apiserver in a tight loop.
+type idleTimeoutReader struct {
+	r       io.ReadCloser
+	timeout time.Duration
+	timer   *time.Timer
+}
+
+func newIdleTimeoutReader(r io.ReadCloser, timeout time.Duration, onTimeout func()) *idleTimeoutReader {
+	return &idleTimeoutReader{
+		r:       r,
+		timeout: timeout,
+		timer:   time.AfterFunc(timeout, onTimeout),
+	}
+}
+
+func (ir *idleTimeoutReader) Read(p []byte) (int, error) {
+	ir.timer.Reset(ir.timeout)
+	n, err := ir.r.Read(p)
+	ir.timer.Reset(ir.timeout)
+	return n, err
+}
+
+func (ir *idleTimeoutReader) Close() error {
+	ir.timer.Stop()
+	return ir.r.Close()
+}
+
+// resyncPodList performs a full authoritative LIST (`GET /api/v1/pods`) on initial startup or after
+// HTTP 410 Gone / Expired resourceVersion events so zero pod drift transitions are missed across WATCH gaps.
+func (k *LiveKubernetesAdapter) resyncPodList(ctx context.Context, onEvent func(serviceID, podName, runningDigest string)) (string, error) {
+	raw, err := k.doKubeRequest(ctx, http.MethodGet, "/api/v1/pods", "", nil)
+	if err != nil {
+		return "", err
+	}
+	var podList struct {
+		Metadata struct {
+			ResourceVersion string `json:"resourceVersion"`
+		} `json:"metadata"`
+		Items []struct {
+			Metadata struct {
+				Name   string            `json:"name"`
+				Labels map[string]string `json:"labels"`
+			} `json:"metadata"`
+			Status struct {
+				ContainerStatuses []struct {
+					ImageID string `json:"imageID"`
+				} `json:"containerStatuses"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &podList); err != nil {
+		return "", err
+	}
+	for _, item := range podList.Items {
+		svcID := item.Metadata.Labels["app.kubernetes.io/name"]
+		if svcID == "" {
+			svcID = item.Metadata.Labels["app"]
+		}
+		if svcID == "" {
+			continue
+		}
+		for _, cs := range item.Status.ContainerStatuses {
+			if idx := strings.Index(cs.ImageID, "sha256:"); idx >= 0 {
+				onEvent(svcID, item.Metadata.Name, cs.ImageID[idx:])
+			}
+		}
+	}
+	return podList.Metadata.ResourceVersion, nil
+}
+
+// WatchPodDriftEvents opens an event-driven Kubernetes WATCH stream (`GET /api/v1/pods?watch=true&allowWatchBookmarks=true`)
+// with idle read timeouts and full LIST re-sync upon HTTP 410 Gone or in-stream Expired Status events.
 func (k *LiveKubernetesAdapter) WatchPodDriftEvents(ctx context.Context, onEvent func(serviceID, podName, runningDigest string)) error {
+	idleTimeout := k.watchIdleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = 90 * time.Second
+	}
 	resourceVersion := ""
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		if resourceVersion == "" {
+			rv, lErr := k.resyncPodList(ctx, onEvent)
+			if lErr != nil {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(500 * time.Millisecond):
+					continue
+				}
+			}
+			resourceVersion = rv
+		}
+
 		path := "/api/v1/pods?watch=true&allowWatchBookmarks=true"
 		if resourceVersion != "" {
 			path += "&resourceVersion=" + resourceVersion
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, k.apiServerURL+path, nil)
+		watchCtx, cancelWatch := context.WithCancel(ctx)
+		req, err := http.NewRequestWithContext(watchCtx, http.MethodGet, k.apiServerURL+path, nil)
 		if err != nil {
+			cancelWatch()
 			return err
 		}
 		if k.bearerToken != "" {
@@ -110,35 +222,48 @@ func (k *LiveKubernetesAdapter) WatchPodDriftEvents(ctx context.Context, onEvent
 		}
 		resp, err := k.watchClient.Do(req)
 		if err != nil {
+			cancelWatch()
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			// Reset resourceVersion so reconnect performs a full LIST catch-up
+			resourceVersion = ""
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(2 * time.Second):
+			case <-time.After(200 * time.Millisecond):
 				continue
 			}
 		}
 		if resp.StatusCode == http.StatusGone {
-			// 410 Gone: resourceVersion expired; reset bookmark and re-establish WATCH stream
+			// HTTP 410 Gone: resourceVersion expired; clear bookmark to trigger full LIST re-sync immediately
 			_ = resp.Body.Close()
+			cancelWatch()
 			resourceVersion = ""
 			continue
 		}
 		if resp.StatusCode >= 300 {
 			_ = resp.Body.Close()
+			cancelWatch()
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(3 * time.Second):
+			case <-time.After(500 * time.Millisecond):
 				continue
 			}
 		}
 
-		scanner := bufio.NewScanner(resp.Body)
+		guardedBody := newIdleTimeoutReader(resp.Body, idleTimeout, cancelWatch)
+		scanner := bufio.NewScanner(guardedBody)
 		scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
+		expiredInStream := false
 		for scanner.Scan() {
 			var ev struct {
 				Type   string `json:"type"`
 				Object struct {
+					Kind     string `json:"kind"`
+					Code     int    `json:"code"`
+					Reason   string `json:"reason"`
 					Metadata struct {
 						Name            string            `json:"name"`
 						ResourceVersion string            `json:"resourceVersion"`
@@ -154,10 +279,15 @@ func (k *LiveKubernetesAdapter) WatchPodDriftEvents(ctx context.Context, onEvent
 			if json.Unmarshal(scanner.Bytes(), &ev) != nil {
 				continue
 			}
+			if ev.Type == "ERROR" && (ev.Object.Code == http.StatusGone || strings.EqualFold(ev.Object.Reason, "Expired")) {
+				// Kubernetes chunked watch 410 Expired Status object -> force full LIST re-sync
+				expiredInStream = true
+				break
+			}
 			if ev.Object.Metadata.ResourceVersion != "" {
 				resourceVersion = ev.Object.Metadata.ResourceVersion
 			}
-			if ev.Type == "BOOKMARK" || ev.Type == "DELETED" {
+			if ev.Type == "BOOKMARK" || ev.Type == "DELETED" || ev.Type == "ERROR" {
 				continue
 			}
 			svcID := ev.Object.Metadata.Labels["app.kubernetes.io/name"]
@@ -173,7 +303,12 @@ func (k *LiveKubernetesAdapter) WatchPodDriftEvents(ctx context.Context, onEvent
 				}
 			}
 		}
-		_ = resp.Body.Close()
+		scanErr := scanner.Err()
+		_ = guardedBody.Close()
+		cancelWatch()
+		if expiredInStream || scanErr != nil {
+			resourceVersion = ""
+		}
 	}
 }
 

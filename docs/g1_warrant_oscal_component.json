@@ -1,9 +1,9 @@
 {
   "component-definition": {
-    "uuid": "9755d50e-d051-4a29-a44e-07cdddaefa53",
+    "uuid": "42fbffc6-704f-4865-8c27-d6d0806dca66",
     "metadata": {
       "title": "G1-Warrant Deterministic Autonomous Remediation, Containment & Attestation Control Plane",
-      "last-modified": "2026-11-20T00:16:06.541243+00:00",
+      "last-modified": "2026-11-20T01:41:16.098218+00:00",
       "version": "1.1.0",
       "oscal-version": "1.1.2",
       "props": [
@@ -19,108 +19,108 @@
     },
     "components": [
       {
-        "uuid": "8a9934d3-e03e-4990-bc0b-f1474ca3fe9d",
+        "uuid": "b1c5aa87-86bb-45e8-b274-9efc2daefc49",
         "type": "software",
         "title": "g1-warrant-core",
         "description": "Zero-LLM deterministic remediation control plane enforcing 2-of-2 DSSE Standing Warrants, OPA Rego AC-5 separation of duties, shadow canary differential gates, eBPF containment lockouts, and NIST OSCAL 1.1.2 POA&M closure attestations.",
         "control-implementations": [
           {
-            "uuid": "b15a7897-2701-4966-81e6-f58e595e43c1",
+            "uuid": "58c0f853-e9b1-4110-9f9c-5b4fef10310a",
             "source": "https://raw.githubusercontent.com/usnistgov/oscal-content/main/nist.gov/SP800-53/rev5/json/NIST_SP-800-53_rev5_catalog.json",
             "description": "NIST SP 800-53 Rev 5 security and supply-chain control implementation for G1-Warrant",
             "implemented-requirements": [
               {
-                "uuid": "e305e2f7-f646-4b1f-809a-f0cb11ea22db",
+                "uuid": "8112756a-e4f4-4c57-b045-fbe2d007379e",
                 "control-id": "ac-3",
                 "description": "Every autonomous rollout, Cilium containment bridge, and exception resolution is gated by cryptographic Standing Warrant verification (fail-closed on missing, expired, or out-of-scope warrants). External 3PAO auditor bearer tokens (g1aud_*) are strictly isolated to /api/v1/auditor/* and return HTTP 403 on all operational endpoints.",
                 "remarks": "Mechanism: internal/warrant/engine.go + internal/server/api.go Scoped Auditor Bearer Isolation"
               },
               {
-                "uuid": "34e8e20c-9ff2-49c4-a23a-9ac21fd476b6",
+                "uuid": "276db8f4-6e19-4897-a54e-f4f8514cc205",
                 "control-id": "ac-4",
                 "description": "Untrusted external prose (SARIF 2.1.0, CISA KEV feeds, Google OSV.dev advisories, CycloneDX VEX, git diffs) is routed exclusively through the zero-privilege warrant-extractor service deployed on an isolated zero-egress network segment, emitting only regex-validated typed records.",
                 "remarks": "Mechanism: cmd/warrant-extractor + k8s/network-policy.yaml (Zero-Egress Content vs. Artifact Separation)"
               },
               {
-                "uuid": "f16c8b6c-b573-4dda-a0dc-df2d6d15d81d",
+                "uuid": "a01771e1-41af-4ef5-a2cc-ac0d93a8320c",
                 "control-id": "ac-5",
                 "description": "Standing Warrants, Fleet Thaws, and Ceiling Exceptions require 2-of-2 cryptographic signatures over RFC 8785 JCS canonicalized DSSEv1 PAE bytes from two distinct human principals holding disjoint institutional roles: Slot 1 SERVICE_OWNER and Slot 2 AUTHORIZING_OFFICIAL. Production SDKs and CLIs ship zero demo signers.",
                 "remarks": "Mechanism: policies/warrant_ac5.rego + internal/crypto/dsse.go (2-of-2 Dual-Key Separation of Duties)"
               },
               {
-                "uuid": "035e72b0-e388-4a7b-93a5-25b34ef2b071",
+                "uuid": "285c5525-1e93-4bc6-b084-60c203fcad70",
                 "control-id": "au-2",
                 "description": "All Standing Warrant issuances, short-lived Task Warrant delegations (TTL <= 300s), extractor sanitizations, progressive canary transitions, containment bridges, quarantined rollbacks, and POA&M closures generate structured, millisecond-timestamped cryptographic audit records with SHA-256 input/output lineage.",
                 "remarks": "Mechanism: internal/agentcp/controlplane.go + internal/ledger/engine.go"
               },
               {
-                "uuid": "c46c9382-6edd-458b-a7d6-8ca08afa8de9",
+                "uuid": "55f016f8-07aa-4e70-bbb1-7a5e0e2fbf84",
                 "control-id": "au-9.3",
                 "description": "PostgreSQL BEFORE UPDATE OR DELETE triggers enforce append-only immutability across warrant_envelopes, agent_action_ledger, attestation_records, and ledger_checkpoints, while TransparencyAnchor ships DSSE-signed binary Merkle Root checkpoints to an external WORM file/webhook boundary so even PostgreSQL superuser trigger-disable rewrites are cryptographically detected.",
                 "remarks": "Mechanism: db/migrations/001..003 + internal/ledger/anchor.go External Merkle Transparency Anchor"
               },
               {
-                "uuid": "ea789687-20da-46fc-8e59-b05f59f199cb",
+                "uuid": "576626e9-c30e-4edf-a593-0ae09163e151",
                 "control-id": "au-10",
                 "description": "Warrants, ceiling exceptions, Merkle checkpoints, and NIST OSCAL 1.1.2 closure attestations are sealed inside DSSEv1 envelopes signed via non-exportable KMS/HSM EnvelopeSigner, Ed25519, or W3C WebAuthn hardware authenticators over RFC 8785 JCS payloads.",
                 "remarks": "Mechanism: internal/crypto/{jcs,dsse,webauthn,signer}.go + Client-Side Offline DSSE Verifier"
               },
               {
-                "uuid": "93e299b5-d433-4cf0-884e-3982eda9c351",
+                "uuid": "b693c3ef-23c4-4d4c-9736-69fb3dacc158",
                 "control-id": "ca-7",
                 "description": "Streams event-driven Kubernetes Pod WATCH notifications (?watch=true&allowWatchBookmarks=true&resourceVersion=...) and eBPF/Tetragon container filesystem/process telemetry, automatically re-arming Cilium metadata/egress quarantine bridges, cordoning compromised pods, and recycling clean replicas upon image or in-pod webshell drift even during Emergency Freeze.",
                 "remarks": "Mechanism: internal/adapters/k8s_live.go Streaming WATCH + eBPF/Tetragon In-Pod Drift Quarantine"
               },
               {
-                "uuid": "e7ff306e-4b0f-4799-9f7a-bc5b8e3bae11",
+                "uuid": "f274c39c-c94f-4563-b9a3-f549b48d7b54",
                 "control-id": "cm-2",
                 "description": "Grades enterprise services across three graduated autonomy tiers with a mandatory 5th immutable-filesystem gate (readOnlyRootFilesystem: true + noexec /tmp): TIER_1_FULL_AUTONOMOUS (>=80% coverage, OTel probes, CoW/shadow DB, verified rollback, immutable rootfs), TIER_2_GUARDED_CANARY (brownfield SLI-guarded canary with immutable rootfs), and TIER_3_CONTAIN_AND_CAB.",
                 "remarks": "Mechanism: policies/gate_eligibility.rego + 5-Gate 3-Tier Graduated Fleet Autonomy Grader"
               },
               {
-                "uuid": "ad80ec67-1381-49c1-a23b-e65f711aa7bd",
+                "uuid": "15f702aa-2f42-4273-b752-9e236477991c",
                 "control-id": "cm-3.4",
                 "description": "Contains in seconds and verifies rollouts safely across configurable statistical sample/dwell windows using order-insensitive multiset JSON diffing, float epsilon tolerance, eBPF syscall/file/egress guards, and an atomic 3-step Contain-Before-Unban Quarantined Rollback state machine for post-closure latent regressions.",
                 "remarks": "Mechanism: internal/gate/engine.go + internal/verify/engine.go Atomic 3-Step Quarantined Rollback"
               },
               {
-                "uuid": "699efca7-3d50-476d-a2a2-91425138c1eb",
+                "uuid": "45484527-679c-45d8-ad7a-d0df56aff495",
                 "control-id": "ia-2.1",
                 "description": "Authenticates organizational Authorizing Officials and Service Owners via native W3C WebAuthn hardware authenticators (RPID SHA-256 binding, User Present & User Verified hardware flags, ECDSA P-256 / Ed25519 verification) and live execution-time revocation checks.",
                 "remarks": "Mechanism: internal/crypto/webauthn.go Native W3C WebAuthn PIV/FIDO2 Verification"
               },
               {
-                "uuid": "77dbc450-7014-4a7e-afe6-58d71d64d385",
+                "uuid": "e59aa6ff-2056-4706-811d-256fedbc78a7",
                 "control-id": "ia-8",
                 "description": "External scanner, extractor, and rollout workers operate solely as governed delegates under DSSE-signed ephemeral Task Warrants (max TTL 300s) bound to an active human-co-signed Standing Warrant and explicit target asset scope.",
                 "remarks": "Mechanism: internal/agentcp/controlplane.go Minute-Scoped Ephemeral Task Warrants"
               },
               {
-                "uuid": "8c14db55-adcb-439b-a756-0915a163dfff",
+                "uuid": "39d982b4-79d6-427d-bd83-144f7ae038f5",
                 "control-id": "ra-5",
                 "description": "Eliminates false-negative closure from broken PoCs by requiring positive-control exploit confirmation against the unpatched digest before accepting EXPLOIT_BLOCKED on the patched digest (ASSURANCE_TIER_2_DIFFERENTIAL_TWIN), while attesting standard Trivy/OSV/KEV advisories without weaponized PoCs under ASSURANCE_TIER_1_PASSIVE_DIGEST_SBOM.",
                 "remarks": "Mechanism: policies/verify_closure.rego Differential Twin Positive Control & Dual Assurance Tiers"
               },
               {
-                "uuid": "583988b2-5237-42ac-8d3e-35c09f419677",
+                "uuid": "e7f47b5b-6825-416a-8929-28b2efb64789",
                 "control-id": "sc-7.5",
                 "description": "Enforces default outbound cloud metadata severance (169.254.169.254/32, 169.254.170.2/32, fd00:ec2::254/128) and external callback blocking (toEntities: world) on every N3 containment bridge, restricting egress strictly to pre-declared internal cluster services while applying L7 Envoy/Cilium filters only when backed by an Ed25519 publisher-signed CWE/CVE rulepack.",
                 "remarks": "Mechanism: internal/adapters/{cilium_shield,rulepacks}.go Metadata & Callback Quarantine + Signed Rulepacks"
               },
               {
-                "uuid": "c74dd058-1507-4bb0-873d-75f3c584a43e",
+                "uuid": "f3be2f77-f3cd-499d-8041-fd6a4660fa81",
                 "control-id": "si-7.15",
                 "description": "Verifies publisher Ed25519 provenance on every candidate patch artifact, cryptographically blocks AI diffs mutating CI/CD or coding-agent instructions (.github/, .gitlab-ci, Dockerfile, Makefile, AGENTS.md, CLAUDE.md, .cursor, .gemini/), and sweeps 100% of live pod containerStatuses imageID SHA-256 digests before retiring containment.",
                 "remarks": "Mechanism: internal/adapters/fix_provider.go + internal/agentcp/controlplane.go Build/Agent Config Lockout"
               },
               {
-                "uuid": "b4f492ff-ddda-4e87-ac8c-5c5641f2073b",
+                "uuid": "1f729b8c-0b7d-4104-8eeb-de33e3801e57",
                 "control-id": "sr-3",
                 "description": "Maintains a machine-readable CycloneDX 1.5 Software Bill of Materials with 100% SPDX license attribution across all Go, npm, and Python dependencies, enforcing zero GPL/AGPL copyleft contamination and SHA-pinned GitHub Actions.",
                 "remarks": "Mechanism: scripts/audit_licenses.py + reports/sbom.cdx.json (CycloneDX 1.5 + SPDX License Governance)"
               },
               {
-                "uuid": "eb944952-ece1-42ac-b2ab-f93187d7928d",
+                "uuid": "6012fdac-e78b-4c64-a394-e1004eda052f",
                 "control-id": "sr-11",
                 "description": "Supports non-exportable external KMS/HSM signing keys for attestation envelopes and enforces permanent Kubernetes ValidatingAdmissionPolicy + OPA Gatekeeper SHA-256 digest lockouts banning vulnerable container images across the cluster.",
                 "remarks": "Mechanism: internal/crypto/signer.go RemoteKMSSigner + Kubernetes ValidatingAdmissionPolicy Lockouts"

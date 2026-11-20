@@ -92,17 +92,19 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 	}
 
 	verDec, err := e.policy.EvalVerify(ctx, policy.VerifyInput{
-		RemediationKind:          actionKind,
-		SecretRotatedAndRevoked:  bundle.AssuranceTier == models.AssuranceTierSecretRotated,
-		HasSignedProbe:           bundle.AssuranceTier == models.AssuranceTier2DifferentialTwin,
-		UnpatchedTwinStatus:      bundle.UnpatchedTwinStatus,
-		TwinReplayStatus:         item.TwinReplayStatus,
-		ProvenanceVerified:       true,
-		AttestedPods:             len(bundle.PodManifest),
-		TotalPods:                svc.Replicas,
-		VulnerableSymbolsLoaded:  0,
-		AdmissionLockoutEnforced: bundle.Lockout.PolicyName != "",
-		WarrantReverified:        warrantOK,
+		RemediationKind:           actionKind,
+		SecretRotatedAndRevoked:   bundle.AssuranceTier == models.AssuranceTierSecretRotated,
+		ExposedSecretSHA256:       bundle.ExposedSecretSHA256,
+		RotatedSecretSHA256:       bundle.RotatedSecretSHA256,
+		HasSignedProbe:            bundle.AssuranceTier == models.AssuranceTier2DifferentialTwin,
+		UnpatchedTwinStatus:       bundle.UnpatchedTwinStatus,
+		TwinReplayStatus:          item.TwinReplayStatus,
+		ProvenanceVerified:        true,
+		VulnerablePkgAbsentInSBOM: bundle.VulnerablePkgAbsentInSBOM || actionKind == models.RemediationKindSecretRotation,
+		AttestedPods:              len(bundle.PodManifest),
+		TotalPods:                 svc.Replicas,
+		AdmissionLockoutEnforced:  bundle.Lockout.PolicyName != "",
+		WarrantReverified:         warrantOK,
 	})
 	if err != nil {
 		return nil, err

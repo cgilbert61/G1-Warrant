@@ -28,26 +28,58 @@ func TestNormalizeAndDiffHTTPJSON_MasksVolatilesAndDetectsBreaking(t *testing.T)
 	}
 }
 
-func TestNormalizeAndDiffHTTPJSON_UnorderedArraysFloatToleranceAndCustomMasks(t *testing.T) {
+func TestNormalizeAndDiffHTTPJSON_OrderSensitiveDefaultAndExplicitUnorderedOptIn(t *testing.T) {
 	base := `{
 		"status": "SETTLED",
 		"amount": 12.0000001,
+		"ledger_entries": ["tx-001", "tx-002", "tx-003"],
 		"shard_nodes": ["fin-core-a", "fin-core-b", "fin-core-c"],
 		"custom_trace_token": "req-abc-001"
 	}`
-	canary := `{
+	canarySameOrderLedger := `{
 		"status": "SETTLED",
 		"amount": 12.0,
+		"ledger_entries": ["tx-001", "tx-002", "tx-003"],
 		"shard_nodes": ["fin-core-c", "fin-core-a", "fin-core-b"],
 		"custom_trace_token": "req-xyz-999"
 	}`
 
-	normB, normC, masked, diffs, breaking, err := NormalizeAndDiffHTTPJSON(base, canary, "$.custom_trace_token")
+	// 1. Default (order-sensitive): reordered shard_nodes MUST be flagged as breaking drift!
+	normBDefault, normCDefault, _, diffsDefault, breakingDefault, err := NormalizeAndDiffHTTPJSON(base, canarySameOrderLedger, "$.custom_trace_token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if normBDefault == normCDefault || breakingDefault == 0 {
+		t.Fatalf("expected order-sensitive default to catch reordered array, got breaking=%d diffs=%+v", breakingDefault, diffsDefault)
+	}
+
+	// 2. Explicit unordered_array_paths opt-in for $.shard_nodes: passes cleanly while keeping $.ledger_entries strictly order-sensitive!
+	normB, normC, masked, diffs, breaking, err := NormalizeAndDiffHTTPJSONWithOptions(
+		base, canarySameOrderLedger, []string{"$.custom_trace_token"}, []string{"$.shard_nodes"},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if normB != normC || breaking != 0 || len(diffs) != 0 || len(masked) != 1 {
-		t.Fatalf("expected unordered arrays + 1e-6 float drift + custom mask to match cleanly, got normB=%s normC=%s breaking=%d diffs=%+v masked=%v", normB, normC, breaking, diffs, masked)
+		t.Fatalf("expected explicit $.shard_nodes opt-in + 1e-6 float drift + custom mask to match cleanly, got normB=%s normC=%s breaking=%d diffs=%+v masked=%v", normB, normC, breaking, diffs, masked)
+	}
+
+	// 3. Broken ORDER BY / financial ledger sequence in $.ledger_entries MUST still fail even when $.shard_nodes is opted in!
+	canaryBrokenLedgerOrder := `{
+		"status": "SETTLED",
+		"amount": 12.0,
+		"ledger_entries": ["tx-002", "tx-001", "tx-003"],
+		"shard_nodes": ["fin-core-c", "fin-core-a", "fin-core-b"],
+		"custom_trace_token": "req-xyz-999"
+	}`
+	_, _, _, diffsLedger, breakingLedger, err := NormalizeAndDiffHTTPJSONWithOptions(
+		base, canaryBrokenLedgerOrder, []string{"$.custom_trace_token"}, []string{"$.shard_nodes"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if breakingLedger != 1 || len(diffsLedger) != 1 || diffsLedger[0].ChangeKind != "ARRAY_ORDER_OR_VALUE_DRIFT" {
+		t.Fatalf("expected broken ledger_entries order to trigger ARRAY_ORDER_OR_VALUE_DRIFT, got breaking=%d diffs=%+v", breakingLedger, diffsLedger)
 	}
 }
 

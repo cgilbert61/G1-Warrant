@@ -238,8 +238,18 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "oscal-verify":
-            pk = args.pubkey or cli.kernel_public_key_b64()
-            res = verify_oscal_bundle_offline(args.bundle_file.read_text(encoding="utf-8"), pk)
+            raw_text = args.bundle_file.read_text(encoding="utf-8")
+            pk = args.pubkey
+            if not pk:
+                doc = json.loads(raw_text)
+                sig_kid = ((doc.get("dsse_envelope") or {}).get("signatures") or [{}])[0].get("keyid", "")
+                for entry in cli.kernel_public_key_ring():
+                    if entry.get("key_id") == sig_kid:
+                        pk = entry.get("public_key_b64")
+                        break
+                if not pk:
+                    pk = cli.kernel_public_key_b64()
+            res = verify_oscal_bundle_offline(raw_text, pk)
             _dump(res)
             return 0
 

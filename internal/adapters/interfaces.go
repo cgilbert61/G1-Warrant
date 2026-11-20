@@ -20,19 +20,20 @@ type SignedPatchArtifact struct {
 
 // BridgeApplyRequest carries deterministic parameters to compile and apply a containment bridge.
 type BridgeApplyRequest struct {
-	BridgeID              string
-	RemediationID         string
-	ServiceID             string
-	Namespace             string
-	CVEID                 string
-	CWEID                 string
-	ExploitVector         string
-	AffectedPort          int
-	BlockedPaths          []string
-	AllowedEgressServices []string
-	SLABridgeMinutes      int
-	BlockerReasonCode     string
-	RearmCount            int
+	BridgeID                 string
+	RemediationID            string
+	ServiceID                string
+	Namespace                string
+	CVEID                    string
+	CWEID                    string
+	ExploitVector            string
+	AffectedPort             int
+	BlockedPaths             []string
+	AllowedEgressServices    []string
+	AllowKubeAPIServerEgress bool
+	SLABridgeMinutes         int
+	BlockerReasonCode        string
+	RearmCount               int
 }
 
 // ScannerIntake ingests untrusted vulnerability scan reports via N4 + warrant-extractor.

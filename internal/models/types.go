@@ -299,8 +299,10 @@ type EstateService struct {
 	ReadOnlyRootFilesystem     bool                   `json:"readonly_root_filesystem"`
 	NoExecTmpMounts            bool                   `json:"noexec_tmp_mounts"`
 	AllowedEgressServices      []string               `json:"allowed_egress_services,omitempty"`
+	AllowKubeAPIServerEgress   bool                   `json:"allow_kube_apiserver_egress,omitempty"`
 	BaselineSyscalls           []string               `json:"baseline_syscalls"`
 	VolatileJSONPaths          []string               `json:"volatile_json_paths,omitempty"`
+	UnorderedArrayPaths        []string               `json:"unordered_array_paths,omitempty"`
 	Eligible                   bool                   `json:"eligible"`
 	AutonomyTier               string                 `json:"autonomy_tier"` // "TIER_1_FULL_AUTONOMOUS" | "TIER_2_GUARDED_CANARY" | "TIER_3_CONTAIN_AND_CAB"
 	EligibilityChecklist       []EligibilityCheckItem `json:"eligibility_checklist"`
@@ -543,6 +545,16 @@ type PodDigestEntry struct {
 	NodeName      string   `json:"node_name"`
 	RunningDigest string   `json:"running_digest"`
 	LoadedLibs    []string `json:"loaded_libs"`
+}
+
+// KernelPublicKeyRecord represents an immutable verification key entry in kernel_public_keys.
+type KernelPublicKeyRecord struct {
+	KeyID          string    `json:"key_id"`
+	Alg            string    `json:"alg"`
+	PublicKeyB64   string    `json:"public_key_b64"`
+	KeyFingerprint string    `json:"key_fingerprint"`
+	BackendMode    string    `json:"backend_mode"`
+	RegisteredAt   time.Time `json:"registered_at"`
 }
 
 // AttestationRecord is an immutable, hash-chained closure record in attestation_records (N5).

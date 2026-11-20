@@ -126,9 +126,19 @@ func GradeServiceReadiness(svc *models.EstateService) {
 
 // NormalizeAndDiffHTTPJSON strips volatile fields (RFC3339 timestamps, UUIDv4/v7, cryptographic hex nonces,
 // plus any caller-configured custom volatile JSONPaths), normalizes floats within 1e-6 epsilon, compares JSON arrays
-// order-insensitively as canonical multisets, and computes structural field/type diffs.
-// Strict byte-for-byte RFC 8785 JCS without array reordering remains reserved for DSSE cryptographic envelopes.
+// strictly order-sensitively by default (preserving ORDER BY, pagination, and ledger sequence invariants), and computes
+// structural & array-order diffs. Use NormalizeAndDiffHTTPJSONWithOptions to opt specific JSONPaths into unordered multiset comparison.
 func NormalizeAndDiffHTTPJSON(baselineRaw, canaryRaw string, extraMaskPaths ...string) (normBase string, normCanary string, maskedPaths []string, diffs []models.SchemaFieldDiff, breakingCount int, err error) {
+	return NormalizeAndDiffHTTPJSONWithOptions(baselineRaw, canaryRaw, extraMaskPaths, nil)
+}
+
+// NormalizeAndDiffHTTPJSONWithOptions performs order-sensitive HTTP JSON normalization and diffing by default,
+// restricting order-insensitive multiset array canonicalization strictly to explicit unorderedArrayPaths opt-ins.
+func NormalizeAndDiffHTTPJSONWithOptions(
+	baselineRaw, canaryRaw string,
+	extraMaskPaths []string,
+	unorderedArrayPaths []string,
+) (normBase string, normCanary string, maskedPaths []string, diffs []models.SchemaFieldDiff, breakingCount int, err error) {
 	var baseVal, canaryVal any
 	if err := json.Unmarshal([]byte(baselineRaw), &baseVal); err != nil {
 		return "", "", nil, nil, 0, fmt.Errorf("parse baseline json: %w", err)
@@ -137,20 +147,34 @@ func NormalizeAndDiffHTTPJSON(baselineRaw, canaryRaw string, extraMaskPaths ...s
 		return "", "", nil, nil, 0, fmt.Errorf("parse canary json: %w", err)
 	}
 
+	normalizePathKey := func(raw string) string {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			return ""
+		}
+		trimmed = strings.TrimSuffix(trimmed, "[*]")
+		if !strings.HasPrefix(trimmed, "$") {
+			trimmed = "$." + strings.TrimPrefix(trimmed, ".")
+		}
+		return trimmed
+	}
+
 	customMasks := make(map[string]bool, len(extraMaskPaths))
 	for _, p := range extraMaskPaths {
-		trimmed := strings.TrimSpace(p)
-		if trimmed != "" {
-			if !strings.HasPrefix(trimmed, "$") {
-				trimmed = "$." + strings.TrimPrefix(trimmed, ".")
-			}
-			customMasks[trimmed] = true
+		if k := normalizePathKey(p); k != "" {
+			customMasks[k] = true
+		}
+	}
+	unorderedSet := make(map[string]bool, len(unorderedArrayPaths))
+	for _, p := range unorderedArrayPaths {
+		if k := normalizePathKey(p); k != "" {
+			unorderedSet[k] = true
 		}
 	}
 
 	maskedSet := map[string]bool{}
-	maskedBase := maskVolatileValue("$", baseVal, maskedSet, customMasks)
-	maskedCanary := maskVolatileValue("$", canaryVal, maskedSet, customMasks)
+	maskedBase := maskVolatileValue("$", baseVal, maskedSet, customMasks, unorderedSet)
+	maskedCanary := maskVolatileValue("$", canaryVal, maskedSet, customMasks, unorderedSet)
 
 	canonBase, err := crypto.CanonicalizeStruct(maskedBase)
 	if err != nil {
@@ -161,7 +185,7 @@ func NormalizeAndDiffHTTPJSON(baselineRaw, canaryRaw string, extraMaskPaths ...s
 		return "", "", nil, nil, 0, err
 	}
 
-	diffs = compareSchemaStructure("$", maskedBase, maskedCanary)
+	diffs = compareSchemaStructure("$", maskedBase, maskedCanary, unorderedSet)
 	for _, d := range diffs {
 		if d.Breaking {
 			breakingCount++
@@ -176,7 +200,7 @@ func NormalizeAndDiffHTTPJSON(baselineRaw, canaryRaw string, extraMaskPaths ...s
 	return string(canonBase), string(canonCanary), maskedList, diffs, breakingCount, nil
 }
 
-func maskVolatileValue(path string, v any, masked map[string]bool, customMasks map[string]bool) any {
+func maskVolatileValue(path string, v any, masked map[string]bool, customMasks map[string]bool, unorderedSet map[string]bool) any {
 	if customMasks[path] {
 		masked[path+" (CUSTOM_VOLATILE)"] = true
 		return "[MASKED:CUSTOM]"
@@ -206,28 +230,30 @@ func maskVolatileValue(path string, v any, masked map[string]bool, customMasks m
 	case map[string]any:
 		out := make(map[string]any, len(val))
 		for k, child := range val {
-			out[k] = maskVolatileValue(path+"."+k, child, masked, customMasks)
+			out[k] = maskVolatileValue(path+"."+k, child, masked, customMasks, unorderedSet)
 		}
 		return out
 	case []any:
 		out := make([]any, len(val))
 		elemPath := path + "[*]"
 		for i, elem := range val {
-			out[i] = maskVolatileValue(elemPath, elem, masked, customMasks)
+			out[i] = maskVolatileValue(elemPath, elem, masked, customMasks, unorderedSet)
 		}
-		// Order-insensitive multiset canonicalization for HTTP JSON array comparisons
-		sort.SliceStable(out, func(i, j int) bool {
-			bi, _ := crypto.CanonicalizeStruct(out[i])
-			bj, _ := crypto.CanonicalizeStruct(out[j])
-			return string(bi) < string(bj)
-		})
+		// Arrays are strictly order-sensitive by default; apply multiset sort ONLY if explicitly opted in
+		if unorderedSet[path] {
+			sort.SliceStable(out, func(i, j int) bool {
+				bi, _ := crypto.CanonicalizeStruct(out[i])
+				bj, _ := crypto.CanonicalizeStruct(out[j])
+				return string(bi) < string(bj)
+			})
+		}
 		return out
 	default:
 		return val
 	}
 }
 
-func compareSchemaStructure(path string, base, canary any) []models.SchemaFieldDiff {
+func compareSchemaStructure(path string, base, canary any, unorderedSet map[string]bool) []models.SchemaFieldDiff {
 	var out []models.SchemaFieldDiff
 	bType := jsonKind(base)
 	cType := jsonKind(canary)
@@ -242,8 +268,37 @@ func compareSchemaStructure(path string, base, canary any) []models.SchemaFieldD
 	}
 	if bArr, okB := base.([]any); okB {
 		cArr, okC := canary.([]any)
-		if okC && len(bArr) > 0 && len(cArr) > 0 {
-			out = append(out, compareSchemaStructure(path+"[*]", bArr[0], cArr[0])...)
+		if okC {
+			if len(bArr) > 0 && len(cArr) > 0 {
+				out = append(out, compareSchemaStructure(path+"[*]", bArr[0], cArr[0], unorderedSet)...)
+			}
+			// When order-sensitive (default), flag length or positional sequence drift (e.g., broken ORDER BY / pagination)
+			if !unorderedSet[path] {
+				if len(bArr) != len(cArr) {
+					out = append(out, models.SchemaFieldDiff{
+						JSONPath:     path,
+						BaselineType: fmt.Sprintf("array(len=%d)", len(bArr)),
+						CanaryType:   fmt.Sprintf("array(len=%d)", len(cArr)),
+						ChangeKind:   "ARRAY_LENGTH_CHANGED",
+						Breaking:     true,
+					})
+				} else {
+					for i := range bArr {
+						bi, _ := crypto.CanonicalizeStruct(bArr[i])
+						ci, _ := crypto.CanonicalizeStruct(cArr[i])
+						if string(bi) != string(ci) {
+							out = append(out, models.SchemaFieldDiff{
+								JSONPath:     fmt.Sprintf("%s[%d]", path, i),
+								BaselineType: jsonKind(bArr[i]),
+								CanaryType:   jsonKind(cArr[i]),
+								ChangeKind:   "ARRAY_ORDER_OR_VALUE_DRIFT",
+								Breaking:     true,
+							})
+							break
+						}
+					}
+				}
+			}
 		}
 		return out
 	}
@@ -284,7 +339,7 @@ func compareSchemaStructure(path string, base, canary any) []models.SchemaFieldD
 					Breaking:     false,
 				})
 			default:
-				out = append(out, compareSchemaStructure(childPath, bChild, cChild)...)
+				out = append(out, compareSchemaStructure(childPath, bChild, cChild, unorderedSet)...)
 			}
 		}
 	}
@@ -477,7 +532,9 @@ func (e *Engine) EvaluateAndRollout(ctx context.Context, item *models.Remediatio
 			crypto.SHA256Hex([]byte(stageResp.CanaryHTTPBody)),
 		)
 
-		normBase, normCanary, maskedFields, schemaDiffs, breakingCount, err := NormalizeAndDiffHTTPJSON(stageResp.BaselineHTTPBody, stageResp.CanaryHTTPBody, svc.VolatileJSONPaths...)
+		normBase, normCanary, maskedFields, schemaDiffs, breakingCount, err := NormalizeAndDiffHTTPJSONWithOptions(
+			stageResp.BaselineHTTPBody, stageResp.CanaryHTTPBody, svc.VolatileJSONPaths, svc.UnorderedArrayPaths,
+		)
 		if err != nil {
 			return err
 		}

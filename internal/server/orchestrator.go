@@ -2,7 +2,13 @@ package server
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -34,10 +40,72 @@ type ControlPlaneOrchestrator struct {
 	SARIFIntake adapters.ScannerIntake
 	FixProvider adapters.FixProvider
 	Shield      adapters.ShieldEnforcer
-	Deploy      adapters.DeploymentTarget
-	Twin        adapters.TwinRunner
-	Broker      *SSEBroker
-	WebAuthnCfg crypto.WebAuthnConfig
+	Deploy              adapters.DeploymentTarget
+	Twin                adapters.TwinRunner
+	Broker              *SSEBroker
+	WebAuthnCfg         crypto.WebAuthnConfig
+	tetragonSensorToken string
+	tetragonHMACSecret  string
+}
+
+// ValidateStartupSecurityGuards enforces fail-closed startup invariants so built-in test smartcard personas
+// can NEVER be enabled alongside live Kubernetes clusters or live threat/scanner feeds.
+func ValidateStartupSecurityGuards(getenv func(string) string) error {
+	if strings.EqualFold(strings.TrimSpace(getenv("WARRANT_ENABLE_TEST_SMARTCARDS")), "true") {
+		if strings.EqualFold(strings.TrimSpace(getenv("WARRANT_CLUSTER_DRIVER")), "kubernetes") {
+			return fmt.Errorf("FATAL_SECURITY_GUARD: WARRANT_ENABLE_TEST_SMARTCARDS=true is strictly forbidden when WARRANT_CLUSTER_DRIVER=kubernetes")
+		}
+		if strings.EqualFold(strings.TrimSpace(getenv("WARRANT_FEED_MODE")), "live") {
+			return fmt.Errorf("FATAL_SECURITY_GUARD: WARRANT_ENABLE_TEST_SMARTCARDS=true is strictly forbidden when WARRANT_FEED_MODE=live")
+		}
+	}
+	return nil
+}
+
+// TetragonSensorToken returns the dedicated sensor authentication token required by POST /api/v1/telemetry/tetragon.
+func (o *ControlPlaneOrchestrator) TetragonSensorToken() string {
+	return o.tetragonSensorToken
+}
+
+// VerifyTetragonSensorAuth enforces dedicated eBPF/Tetragon DaemonSet authentication (distinct from operator and g1aud_* auditor tokens)
+// via either HMAC-SHA256 (X-Tetragon-Signature-256) or constant-time dedicated sensor bearer token.
+func (o *ControlPlaneOrchestrator) VerifyTetragonSensorAuth(r *http.Request, rawBody []byte) (int, error) {
+	sigHdr := strings.TrimSpace(r.Header.Get("X-Tetragon-Signature-256"))
+	authHdr := strings.TrimSpace(r.Header.Get("Authorization"))
+	sensorHdr := strings.TrimSpace(r.Header.Get("X-Tetragon-Sensor-Token"))
+
+	bearer := sensorHdr
+	if bearer == "" && strings.HasPrefix(strings.ToLower(authHdr), "bearer ") {
+		bearer = strings.TrimSpace(authHdr[7:])
+	}
+
+	if sigHdr == "" && bearer == "" {
+		return http.StatusUnauthorized, fmt.Errorf("MISSING_TETRAGON_SENSOR_AUTH: dedicated sensor bearer or HMAC signature required")
+	}
+	if strings.HasPrefix(bearer, "g1aud_") {
+		return http.StatusForbidden, fmt.Errorf("INVALID_TETRAGON_SENSOR_CREDENTIAL: auditor tokens cannot submit Tetragon telemetry")
+	}
+
+	if o.tetragonHMACSecret != "" && sigHdr != "" {
+		providedHex := strings.TrimPrefix(strings.ToLower(sigHdr), "sha256=")
+		providedMAC, err := hex.DecodeString(providedHex)
+		if err != nil {
+			return http.StatusForbidden, fmt.Errorf("INVALID_TETRAGON_SENSOR_HMAC_HEX")
+		}
+		mac := hmac.New(sha256.New, []byte(o.tetragonHMACSecret))
+		_, _ = mac.Write(rawBody)
+		if hmac.Equal(providedMAC, mac.Sum(nil)) {
+			return http.StatusOK, nil
+		}
+		return http.StatusForbidden, fmt.Errorf("INVALID_TETRAGON_SENSOR_HMAC_SIGNATURE")
+	}
+
+	if o.tetragonSensorToken != "" && bearer != "" {
+		if subtle.ConstantTimeCompare([]byte(bearer), []byte(o.tetragonSensorToken)) == 1 {
+			return http.StatusOK, nil
+		}
+	}
+	return http.StatusForbidden, fmt.Errorf("INVALID_TETRAGON_SENSOR_CREDENTIAL")
 }
 
 // NewOrchestrator initializes all five control-plane engines (N1-N5), Live Feed Manager, and production adapters.
@@ -69,6 +137,20 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 		}
 		signer = ephSigner
 	}
+
+	// Persist the active kernel verification public key into the append-only PostgreSQL ring
+	// so routine warrantd restarts never invalidate previously exported OSCAL 1.1.2 POA&M bundles.
+	if err := store.RegisterKernelPublicKey(ctx, signer.PublicKey(), signer.BackendMode()); err != nil {
+		return nil, fmt.Errorf("register kernel public key in append-only ring: %w", err)
+	}
+
+	tetToken := strings.TrimSpace(os.Getenv("WARRANT_TETRAGON_SENSOR_TOKEN"))
+	if tetToken == "" {
+		var rnd [16]byte
+		_, _ = rand.Read(rnd[:])
+		tetToken = "g1tet_" + hex.EncodeToString(rnd[:])
+	}
+	tetHMAC := strings.TrimSpace(os.Getenv("WARRANT_TETRAGON_HMAC_SECRET"))
 
 	n1, err := warrant.NewEngine(ctx, store, pol, webauthnCfg, broker.Broadcast)
 	if err != nil {
@@ -119,10 +201,12 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 		SARIFIntake: sarifIn,
 		FixProvider: fixProv,
 		Shield:      shield,
-		Deploy:      deploy,
-		Twin:        twin,
-		Broker:      broker,
-		WebAuthnCfg: webauthnCfg,
+		Deploy:              deploy,
+		Twin:                twin,
+		Broker:              broker,
+		WebAuthnCfg:         webauthnCfg,
+		tetragonSensorToken: tetToken,
+		tetragonHMACSecret:  tetHMAC,
 	}, nil
 }
 
@@ -261,18 +345,19 @@ func (o *ControlPlaneOrchestrator) ExecuteSARIFRemediationWithOptions(
 			blockerReason = "NO_VALID_STANDING_WARRANT_FAIL_CLOSED"
 		}
 		bridge, err := o.Shield.CompileAndApplyBridge(ctx, adapters.BridgeApplyRequest{
-			BridgeID:              bridgeID,
-			RemediationID:         remID,
-			ServiceID:             svc.ServiceID,
-			Namespace:             svc.Namespace,
-			CVEID:                 f.CVEID,
-			CWEID:                 f.CWEID,
-			ExploitVector:         f.ExploitVector,
-			AffectedPort:          f.AffectedPort,
-			BlockedPaths:          f.BlockedPaths,
-			AllowedEgressServices: svc.AllowedEgressServices,
-			SLABridgeMinutes:      item.BridgeSLAMIN,
-			BlockerReasonCode:     blockerReason,
+			BridgeID:                 bridgeID,
+			RemediationID:            remID,
+			ServiceID:                svc.ServiceID,
+			Namespace:                svc.Namespace,
+			CVEID:                    f.CVEID,
+			CWEID:                    f.CWEID,
+			ExploitVector:            f.ExploitVector,
+			AffectedPort:             f.AffectedPort,
+			BlockedPaths:             f.BlockedPaths,
+			AllowedEgressServices:    svc.AllowedEgressServices,
+			AllowKubeAPIServerEgress: svc.AllowKubeAPIServerEgress,
+			SLABridgeMinutes:         item.BridgeSLAMIN,
+			BlockerReasonCode:        blockerReason,
 		})
 		if err != nil {
 			return nil, err
@@ -575,16 +660,17 @@ func (o *ControlPlaneOrchestrator) ExecuteSecretRotationRemediation(ctx context.
 		// Immediate N3 Egress & Cloud Metadata (169.254.169.254) Quarantine while rotating credentials
 		bridgeID := "brg-sec-" + uuid.NewString()[:8]
 		bridge, err := o.Shield.CompileAndApplyBridge(ctx, adapters.BridgeApplyRequest{
-			BridgeID:              bridgeID,
-			RemediationID:         remID,
-			ServiceID:             svc.ServiceID,
-			Namespace:             svc.Namespace,
-			CVEID:                 sf.FindingID,
-			CWEID:                 "CWE-798",
-			AffectedPort:          8080,
-			AllowedEgressServices: svc.AllowedEgressServices,
-			SLABridgeMinutes:      item.BridgeSLAMIN,
-			BlockerReasonCode:     "SECRET_ROTATION_IN_PROGRESS",
+			BridgeID:                 bridgeID,
+			RemediationID:            remID,
+			ServiceID:                svc.ServiceID,
+			Namespace:                svc.Namespace,
+			CVEID:                    sf.FindingID,
+			CWEID:                    "CWE-798",
+			AffectedPort:             8080,
+			AllowedEgressServices:    svc.AllowedEgressServices,
+			AllowKubeAPIServerEgress: svc.AllowKubeAPIServerEgress,
+			SLABridgeMinutes:         item.BridgeSLAMIN,
+			BlockerReasonCode:        "SECRET_ROTATION_IN_PROGRESS",
 		})
 		if err != nil {
 			return nil, err
@@ -634,24 +720,30 @@ func (o *ControlPlaneOrchestrator) ExecuteSecretRotationRemediation(ctx context.
 			sf.SecretFingerprintSHA256, rotRes.NewSecretVersionHash,
 		)
 		item.CanaryWeight = 100
+		// Fail closed if upstream secret manager has not rotated the credential value (empty or identical SHA-256)
+		secretChanged := strings.TrimSpace(rotRes.NewSecretVersionHash) != "" &&
+			strings.TrimSpace(sf.SecretFingerprintSHA256) != "" &&
+			!strings.EqualFold(strings.TrimSpace(rotRes.NewSecretVersionHash), strings.TrimSpace(sf.SecretFingerprintSHA256))
+
 		_ = o.Store.AppendTrace(ctx, models.TraceEvent{
 			TraceID:       "trc-" + uuid.NewString()[:8],
 			RemediationID: remID,
 			Engine:        "N4",
 			StepCode:      "WORKLOAD_SECRET_ROTATED_AND_REVOKED",
-			Outcome:       "PASS",
+			Outcome:       map[bool]string{true: "PASS", false: "BLOCK"}[secretChanged],
 			ActorOrToken:  sf.SecretResourceName,
 			EvidenceHash:  rotRes.NewSecretVersionHash,
 			Fields: map[string]string{
-				"resource_kind":   sf.SecretResourceKind,
-				"resource_name":   sf.SecretResourceName,
-				"restarted_pods":  fmt.Sprintf("%d", rotRes.RestartedPods),
-				"revoked_old_tok": fmt.Sprintf("%t", rotRes.PreviousTokenRevoked),
+				"resource_kind":        sf.SecretResourceKind,
+				"resource_name":        sf.SecretResourceName,
+				"restarted_pods":       fmt.Sprintf("%d", rotRes.RestartedPods),
+				"revoked_old_tok":      fmt.Sprintf("%t", rotRes.PreviousTokenRevoked),
+				"secret_hash_distinct": fmt.Sprintf("%t", secretChanged),
 			},
 			OccurredAt: rotRes.RotatedAt,
 		})
 
-		verBundle, err := o.N3Verify.VerifyAndRetireSecretRotationBridge(ctx, &item, svc, rotRes)
+		verBundle, err := o.N3Verify.VerifyAndRetireSecretRotationBridge(ctx, &item, svc, sf.SecretFingerprintSHA256, rotRes)
 		if err != nil {
 			results = append(results, item)
 			continue

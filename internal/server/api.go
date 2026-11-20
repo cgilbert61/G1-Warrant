@@ -62,6 +62,7 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		checkpoints, _ := o.Store.ListLedgerCheckpoints(ctx)
 		feedStatus, _ := o.Store.GetLiveFeedStatus(ctx)
 		kernelPK := o.N5Ledger.KernelPublicKey()
+		kernelKeyRing, _ := o.Store.ListKernelPublicKeys(ctx)
 
 		var testPersonas any = []crypto.TestSmartcardPersona{}
 		if os.Getenv("WARRANT_ENABLE_TEST_SMARTCARDS") == "true" {
@@ -94,6 +95,7 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 				"public_key_b64":  base64.StdEncoding.EncodeToString(kernelPK.PublicKeyBytes),
 				"key_fingerprint": kernelPK.KeyFingerprint,
 			},
+			"kernel_public_key_ring": kernelKeyRing,
 			"webauthn": map[string]any{
 				"rp_id":   o.WebAuthnCfg.RPID,
 				"origins": o.WebAuthnCfg.AllowedOrigins,
@@ -338,10 +340,20 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		writeAPIJSON(w, http.StatusCreated, items)
 	})
 
-	// Cilium Tetragon / eBPF Runtime Container Filesystem & Process Immutability Webhook
+	// Cilium Tetragon / eBPF Runtime Container Filesystem & Process Immutability Webhook (Dedicated Sensor Auth Required)
 	mux.HandleFunc("POST /api/v1/telemetry/tetragon", func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		rawBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, err)
+			return
+		}
+		if code, authErr := o.VerifyTetragonSensorAuth(r, rawBody); authErr != nil {
+			writeAPIError(w, code, authErr)
+			return
+		}
 		var ev models.TetragonDriftEvent
-		if err := decodeJSONBody(w, r, &ev); err != nil {
+		if err := json.Unmarshal(rawBody, &ev); err != nil {
 			writeAPIError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -351,6 +363,16 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			return
 		}
 		writeAPIJSON(w, http.StatusCreated, inc)
+	})
+
+	// Append-only Kernel Verification Public-Key Ring (prevents restart invalidation of historical OSCAL bundles)
+	mux.HandleFunc("GET /api/v1/kernel-keys", func(w http.ResponseWriter, r *http.Request) {
+		ring, err := o.Store.ListKernelPublicKeys(r.Context())
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeAPIJSON(w, http.StatusOK, ring)
 	})
 
 	// Optional Live Threat & Scanner Feeds (CISA KEV, Google OSV.dev, Trivy Sidecar)
@@ -659,16 +681,18 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		}
 		for _, a := range list {
 			if a.AttestationID == id || a.RemediationID == id {
+				keyRing, _ := o.Store.ListKernelPublicKeys(r.Context())
 				bundle := map[string]any{
-					"attestation_id": a.AttestationID,
-					"remediation_id": a.RemediationID,
-					"cve_id":         a.CVEID,
-					"service_id":     a.ServiceID,
-					"warrant_id":     a.WarrantID,
-					"dsse_envelope":  a.DSSEEnvelope,
-					"oscal_poam":     a.OSCALPOAM,
-					"entry_hash":     a.EntryHash,
-					"prev_hash":      a.PrevHash,
+					"attestation_id":         a.AttestationID,
+					"remediation_id":         a.RemediationID,
+					"cve_id":                 a.CVEID,
+					"service_id":             a.ServiceID,
+					"warrant_id":             a.WarrantID,
+					"dsse_envelope":          a.DSSEEnvelope,
+					"oscal_poam":             a.OSCALPOAM,
+					"entry_hash":             a.EntryHash,
+					"prev_hash":              a.PrevHash,
+					"kernel_public_key_ring": keyRing,
 				}
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"g1-oscal-poam-%s-%s.json\"", a.CVEID, a.AttestationID))
@@ -768,6 +792,7 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		}
 		chainRep, _ := o.Store.VerifyAllLedgerChains(r.Context(), o.N5Ledger.Anchor().ExternalWitnessRecords())
 		kernelPK := o.N5Ledger.KernelPublicKey()
+		kernelKeyRing, _ := o.Store.ListKernelPublicKeys(r.Context())
 		writeAPIJSON(w, http.StatusOK, map[string]any{
 			"token_metadata": tok,
 			"attestations":   filtered,
@@ -778,6 +803,7 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 				"public_key_b64":  base64.StdEncoding.EncodeToString(kernelPK.PublicKeyBytes),
 				"key_fingerprint": kernelPK.KeyFingerprint,
 			},
+			"kernel_public_key_ring": kernelKeyRing,
 		})
 	})
 
