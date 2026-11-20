@@ -28,8 +28,19 @@ export interface FreezeState {
   mode: 'OPERATIONAL' | 'FREEZE_HOLD' | 'FREEZE_ROLLBACK';
   actor: string;
   reason_code: string;
+  freeze_epoch: number;
   updated_at: string;
   thaw_dsse?: DSSEEnvelope;
+}
+
+export interface BootstrapState {
+  sealed: boolean;
+  sealed_by?: string;
+  sealed_reason?: string;
+  sealed_at?: string;
+  genesis_principal_max_seq?: number;
+  genesis_revocation_max_seq?: number;
+  genesis_manifest_sha256?: string;
 }
 
 export interface GlobalScoreboard {
@@ -437,6 +448,7 @@ export interface LiveFeedStatus {
 
 export interface BootstrapSnapshot {
   scoreboard: GlobalScoreboard;
+  bootstrap_state?: BootstrapState;
   principals: Principal[];
   test_personas: TestSmartcardPersona[];
   warrants: WarrantRecord[];

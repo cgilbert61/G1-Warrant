@@ -4,7 +4,9 @@ import type { BootstrapSnapshot, DSSEEnvelope } from './types';
 import {
   buildDualPrincipalGovernanceEnvelope,
   buildSinglePrincipalGovernanceEnvelope,
+  buildSinglePrincipalGovernanceEnvelopeWebAuthn,
   bytesToBase64,
+  sha256HexString,
 } from './lib/crypto';
 import { utf8ToBytes } from '@noble/hashes/utils';
 import { CommandBar } from './components/CommandBar';
@@ -28,6 +30,19 @@ export const App: React.FC = () => {
   const [isMobileViewport, setIsMobileViewport] = useState(() => window.innerWidth < 1024);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [sseConnected, setSseConnected] = useState(false);
+  const [automationToken, setAutomationToken] = useState<string>(
+    () => window.sessionStorage.getItem('warrant_automation_token') || ''
+  );
+
+  const saveAutomationToken = (tok: string) => {
+    const clean = tok.trim();
+    setAutomationToken(clean);
+    if (clean) {
+      window.sessionStorage.setItem('warrant_automation_token', clean);
+    } else {
+      window.sessionStorage.removeItem('warrant_automation_token');
+    }
+  };
 
   const loadBootstrap = useCallback(async () => {
     const res = await fetch('/api/v1/bootstrap');
@@ -64,18 +79,28 @@ export const App: React.FC = () => {
     return <AuditorPortal />;
   }
 
-  const postJSON = async (url: string, body: unknown, extraHeaders?: Record<string, string>) => {
+  const postRawJSON = async (url: string, rawBody: string, extraHeaders?: Record<string, string>) => {
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(extraHeaders || {}) },
-      body: JSON.stringify(body),
+      body: rawBody,
     });
-    const data = await res.json();
+    const text = await res.text();
+    let data: Record<string, unknown> = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      data = { error: text };
+    }
     if (!res.ok) {
-      throw new Error(data.error || `HTTP ${res.status}`);
+      throw new Error((data.error as string) || `HTTP ${res.status}`);
     }
     await loadBootstrap();
     return data;
+  };
+
+  const postJSON = async (url: string, body: unknown, extraHeaders?: Record<string, string>) => {
+    return postRawJSON(url, JSON.stringify(body), extraHeaders);
   };
 
   if (!snapshot) {
@@ -87,6 +112,7 @@ export const App: React.FC = () => {
   }
 
   const pendingExceptionsCount = snapshot.exceptions.filter((e) => e.status === 'PENDING_DUAL_KEY').length;
+  const rpId = snapshot.webauthn?.rp_id || 'localhost';
 
   const revokedIds = new Set(
     snapshot.principals.filter((p) => p.revoked).map((p) => p.principal_id)
@@ -96,11 +122,45 @@ export const App: React.FC = () => {
       (tp.role === 'SERVICE_OWNER' || tp.role === 'AUTHORIZING_OFFICIAL') &&
       !revokedIds.has(tp.principal_id)
   );
-  const buildGovHeaders = (action: string, fields: Record<string, unknown> = {}): Record<string, string> => {
-    if (activePersonas.length === 0) return {};
-    const env = buildSinglePrincipalGovernanceEnvelope(action, fields, activePersonas[0]);
-    const b64 = bytesToBase64(utf8ToBytes(JSON.stringify(env)));
-    return { 'X-Warrant-Governance-DSSE': b64 };
+  const activeWebAuthnPrincipals = snapshot.principals.filter(
+    (p) =>
+      !p.revoked &&
+      p.authenticator_mode === 'WEBAUTHN_HARDWARE' &&
+      (p.role === 'SERVICE_OWNER' || p.role === 'AUTHORIZING_OFFICIAL')
+  );
+
+  const postActionJSON = async (
+    url: string,
+    body: unknown,
+    action: string,
+    fields: Record<string, unknown> = {},
+    allowAutomationToken = false
+  ) => {
+    const rawBody = JSON.stringify(body);
+    const canonicalPath = new URL(url, window.location.origin).pathname;
+    const scopedFields: Record<string, unknown> = {
+      ...fields,
+      http_method: 'POST',
+      canonical_path: canonicalPath,
+      request_body_sha256: sha256HexString(rawBody),
+    };
+    const headers: Record<string, string> = {};
+
+    if (activePersonas.length > 0) {
+      const env = buildSinglePrincipalGovernanceEnvelope(action, scopedFields, activePersonas[0]);
+      headers['X-Warrant-Governance-DSSE'] = bytesToBase64(utf8ToBytes(JSON.stringify(env)));
+    } else if (allowAutomationToken && automationToken) {
+      headers['X-Warrant-Automation-Token'] = automationToken;
+    } else if (activeWebAuthnPrincipals.length > 0) {
+      const env = await buildSinglePrincipalGovernanceEnvelopeWebAuthn(
+        action,
+        scopedFields,
+        activeWebAuthnPrincipals[0],
+        rpId
+      );
+      headers['X-Warrant-Governance-DSSE'] = bytesToBase64(utf8ToBytes(JSON.stringify(env)));
+    }
+    return postRawJSON(url, rawBody, headers);
   };
 
   const navItems: Array<{ key: ViewKey; label: string; badge?: number; icon: React.ReactNode }> = [
@@ -149,10 +209,11 @@ export const App: React.FC = () => {
         isMobileViewport={isMobileViewport}
         onOpenInbox={() => setActiveView('VIEW2_WARRANTS')}
         onTriggerFreeze={async (mode, actor, reason) => {
-          await postJSON(
+          await postActionJSON(
             '/api/v1/freeze',
             { mode, actor, reason_code: reason },
-            buildGovHeaders('EMERGENCY_FREEZE', { freeze_mode: mode, reason_code: reason })
+            'EMERGENCY_FREEZE',
+            { freeze_mode: mode, reason_code: reason }
           );
         }}
         onThawFreeze={async (env: DSSEEnvelope) => {
@@ -215,9 +276,18 @@ export const App: React.FC = () => {
             bridges={snapshot.bridges}
             drifts={snapshot.drifts}
             pendingExceptionsCount={pendingExceptionsCount}
+            isLiveFeedMode={snapshot.feed_status?.config.mode === 'live'}
             nowMs={nowMs}
             onSimulate={async (sc) => {
-              await postJSON(`/api/v1/simulate/${sc}`, {}, buildGovHeaders('SIMULATION_DRILL', { scenario: sc }));
+              await postActionJSON(`/api/v1/simulate/${sc}`, {}, 'SIMULATION_DRILL', { scenario: sc });
+            }}
+            onEmergencyRollback={async (remId, reason) => {
+              await postActionJSON(
+                `/api/v1/pipeline/${remId}/emergency-rollback`,
+                { reason },
+                'EMERGENCY_ROLLBACK',
+                { remediation_id: remId, reason_code: reason }
+              );
             }}
             onJumpToExceptions={() => setActiveView('VIEW2_WARRANTS')}
           />
@@ -230,29 +300,50 @@ export const App: React.FC = () => {
             pressure={snapshot.pressure}
             estate={snapshot.estate}
             principals={snapshot.principals}
+            bootstrapState={snapshot.bootstrap_state}
             testPersonas={snapshot.test_personas}
-            rpId={snapshot.webauthn?.rp_id || 'localhost'}
+            rpId={rpId}
             smartcardBarEnabled={smartcardBarEnabled}
             isMobileViewport={isMobileViewport}
             onCreateWarrant={async (env) => {
               await postJSON('/api/v1/warrants', env);
             }}
             onRevokeSigner={async (principalId, keyFp) => {
-              const signer =
-                activePersonas.find((p) => p.principal_id !== principalId) || activePersonas[0];
-              if (!signer) {
-                throw new Error('Revoking a principal requires a 1-of-2 DSSE active principal signature (use warrant principals revoke --key <active.priv.json>)');
-              }
-              const env = buildSinglePrincipalGovernanceEnvelope(
-                'REVOKE_PRINCIPAL',
-                {
-                  target_principal_id: principalId,
-                  target_key_fingerprint: keyFp,
-                  reason_code: 'OPERATOR_KEY_REVOCATION_DRILL',
-                },
-                signer
+              const target = snapshot.principals.find(
+                (p) => p.principal_id === principalId || p.key_fingerprint === keyFp
               );
-              await postJSON('/api/v1/principals/revoke', env);
+              const targetRole = target?.role;
+              const revFields: Record<string, unknown> = {
+                http_method: 'POST',
+                canonical_path: '/api/v1/principals/revoke',
+                target_principal_id: principalId,
+                target_key_fingerprint: keyFp,
+                reason_code: 'OPERATOR_KEY_REVOCATION_DRILL',
+              };
+              const sameRolePersona =
+                activePersonas.find((p) => p.role === targetRole && p.principal_id !== principalId) ||
+                activePersonas.find((p) => p.principal_id === principalId);
+              if (sameRolePersona) {
+                const env = buildSinglePrincipalGovernanceEnvelope('REVOKE_PRINCIPAL', revFields, sameRolePersona);
+                await postJSON('/api/v1/principals/revoke', env);
+                return;
+              }
+              const sameRoleHw =
+                activeWebAuthnPrincipals.find((p) => p.role === targetRole && p.principal_id !== principalId) ||
+                activeWebAuthnPrincipals.find((p) => p.principal_id === principalId);
+              if (sameRoleHw) {
+                const env = await buildSinglePrincipalGovernanceEnvelopeWebAuthn(
+                  'REVOKE_PRINCIPAL',
+                  revFields,
+                  sameRoleHw,
+                  rpId
+                );
+                await postJSON('/api/v1/principals/revoke', env);
+                return;
+              }
+              throw new Error(
+                `1-of-2 revocation requires an active ${targetRole || 'same-role'} key while preserving >=1 SO and >=1 AO (or use atomic 2-of-2 warrant principals rotate-and-revoke)`
+              );
             }}
             onResolveException={async (exceptionId, decision, env) => {
               await postJSON(`/api/v1/exceptions/${exceptionId}/resolve`, {
@@ -260,15 +351,25 @@ export const App: React.FC = () => {
                 dsse_envelope: env,
               });
             }}
-            onEnrollWebAuthn={async (payload) => {
-              const so = activePersonas.find((p) => p.role === 'SERVICE_OWNER');
-              const ao = activePersonas.find((p) => p.role === 'AUTHORIZING_OFFICIAL');
-              if (so && ao) {
-                const env = buildDualPrincipalGovernanceEnvelope('ENROLL_PRINCIPAL', payload, so, ao);
-                await postJSON('/api/v1/principals/webauthn/register', env);
-              } else {
-                await postJSON('/api/v1/principals/webauthn/register', payload);
+            onEnrollWebAuthn={async (payload, adminToken, dualEnv) => {
+              if (dualEnv) {
+                await postJSON('/api/v1/principals/webauthn/register', dualEnv);
+                return;
               }
+              if (snapshot.bootstrap_state?.sealed) {
+                const so = activePersonas.find((p) => p.role === 'SERVICE_OWNER');
+                const ao = activePersonas.find((p) => p.role === 'AUTHORIZING_OFFICIAL');
+                if (so && ao) {
+                  const env = buildDualPrincipalGovernanceEnvelope('ENROLL_PRINCIPAL', payload, so, ao);
+                  await postJSON('/api/v1/principals/webauthn/register', env);
+                  return;
+                }
+              }
+              const headers: Record<string, string> = {};
+              if (adminToken && adminToken.trim()) {
+                headers['X-Warrant-Admin-Token'] = adminToken.trim();
+              }
+              await postJSON('/api/v1/principals/webauthn/register', payload, headers);
             }}
           />
         )}
@@ -296,15 +397,16 @@ export const App: React.FC = () => {
             agentActions={snapshot.agent_actions}
             kernelPublicKey={snapshot.kernel_public_key}
             onMintAuditorLink={async (label, scopedIds, ttlHours) => {
-              return postJSON(
+              return (await postActionJSON(
                 '/api/v1/auditor-tokens',
                 { label, scoped_attestation_ids: scopedIds, ttl_hours: ttlHours },
-                buildGovHeaders('MINT_AUDITOR_TOKEN', {
+                'MINT_AUDITOR_TOKEN',
+                {
                   auditor_label: label,
                   scoped_attestation_ids: scopedIds,
                   ttl_hours: ttlHours,
-                })
-              );
+                }
+              )) as { auditor_url?: string };
             }}
           />
         )}
@@ -313,21 +415,25 @@ export const App: React.FC = () => {
       {showFeedsModal && snapshot.feed_status && (
         <LiveFeedsModal
           feedStatus={snapshot.feed_status}
+          automationToken={automationToken}
+          onChangeAutomationToken={saveAutomationToken}
           onClose={() => setShowFeedsModal(false)}
           onSaveConfig={async (cfg) => {
-            await postJSON('/api/v1/feeds/config', cfg, buildGovHeaders('FEED_MUTATION'));
+            await postActionJSON('/api/v1/feeds/config', cfg, 'FEED_MUTATION', {}, true);
           }}
           onSyncKEV={async () => {
-            await postJSON('/api/v1/feeds/sync/kev', {}, buildGovHeaders('FEED_MUTATION'));
+            await postActionJSON('/api/v1/feeds/sync/kev', {}, 'FEED_MUTATION', {}, true);
           }}
           onSyncOSV={async () => {
-            await postJSON('/api/v1/feeds/sync/osv', {}, buildGovHeaders('FEED_MUTATION'));
+            await postActionJSON('/api/v1/feeds/sync/osv', {}, 'FEED_MUTATION', {}, true);
           }}
           onIngestOSV={async (osvId, serviceId) => {
-            await postJSON(
+            await postActionJSON(
               '/api/v1/feeds/osv/ingest',
               { osv_id: osvId, service_id: serviceId },
-              buildGovHeaders('FEED_MUTATION')
+              'FEED_MUTATION',
+              {},
+              true
             );
             setShowFeedsModal(false);
             setActiveView('VIEW1_RACE');

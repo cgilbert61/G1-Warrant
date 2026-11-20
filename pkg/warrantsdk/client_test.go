@@ -176,3 +176,68 @@ func TestSplitKeygenHygieneAndPrivateKeyClientRejection(t *testing.T) {
 		t.Fatalf("expected LoadPublicIdentityFile(.priv.json) to fail with PRIVATE_KEY_REJECTED_CLIENT_SIDE, got: %v", err)
 	}
 }
+
+func TestRequestScopedGovernanceHeadersAndEpochThawDrafts(t *testing.T) {
+	so, err := warrantsdk.GenerateEd25519SignerBundle("usr-so-scope", "so-scope@agency.gov", "Scope SO", warrantsdk.RoleServiceOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var gotHeader string
+	var gotBody []byte
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/freeze", func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get("X-Warrant-Governance-DSSE")
+		buf := make([]byte, 4096)
+		n, _ := r.Body.Read(buf)
+		gotBody = append([]byte(nil), buf[:n]...)
+		_ = json.NewEncoder(w).Encode(warrantsdk.FreezeState{
+			Mode:        warrantsdk.FreezeModeHold,
+			Actor:       "usr-so-scope",
+			ReasonCode:  "UNIT_TEST_HOLD",
+			FreezeEpoch: 7,
+		})
+	})
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	cli := warrantsdk.NewClient(ts.URL, warrantsdk.WithSignerBundle(so))
+	fs, err := cli.TriggerFreeze(context.Background(), warrantsdk.FreezeModeHold, "usr-so-scope", "UNIT_TEST_HOLD")
+	if err != nil || fs.FreezeEpoch != 7 {
+		t.Fatalf("TriggerFreeze failed: %+v err=%v", fs, err)
+	}
+	if gotHeader == "" {
+		t.Fatalf("expected X-Warrant-Governance-DSSE header")
+	}
+	envRaw, err := base64.StdEncoding.DecodeString(gotHeader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env warrantsdk.Envelope
+	if err := json.Unmarshal(envRaw, &env); err != nil {
+		t.Fatal(err)
+	}
+	payloadBytes, err := env.DecodePayload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gp warrantsdk.PrincipalGovernancePayload
+	if err := json.Unmarshal(payloadBytes, &gp); err != nil {
+		t.Fatal(err)
+	}
+	if gp.HTTPMethod != "POST" || gp.CanonicalPath != "/api/v1/freeze" || gp.RequestBodySHA256 != crypto.SHA256Hex(gotBody) {
+		t.Fatalf("request-scope binding mismatch: %+v vs body sha %s", gp, crypto.SHA256Hex(gotBody))
+	}
+
+	thawEnv, err := warrantsdk.DraftThawEnvelopeForEpoch(7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thawBytes, _ := thawEnv.DecodePayload()
+	var tp warrantsdk.ThawPayload
+	_ = json.Unmarshal(thawBytes, &tp)
+	if tp.FreezeEpoch != 7 || tp.EnvelopeID == "" || tp.ExpiresAt == "" {
+		t.Fatalf("unexpected ThawPayload: %+v", tp)
+	}
+}

@@ -5,6 +5,8 @@ import { shortHash } from '../lib/templates';
 
 interface LiveFeedsModalProps {
   feedStatus: LiveFeedStatus;
+  automationToken?: string;
+  onChangeAutomationToken?: (tok: string) => void;
   onClose: () => void;
   onSaveConfig: (cfg: FeedRuntimeConfig) => Promise<void>;
   onSyncKEV: () => Promise<void>;
@@ -14,6 +16,8 @@ interface LiveFeedsModalProps {
 
 export const LiveFeedsModal: React.FC<LiveFeedsModalProps> = ({
   feedStatus,
+  automationToken = '',
+  onChangeAutomationToken,
   onClose,
   onSaveConfig,
   onSyncKEV,
@@ -155,6 +159,21 @@ export const LiveFeedsModal: React.FC<LiveFeedsModalProps> = ({
                 WARRANT_TRIVY_ENABLED (--profile live-feeds)
               </label>
             </div>
+            {onChangeAutomationToken && (
+              <div className="md:col-span-3">
+                <label htmlFor="feed-automation-token" className="block font-semibold text-slate-700 mb-1">
+                  Optional Automation Token (WARRANT_AUTOMATION_TOKEN — Scoped to /api/v1/feeds/* &amp; Checkpoints)
+                </label>
+                <input
+                  id="feed-automation-token"
+                  type="password"
+                  value={automationToken}
+                  onChange={(e) => onChangeAutomationToken(e.target.value)}
+                  placeholder="Optional X-Warrant-Automation-Token when WebAuthn/Smartcard signer is not used"
+                  className="w-full border border-slate-300 rounded px-2.5 py-1.5 font-mono bg-white"
+                />
+              </div>
+            )}
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200">

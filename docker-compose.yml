@@ -60,7 +60,9 @@ services:
       WARRANT_ENABLE_TEST_SMARTCARDS: "${WARRANT_ENABLE_TEST_SMARTCARDS:-false}"
       WARRANT_BOOTSTRAP_ADMIN_TOKEN: "${WARRANT_BOOTSTRAP_ADMIN_TOKEN:-}"
       WARRANT_OPERATOR_TOKEN: "${WARRANT_OPERATOR_TOKEN:-}"
+      WARRANT_AUTOMATION_TOKEN: "${WARRANT_AUTOMATION_TOKEN:-}"
       WARRANT_INTAKE_TOKEN: "${WARRANT_INTAKE_TOKEN:-}"
+      WARRANT_KERNEL_KEY_FILE: "/var/lib/warrant-anchor/kernel_signer.json"
       WARRANT_EXTERNAL_ANCHOR_PATH: "/var/lib/warrant-anchor/checkpoints.jsonl"
       WARRANT_FEED_MODE: "${WARRANT_FEED_MODE:-offline}"
       WARRANT_CISA_KEV_URL: "${WARRANT_CISA_KEV_URL:-https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json}"
@@ -69,8 +71,8 @@ services:
       WARRANT_TRIVY_ENABLED: "${WARRANT_TRIVY_ENABLED:-false}"
     ports:
       - "127.0.0.1:8080:8080"
-    tmpfs:
-      - /var/lib/warrant-anchor:rw,noexec,nosuid,uid=65532,gid=65532,size=32m
+    volumes:
+      - warrant_anchor:/var/lib/warrant-anchor
     read_only: true
     cap_drop:
       - ALL
@@ -98,6 +100,7 @@ services:
       dockerfile: Dockerfile.trivy
     environment:
       WARRANT_API_URL: "http://warrantd:8080"
+      WARRANT_INTAKE_TOKEN: "${WARRANT_INTAKE_TOKEN:-}"
       WARRANT_TRIVY_ENABLED: "${WARRANT_TRIVY_ENABLED:-true}"
       WARRANT_TRIVY_TARGETS: "${WARRANT_TRIVY_TARGETS:-curlimages/curl:8.3.0=fulfillment-worker,nginx:1.24.0-alpine=checkout-cart-svc}"
       WARRANT_TRIVY_MAX_FINDINGS: "${WARRANT_TRIVY_MAX_FINDINGS:-2}"
@@ -150,4 +153,5 @@ networks:
 
 volumes:
   pgdata:
+  warrant_anchor:
   trivy_cache:

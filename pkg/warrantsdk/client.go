@@ -13,19 +13,22 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/cgilbert61/G1-Warrant/internal/crypto"
 )
 
 // Client is a thread-safe Go SDK client for the G1-Warrant Control Plane (warrantd).
 type Client struct {
-	baseURL       string
-	httpClient    *http.Client
-	auditorToken  string
-	sensorToken   string
-	adminToken    string
-	operatorToken string
-	intakeToken   string
-	signerBundle  *SignerKeyBundle
-	userAgent     string
+	baseURL         string
+	httpClient      *http.Client
+	auditorToken    string
+	sensorToken     string
+	adminToken      string
+	operatorToken   string
+	automationToken string
+	intakeToken     string
+	signerBundle    *SignerKeyBundle
+	userAgent       string
 }
 
 // Option configures a Client instance.
@@ -72,10 +75,18 @@ func WithAdminToken(token string) Option {
 }
 
 // WithOperatorToken attaches a dedicated operator credential (WARRANT_OPERATOR_TOKEN)
-// for emergency freeze, quarantined rollback, auditor-token minting, and feed operations.
+// accepted in offline simulator dev/demo mode.
 func WithOperatorToken(token string) Option {
 	return func(c *Client) {
 		c.operatorToken = strings.TrimSpace(token)
+	}
+}
+
+// WithAutomationToken attaches a dedicated non-governance automation credential (WARRANT_AUTOMATION_TOKEN)
+// scoped strictly to /api/v1/feeds/* and POST /api/v1/ledger/checkpoints.
+func WithAutomationToken(token string) Option {
+	return func(c *Client) {
+		c.automationToken = strings.TrimSpace(token)
 	}
 }
 
@@ -252,6 +263,16 @@ func (c *Client) RevokePrincipal(ctx context.Context, req RevokePrincipalRequest
 func (c *Client) RevokePrincipalSigned(ctx context.Context, env Envelope) (*PrincipalRevocation, error) {
 	var out PrincipalRevocation
 	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/principals/revoke", env, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RotateAndRevokePrincipal submits an atomic 2-of-2 ROTATE_AND_REVOKE_PRINCIPAL DSSE envelope
+// to POST /api/v1/principals/rotate-and-revoke (enrolling the replacement principal and revoking the target in one transaction).
+func (c *Client) RotateAndRevokePrincipal(ctx context.Context, env Envelope) (*RotateAndRevokeResult, error) {
+	var out RotateAndRevokeResult
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/principals/rotate-and-revoke", env, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -691,8 +712,27 @@ func (c *Client) StreamEvents(ctx context.Context, handler func(SSEEvent) error)
 }
 
 func (c *Client) doActionJSON(ctx context.Context, method, path, govAction string, govFields PrincipalGovernancePayload, reqBody any, dst any) error {
+	var payload []byte
+	var contentType string
+	if reqBody != nil {
+		raw, err := json.Marshal(reqBody)
+		if err != nil {
+			return fmt.Errorf("warrantsdk: marshal request for %s: %w", path, err)
+		}
+		payload = raw
+		contentType = "application/json"
+	}
+
 	var extraHeaders map[string]string
 	if c.signerBundle != nil && govAction != "" {
+		canonicalPath := path
+		if u, pErr := url.Parse(path); pErr == nil && u.Path != "" {
+			canonicalPath = u.Path
+		}
+		govFields.HTTPMethod = method
+		govFields.CanonicalPath = canonicalPath
+		govFields.RequestBodySHA256 = crypto.SHA256Hex(payload)
+
 		env, _, err := DraftGovernanceEnvelope(govAction, govFields, 5*time.Minute)
 		if err != nil {
 			return err
@@ -708,7 +748,17 @@ func (c *Client) doActionJSON(ctx context.Context, method, path, govAction strin
 			"X-Warrant-Governance-DSSE": base64.StdEncoding.EncodeToString(envRaw),
 		}
 	}
-	return c.doJSONWithHeaders(ctx, method, path, reqBody, dst, extraHeaders)
+
+	respBytes, err := c.doRawWithHeaders(ctx, method, path, contentType, payload, extraHeaders)
+	if err != nil {
+		return err
+	}
+	if dst != nil && len(respBytes) > 0 {
+		if err := json.Unmarshal(respBytes, dst); err != nil {
+			return fmt.Errorf("warrantsdk: decode response from %s: %w", path, err)
+		}
+	}
+	return nil
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, reqBody any, dst any) error {
@@ -766,6 +816,9 @@ func (c *Client) doRawWithHeaders(ctx context.Context, method, path, contentType
 	}
 	if c.operatorToken != "" {
 		req.Header.Set("X-Warrant-Operator-Token", c.operatorToken)
+	}
+	if c.automationToken != "" {
+		req.Header.Set("X-Warrant-Automation-Token", c.automationToken)
 	}
 	if c.intakeToken != "" {
 		req.Header.Set("X-Warrant-Intake-Token", c.intakeToken)

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { FileCheck2, Gauge, UserX, Usb, CheckCircle2, AlertTriangle } from 'lucide-react';
 import type {
   ApprovalPressureStat,
+  BootstrapState,
   CeilingException,
   DSSEEnvelope,
   EstateService,
@@ -13,12 +14,23 @@ import { formatExceptionImpactTemplate, shortHash } from '../lib/templates';
 import { enrollWebAuthnAuthenticator } from '../lib/crypto';
 import { DualKeyCeremonyPanel } from './DualKeyCeremonyPanel';
 
+interface WebAuthnEnrollPayload {
+  display_name: string;
+  email: string;
+  role: 'SERVICE_OWNER' | 'AUTHORIZING_OFFICIAL';
+  credential_id: string;
+  attestation_object: string;
+  public_key_spki: string;
+  [key: string]: unknown;
+}
+
 interface View2WarrantDeskProps {
   warrants: WarrantRecord[];
   exceptions: CeilingException[];
   pressure: ApprovalPressureStat[];
   estate: EstateService[];
   principals: Principal[];
+  bootstrapState?: BootstrapState;
   testPersonas: TestSmartcardPersona[];
   rpId: string;
   smartcardBarEnabled: boolean;
@@ -26,14 +38,11 @@ interface View2WarrantDeskProps {
   onCreateWarrant: (env: DSSEEnvelope) => Promise<void>;
   onRevokeSigner: (principalId: string, keyFp: string) => Promise<void>;
   onResolveException: (exceptionId: string, decision: 'APPROVED' | 'REJECTED', env: DSSEEnvelope) => Promise<void>;
-  onEnrollWebAuthn: (payload: {
-    display_name: string;
-    email: string;
-    role: 'SERVICE_OWNER' | 'AUTHORIZING_OFFICIAL';
-    credential_id: string;
-    attestation_object: string;
-    public_key_spki: string;
-  }) => Promise<void>;
+  onEnrollWebAuthn: (
+    payload: WebAuthnEnrollPayload,
+    adminToken?: string,
+    dualEnv?: DSSEEnvelope
+  ) => Promise<void>;
 }
 
 export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
@@ -42,6 +51,7 @@ export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
   pressure,
   estate,
   principals,
+  bootstrapState,
   testPersonas,
   rpId,
   smartcardBarEnabled,
@@ -59,12 +69,16 @@ export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
   const [maxP99Ms, setMaxP99Ms] = useState(120);
   const [ttlDays, setTtlDays] = useState(30);
   const [verifyMsg, setVerifyMsg] = useState<Record<string, string>>({});
+  const [revokeError, setRevokeError] = useState<string | null>(null);
 
   // WebAuthn Hardware Enrollment form
   const [hwName, setHwName] = useState('Hardware Signer');
   const [hwEmail, setHwEmail] = useState('yubikey.so@g1163rt.sec');
   const [hwRole, setHwRole] = useState<'SERVICE_OWNER' | 'AUTHORIZING_OFFICIAL'>('SERVICE_OWNER');
+  const [hwAdminToken, setHwAdminToken] = useState('');
+  const [pendingHwPayload, setPendingHwPayload] = useState<WebAuthnEnrollPayload | null>(null);
   const [hwStatus, setHwStatus] = useState<string | null>(null);
+  const [hwError, setHwError] = useState<string | null>(null);
 
   const toggleService = (svcId: string) => {
     setSelectedServices((prev) =>
@@ -73,28 +87,42 @@ export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
   };
 
   const handleReverify = async (warrantId: string) => {
-    const res = await fetch(`/api/v1/warrants/${warrantId}/verify`, { method: 'POST' });
-    const data = await res.json();
-    setVerifyMsg((prev) => ({
-      ...prev,
-      [warrantId]: data.valid ? 'PASS: N1 2-of-2 DSSE + OPA AC-5 + Live Revocation Check OK' : `FAIL-CLOSED: ${data.reason}`,
-    }));
+    try {
+      const res = await fetch(`/api/v1/warrants/${warrantId}/verify`, { method: 'POST' });
+      const data = await res.json();
+      setVerifyMsg((prev) => ({
+        ...prev,
+        [warrantId]: data.valid ? 'PASS: N1 2-of-2 DSSE + OPA AC-5 + Live Revocation Check OK' : `FAIL-CLOSED: ${data.reason || data.error}`,
+      }));
+    } catch (err) {
+      setVerifyMsg((prev) => ({
+        ...prev,
+        [warrantId]: `ERROR: ${err instanceof Error ? err.message : 'Verification request failed'}`,
+      }));
+    }
   };
 
   const handleHardwareEnroll = async (e: React.FormEvent) => {
     e.preventDefault();
     setHwStatus(null);
+    setHwError(null);
     try {
       const cred = await enrollWebAuthnAuthenticator(hwName, hwEmail, hwRole, rpId);
-      await onEnrollWebAuthn({
+      const payload: WebAuthnEnrollPayload = {
         display_name: hwName,
         email: hwEmail,
         role: hwRole,
         ...cred,
-      });
+      };
+      if (bootstrapState?.sealed && testPersonas.length === 0) {
+        setPendingHwPayload(payload);
+        setHwStatus('Hardware attestation captured. Co-sign 2-of-2 ENROLL_PRINCIPAL below to commit post-seal enrollment.');
+        return;
+      }
+      await onEnrollWebAuthn(payload, hwAdminToken);
       setHwStatus(`Enrolled W3C WebAuthn hardware authenticator for ${hwEmail} (${hwRole})`);
     } catch (err) {
-      setHwStatus(`WebAuthn note: ${err instanceof Error ? err.message : 'Enrollment cancelled'}`);
+      setHwError(err instanceof Error ? err.message : 'Enrollment failed');
     }
   };
 
@@ -203,13 +231,20 @@ export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
                     <DualKeyCeremonyPanel
                       title={`Authorize or Reject Exception ${ex.exception_id}`}
                       payloadType="application/vnd.g1163rt.exception-resolution.v1+json"
-                      buildPayload={() => ({
-                        exception_id: ex.exception_id,
-                        remediation_id: ex.remediation_id,
-                        service_id: ex.service_id,
-                        cve_id: ex.cve_id,
-                        evaluated_at: new Date().toISOString(),
-                      })}
+                      buildPayload={() => {
+                        const now = new Date();
+                        const exp = new Date(now.getTime() + 15 * 60 * 1000);
+                        const suffix = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+                        return {
+                          envelope_id: `exc-ui-${suffix}`,
+                          exception_id: ex.exception_id,
+                          remediation_id: ex.remediation_id,
+                          service_id: ex.service_id,
+                          cve_id: ex.cve_id,
+                          issued_at: now.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+                          expires_at: exp.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+                        };
+                      }}
                       testPersonas={testPersonas}
                       principals={principals}
                       rpId={rpId}
@@ -413,16 +448,65 @@ export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
                 <option value="AUTHORIZING_OFFICIAL">AUTHORIZING_OFFICIAL (Slot 2)</option>
               </select>
             </div>
+            {!bootstrapState?.sealed && (
+              <div>
+                <label htmlFor="webauthn-bootstrap-token" className="block font-semibold text-slate-700 mb-1">
+                  Genesis Bootstrap Token (Unsealed Setup)
+                </label>
+                <input
+                  id="webauthn-bootstrap-token"
+                  type="password"
+                  value={hwAdminToken}
+                  onChange={(e) => setHwAdminToken(e.target.value)}
+                  placeholder="WARRANT_BOOTSTRAP_ADMIN_TOKEN"
+                  className="w-full border border-slate-300 rounded px-2.5 py-1.5 font-mono"
+                />
+              </div>
+            )}
             <button
               type="submit"
               disabled={isMobileViewport}
               className="w-full py-2 rounded bg-indigo-700 hover:bg-indigo-800 text-white font-bold disabled:opacity-40"
             >
-              Enroll Hardware WebAuthn Key
+              {bootstrapState?.sealed ? 'Capture & Co-Sign 2-of-2 WebAuthn Key' : 'Enroll Genesis Hardware WebAuthn Key'}
             </button>
           </form>
+          {pendingHwPayload && (
+            <DualKeyCeremonyPanel
+              title="Post-Seal 2-of-2 WebAuthn Enrollment Ceremony"
+              payloadType="application/vnd.g1163rt.principal-governance.v1+json"
+              buildPayload={() => {
+                const now = new Date();
+                const exp = new Date(now.getTime() + 15 * 60 * 1000);
+                const suffix = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+                return {
+                  ...pendingHwPayload,
+                  envelope_id: `gov-hw2-${suffix}`,
+                  action: 'ENROLL_PRINCIPAL',
+                  issued_at: now.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+                  expires_at: exp.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+                };
+              }}
+              testPersonas={testPersonas}
+              principals={principals}
+              rpId={rpId}
+              smartcardBarEnabled={smartcardBarEnabled}
+              isMobileViewport={isMobileViewport}
+              submitLabel="CO-SIGN 2-OF-2 & ENROLL HARDWARE KEY"
+              onSubmitEnvelope={async (env) => {
+                await onEnrollWebAuthn(pendingHwPayload, undefined, env);
+                setPendingHwPayload(null);
+                setHwStatus(`Enrolled post-seal WebAuthn hardware authenticator for ${pendingHwPayload.email}`);
+              }}
+            />
+          )}
+          {hwError && (
+            <div role="alert" className="text-xs font-mono p-2 rounded bg-red-50 border border-red-400 text-red-950">
+              {hwError}
+            </div>
+          )}
           {hwStatus && (
-            <div className="text-xs font-mono p-2 rounded bg-slate-100 border border-slate-300 text-slate-800">
+            <div role="status" className="text-xs font-mono p-2 rounded bg-slate-100 border border-slate-300 text-slate-800">
               {hwStatus}
             </div>
           )}
@@ -440,6 +524,12 @@ export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
           </div>
           <span className="text-xs font-mono text-slate-500">{warrants.length} Envelopes Recorded</span>
         </div>
+
+        {revokeError && (
+          <div role="alert" className="p-2.5 rounded border border-red-400 bg-red-50 text-red-950 text-xs font-mono">
+            {revokeError}
+          </div>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
           {warrants.map((w) => (
@@ -513,7 +603,14 @@ export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
                   {w.live_status === 'ACTIVE' && (
                     <button
                       type="button"
-                      onClick={() => onRevokeSigner(w.slot2_principal_id, w.slot2_key_fp)}
+                      onClick={async () => {
+                        setRevokeError(null);
+                        try {
+                          await onRevokeSigner(w.slot2_principal_id, w.slot2_key_fp);
+                        } catch (err) {
+                          setRevokeError(err instanceof Error ? err.message : 'Principal revocation failed');
+                        }
+                      }}
                       className="inline-flex items-center gap-1 px-2 py-1 rounded border border-red-300 bg-red-50 hover:bg-red-100 font-semibold text-red-900"
                       title="Revoke AO key in principal_revocations to test instant fail-closed warrant invalidation"
                     >

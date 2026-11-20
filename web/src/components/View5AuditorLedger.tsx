@@ -42,7 +42,9 @@ export const View5AuditorLedger: React.FC<View5AuditorLedgerProps> = ({
   const [shareLabel, setShareLabel] = useState('FedRAMP 3PAO Quarterly Evidence Review');
   const [shareTTLHours, setShareTTLHours] = useState(24);
   const [generatedLink, setGeneratedLink] = useState<string | null>(null);
+  const [mintError, setMintError] = useState<string | null>(null);
   const [chainReport, setChainReport] = useState<LedgerVerificationReport | null>(null);
+  const [chainError, setChainError] = useState<string | null>(null);
   const [verifyingChain, setVerifyingChain] = useState(false);
 
   const filteredAttestations = attestations.filter((a) => {
@@ -66,22 +68,33 @@ export const View5AuditorLedger: React.FC<View5AuditorLedgerProps> = ({
 
   const handleMintAuditorLink = async (e: React.FormEvent) => {
     e.preventDefault();
-    const data = await onMintAuditorLink(
-      shareLabel,
-      filteredAttestations.map((a) => a.attestation_id),
-      shareTTLHours
-    );
-    if (data.auditor_url) {
-      setGeneratedLink(`${window.location.origin}${data.auditor_url}`);
+    setMintError(null);
+    try {
+      const data = await onMintAuditorLink(
+        shareLabel,
+        filteredAttestations.map((a) => a.attestation_id),
+        shareTTLHours
+      );
+      if (data.auditor_url) {
+        setGeneratedLink(`${window.location.origin}${data.auditor_url}`);
+      }
+    } catch (err) {
+      setMintError(err instanceof Error ? err.message : 'Failed to mint auditor token');
     }
   };
 
   const handleVerifyHashChains = async () => {
     setVerifyingChain(true);
+    setChainError(null);
     try {
       const res = await fetch('/api/v1/ledger/verify', { method: 'POST' });
       const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
       setChainReport(data);
+    } catch (err) {
+      setChainError(err instanceof Error ? err.message : 'Ledger chain verification failed');
     } finally {
       setVerifyingChain(false);
     }
@@ -276,6 +289,12 @@ export const View5AuditorLedger: React.FC<View5AuditorLedgerProps> = ({
                 </button>
               </form>
 
+              {mintError && (
+                <div role="alert" className="p-2.5 rounded border border-red-400 bg-red-50 text-red-950 text-xs font-mono">
+                  {mintError}
+                </div>
+              )}
+
               {generatedLink && (
                 <div className="p-3 rounded border border-emerald-300 bg-emerald-50 space-y-2 text-xs font-mono">
                   <div className="font-bold text-emerald-950">SCOPED BEARER URL READY:</div>
@@ -325,9 +344,15 @@ export const View5AuditorLedger: React.FC<View5AuditorLedgerProps> = ({
               className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded bg-slate-900 hover:bg-slate-800 text-white text-xs font-mono font-bold"
             >
               <ShieldCheck className="w-4 h-4 text-emerald-400" />
-              {verifyingChain ? 'Verifying 3 Ledger Tables...' : 'Verify Cryptographic Hash Chains'}
+              {verifyingChain ? 'Verifying 6 Ledger & Authority Chains...' : 'Verify Cryptographic Hash Chains'}
             </button>
           </div>
+
+          {chainError && (
+            <div role="alert" className="p-2.5 rounded border border-red-400 bg-red-50 text-red-950 text-xs font-mono">
+              {chainError}
+            </div>
+          )}
 
           {chainReport && (
             <div
@@ -338,7 +363,7 @@ export const View5AuditorLedger: React.FC<View5AuditorLedgerProps> = ({
               }`}
             >
               <div className="font-bold">
-                IMMUTABLE LEDGER HASH-CHAIN AUDIT: {chainReport.all_valid ? 'ALL 3 TABLES INTACT' : 'TAMPER DETECTED'} (Verified{' '}
+                IMMUTABLE LEDGER HASH-CHAIN AUDIT: {chainReport.all_valid ? 'ALL 6 CHAINS & LINEAGE INTACT' : 'TAMPER / UNATTESTED INSERT DETECTED'} (Verified{' '}
                 {new Date(chainReport.verified_at).toISOString()})
               </div>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-2">

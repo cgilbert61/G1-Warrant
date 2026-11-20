@@ -58,6 +58,16 @@ func (e *Engine) KernelPublicKey() crypto.PrincipalKey {
 	return e.signer.PublicKey()
 }
 
+// Signer exposes the active EnvelopeSigner to seal genesis bootstrap manifests and sign kernel key rotations.
+func (e *Engine) Signer() crypto.EnvelopeSigner {
+	return e.signer
+}
+
+// SignKernelKeyRotation signs a KernelKeyRotationPayload authorizing a successor kernel signing key.
+func (e *Engine) SignKernelKeyRotation(ctx context.Context, newPK crypto.PrincipalKey, backendMode string) (*crypto.Envelope, error) {
+	return db.SignKernelKeyRotation(ctx, e.signer, newPK, backendMode)
+}
+
 // SignerBackend returns the active cryptographic signing backend mode (KMS/HSM vs ephemeral memory).
 func (e *Engine) SignerBackend() string {
 	return e.signer.BackendMode()

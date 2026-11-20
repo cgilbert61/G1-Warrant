@@ -50,8 +50,11 @@ func NewTransparencyAnchor(receiptPath, webhookURL string) *TransparencyAnchor {
 // AnchorCheckpoint signs a combined 6-chain Merkle root (MerkleVersion=2) over all 6 immutable tables
 // and ships it to the external trust boundary.
 func (a *TransparencyAnchor) AnchorCheckpoint(ctx context.Context, store *db.Store, signer crypto.EnvelopeSigner) (*models.LedgerCheckpoint, error) {
-	// Note: compute current chain heads directly from VerifyAllLedgerChains without passing stale external witnesses
-	// (we verify internal chain continuity before sealing the new external checkpoint!)
+	// Mandatory pre-checkpoint authority lineage replay check: block notarizing unattested SQL INSERTs
+	if _, linErr := store.VerifyAuthorityLineageAttestations(ctx); linErr != nil {
+		return nil, linErr
+	}
+	// Verify internal chain continuity across all 6 chains before computing or signing the new external checkpoint
 	rep, err := store.VerifyAllLedgerChains(ctx)
 	if err != nil {
 		return nil, err

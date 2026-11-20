@@ -12,7 +12,7 @@ G1-Warrant ships with two first-class client SDKs and two command-line interface
 ### Installation
 
 ```bash
-go get github.com/cgilbert61/G1-Warrant/pkg/warrantsdk@v1.0.1
+go get github.com/cgilbert61/G1-Warrant/pkg/warrantsdk@v1.0.2
 ```
 
 ### Programmatic Go Example
@@ -111,11 +111,14 @@ Production SDKs and CLIs ship **zero built-in demo signers**. Operators generate
 # Step 6: Submit the 2-of-2 DSSE envelope to N1 (auto-seals genesis bootstrap if not yet sealed)
 ./warrant warrants submit warrant-draft.dsse.json
 
-# Post-Seal Principal Governance:
-#   - Enrolling additional/rotated keys requires 2-of-2 DSSE co-signatures (--slot1-key + --slot2-key)
-#   - Revoking a compromised key requires only a 1-of-2 DSSE signature from any active principal (--key)
+# Post-Seal Principal Governance (v1.0.2 Quorum Survivor Floor & Atomic Rotation):
+#   - Enrolling additional keys requires 2-of-2 DSSE co-signatures (--slot1-key + --slot2-key)
+#   - 1-of-2 DSSE revocation (--key) is restricted to self or same-role peers and requires >=1 active SO & >=1 active AO remaining
+#   - Replacing the last surviving SO or AO (or cross-role rotation) uses atomic 2-of-2 rotate-and-revoke
+./warrant keygen --id usr-so-02 --email so-backup@agency.gov --role SERVICE_OWNER --out so-backup
 ./warrant principals register --pub so-backup.pub.json --slot1-key so-key.priv.json --slot2-key ao-key.priv.json
-./warrant principals revoke --principal usr-so-01 --key ao-key.priv.json --reason COMPROMISED_KEY
+./warrant principals revoke --principal usr-so-01 --key so-backup.priv.json --reason COMPROMISED_KEY
+./warrant principals rotate-and-revoke --pub ao-replacement.pub.json --revoke usr-ao-01 --slot1-key so-backup.priv.json --slot2-key ao-key.priv.json
 ```
 
 ### Full `warrant` Command Reference
@@ -124,19 +127,19 @@ Production SDKs and CLIs ship **zero built-in demo signers**. Operators generate
 | :--- | :--- |
 | `warrant status [--json]` | Live control-plane posture, active warrants, 30d median TTVR, armed bridges, and estate eligibility. |
 | `warrant keygen --id <id> --email <e> --role <SO\|AO> --out <prefix>` | Generate split Ed25519 AC-5 key files (`<prefix>.priv.json` `0600` + `<prefix>.pub.json` `0644`). |
-| `warrant principals [list \| register --pub <p.pub.json> \| seal \| revoke --key <k.priv.json>]` | List principals, enroll `.pub.json` (genesis token or post-seal `2-of-2` DSSE), seal bootstrap, or execute `1-of-2` DSSE revocation. |
+| `warrant principals [list \| register --pub <p.pub.json> \| seal \| revoke --key <k.priv.json> \| rotate-and-revoke]` | List principals, enroll `.pub.json` (genesis token or post-seal `2-of-2` DSSE), seal bootstrap, execute same-role `1-of-2` revocation, or atomic `2-of-2` rotation+revocation. |
 | `warrant warrants [list \| verify \| draft \| sign --key <k.priv.json> \| submit]` | Inspect, verify, or execute `2-of-2` Standing Warrant ceremonies. |
-| `warrant exceptions [list \| approve <id> --slot1-key <so> --slot2-key <ao> \| reject <id> ...]` | Inspect or dual-key resolve stateful/above-ceiling remediation exceptions. |
-| `warrant pipeline [list \| trace <id> \| rollback <id> --key <k.priv.json>]` | View Race Pipeline items, millisecond traces, or execute authenticated atomic 3-step `QUARANTINED_ROLLBACK`. |
+| `warrant exceptions [list \| approve <id> --slot1-key <so> --slot2-key <ao> \| reject <id> ...]` | Inspect or dual-key resolve stateful/above-ceiling remediation exceptions (single-use `envelope_id` + `exception_id` bound). |
+| `warrant pipeline [list \| trace <id> \| rollback <id> --key <k.priv.json>]` | View Race Pipeline items, millisecond traces, or execute request-scoped `1-of-2` atomic 3-step `QUARANTINED_ROLLBACK`. |
 | `warrant estate` / `warrant shadow` | Inspect 3-Tier Graduated Fleet Autonomy Scorecard (5 mandatory gates incl. `readOnlyRootFilesystem` + `noexec /tmp`) and Differential Shadow canary reports. |
 | `warrant bridges` / `warrant lockouts` / `warrant drift` | Inspect Zero-Prose vs. Signed-Rulepack shields (`169.254.169.254` metadata quarantine), `ValidatingAdmissionPolicy` lockouts, and Tetragon/image drift events. |
 | `warrant simulate <scenario>` | Run deterministic drills (`simulator` + `offline` mode only; disabled on `kubernetes` or `live` feeds). |
-| `warrant intake [sarif\|secrets] <file>` | Submit untrusted `SARIF 2.1.0` vulnerability scans or Gitleaks/GitGuardian secret-exposure findings (`SECRET-ROTATION-STATELESS`). |
-| `warrant feeds [status \| mode \| sync-kev \| sync-osv \| ingest-osv]` | Toggle `offline` vs `live` feeds and sync real CISA KEV & Google OSV.dev advisories. |
-| `warrant freeze [hold \| rollback --key <k.priv.json> \| thaw --slot1-key <so> --slot2-key <ao>]` | Trigger `1-of-2` authenticated emergency freeze/rollback or `2-of-2` DSSE fleet thaw. |
+| `warrant intake [sarif\|secrets] <file> [--intake-token <tok>]` | Submit untrusted `SARIF 2.1.0` vulnerability scans or Gitleaks/GitGuardian secret-exposure findings (`WARRANT_INTAKE_TOKEN` required in `live` / `kubernetes` modes; `HTTP 413` on oversized bodies). |
+| `warrant feeds [status \| mode \| sync-kev \| sync-osv \| ingest-osv] [--automation-token <tok>]` | Toggle `offline` vs `live` feeds and sync real CISA KEV & Google OSV.dev advisories (`WARRANT_AUTOMATION_TOKEN` or `1-of-2` DSSE). |
+| `warrant freeze [hold \| rollback --key <k.priv.json> \| thaw --slot1-key <so> --slot2-key <ao>]` | Trigger request-scoped `1-of-2` emergency freeze/rollback or `freeze_epoch`-bound `2-of-2` DSSE fleet thaw. |
 | `warrant oscal [export <id> \| verify-offline <bundle.json>]` | Export DSSE-signed NIST OSCAL `1.1.2` POA&M packages and verify signatures air-gapped. |
-| `warrant auditor [mint-token --key <k.priv.json> \| inspect]` | Mint (authenticated) or test a scoped read-only `g1aud_*` external 3PAO auditor bearer link. |
-| `warrant ledger [verify \| actions \| checkpoints \| anchor]` | Verify SHA-256 hash chains + External Merkle Transparency Checkpoints across all 6 immutable tables. |
+| `warrant auditor [mint-token --key <k.priv.json> \| inspect]` | Mint (request-scoped `1-of-2` DSSE) or test a scoped read-only `g1aud_*` external 3PAO auditor bearer link. |
+| `warrant ledger [verify \| actions \| checkpoints \| anchor]` | Verify SHA-256 hash chains + Authority Lineage Attestations + External Merkle Checkpoints across all 6 immutable tables. |
 | `warrant events` | Stream real-time Server-Sent Events (`SSE`) from `warrantd` in the terminal. |
 
 ---

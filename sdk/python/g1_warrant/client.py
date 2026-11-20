@@ -16,6 +16,8 @@ from .crypto import (
     draft_governance_envelope,
     draft_principal_enroll_envelope,
     draft_principal_revoke_envelope,
+    draft_principal_rotate_and_revoke_envelope,
+    sha256_hex,
 )
 
 
@@ -43,6 +45,7 @@ class WarrantClient:
         auditor_token: str | None = None,
         timeout: float = 30.0,
         operator_token: str | None = None,
+        automation_token: str | None = None,
         intake_token: str | None = None,
         signer_bundle: SignerKeyBundle | None = None,
     ) -> None:
@@ -57,6 +60,7 @@ class WarrantClient:
         self._base_path = parsed.path.rstrip("/")
         self.auditor_token = (auditor_token or os.environ.get("WARRANT_AUDITOR_TOKEN") or "").strip()
         self.operator_token = (operator_token or os.environ.get("WARRANT_OPERATOR_TOKEN") or "").strip()
+        self.automation_token = (automation_token or os.environ.get("WARRANT_AUTOMATION_TOKEN") or "").strip()
         self.intake_token = (intake_token or os.environ.get("WARRANT_INTAKE_TOKEN") or "").strip()
         self.signer_bundle = signer_bundle
         self.timeout = timeout
@@ -73,7 +77,7 @@ class WarrantClient:
         full_path = f"{self._base_path}{path}"
         conn_cls = http.client.HTTPSConnection if self._scheme == "https" else http.client.HTTPConnection
         conn = conn_cls(self._host, self._port, timeout=self.timeout)
-        headers: dict[str, str] = {"User-Agent": "g1-warrant-python-sdk/1.0.1"}
+        headers: dict[str, str] = {"User-Agent": "g1-warrant-python-sdk/1.0.2"}
         if content_type:
             headers["Content-Type"] = content_type
         tok = (bearer_override if bearer_override is not None else self.auditor_token).strip()
@@ -81,6 +85,8 @@ class WarrantClient:
             headers["Authorization"] = f"Bearer {tok}"
         if self.operator_token and bearer_override is None and not self.auditor_token:
             headers["X-Warrant-Operator-Token"] = self.operator_token
+        if self.automation_token and bearer_override is None and not self.auditor_token:
+            headers["X-Warrant-Automation-Token"] = self.automation_token
         if self.intake_token:
             headers["X-Warrant-Intake-Token"] = self.intake_token
         if extra_headers:
@@ -133,13 +139,26 @@ class WarrantClient:
         payload: Any = None,
         signer_bundle: SignerKeyBundle | None = None,
     ) -> Any:
+        body: bytes | None = None
+        ctype: str | None = None
+        if payload is not None:
+            body = json.dumps(payload).encode("utf-8")
+            ctype = "application/json"
+
         extra: dict[str, str] | None = None
         active_signer = signer_bundle or self.signer_bundle
         if active_signer is not None:
-            env = draft_governance_envelope(gov_action, gov_fields or {}, ttl_seconds=300)
+            canonical_path = urllib.parse.urlsplit(path).path or path
+            scoped_fields = dict(gov_fields or {})
+            scoped_fields["http_method"] = method.upper()
+            scoped_fields["canonical_path"] = canonical_path
+            scoped_fields["request_body_sha256"] = sha256_hex(body or b"")
+            env = draft_governance_envelope(gov_action, scoped_fields, ttl_seconds=300)
             active_signer.sign_envelope(1, env)
             extra = {"X-Warrant-Governance-DSSE": base64.b64encode(json.dumps(env).encode("utf-8")).decode("ascii")}
-        return self._request_json(method, path, payload=payload, extra_headers=extra)
+
+        raw = self._request_raw(method, path, body=body, content_type=ctype, extra_headers=extra)
+        return json.loads(raw.decode("utf-8")) if raw else None
 
     # ------------------------------------------------------------------
     # Core Health, Scoreboard & Bootstrap
@@ -258,6 +277,31 @@ class WarrantClient:
                 "revoked_by": revoked_by,
             },
         )
+
+    def rotate_and_revoke_principal(
+        self,
+        replacement_public_or_signer_bundle: PublicIdentityBundle | SignerKeyBundle | dict[str, Any],
+        target_principal_id: str = "",
+        target_key_fingerprint: str = "",
+        reason_code: str = "ATOMIC_DUAL_KEY_ROTATION_AND_REVOCATION",
+        slot1_signer: SignerKeyBundle | None = None,
+        slot2_signer: SignerKeyBundle | None = None,
+        dsse_envelope: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Atomically enroll a replacement principal and revoke a target principal via 2-of-2 ROTATE_AND_REVOKE_PRINCIPAL."""
+        if dsse_envelope is not None:
+            return self._request_json("POST", "/api/v1/principals/rotate-and-revoke", dsse_envelope)
+        if slot1_signer is None or slot2_signer is None:
+            raise ValueError("Both slot1_signer (SERVICE_OWNER) and slot2_signer (AUTHORIZING_OFFICIAL) are required")
+        env = draft_principal_rotate_and_revoke_envelope(
+            replacement_public_identity=replacement_public_or_signer_bundle,
+            target_principal_id=target_principal_id,
+            target_key_fingerprint=target_key_fingerprint,
+            reason_code=reason_code,
+        )
+        slot1_signer.sign_envelope(1, env)
+        slot2_signer.sign_envelope(2, env)
+        return self._request_json("POST", "/api/v1/principals/rotate-and-revoke", env)
 
     def list_warrants(self) -> list[dict[str, Any]]:
         return self._request_json("GET", "/api/v1/warrants")

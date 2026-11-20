@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -165,14 +166,14 @@ func (s *Store) FindMatchingSecretWarrant(ctx context.Context, serviceID string)
 	return nil, fmt.Errorf("NO_ACTIVE_SECRET_ROTATION_WARRANT for service=%s", serviceID)
 }
 
-// GetFreezeState fetches the singleton emergency freeze state.
+// GetFreezeState fetches the singleton emergency freeze state including monotonic freeze_epoch.
 func (s *Store) GetFreezeState(ctx context.Context) (models.FreezeState, error) {
 	var fs models.FreezeState
 	var thawRaw []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT mode, actor, reason_code, thaw_dsse, updated_at
+		SELECT mode, actor, reason_code, freeze_epoch, thaw_dsse, updated_at
 		FROM system_freeze_state WHERE singleton_id = 1
-	`).Scan(&fs.Mode, &fs.Actor, &fs.ReasonCode, &thawRaw, &fs.UpdatedAt)
+	`).Scan(&fs.Mode, &fs.Actor, &fs.ReasonCode, &fs.FreezeEpoch, &thawRaw, &fs.UpdatedAt)
 	if err != nil {
 		return fs, err
 	}
@@ -185,8 +186,9 @@ func (s *Store) GetFreezeState(ctx context.Context) (models.FreezeState, error) 
 	return fs, nil
 }
 
-// SetFreezeState updates the singleton freeze posture and fires PostgreSQL LISTEN/NOTIFY via trigger.
-func (s *Store) SetFreezeState(ctx context.Context, fs models.FreezeState) error {
+// TransitionFreezeState updates the singleton freeze posture, increments freeze_epoch on every freeze entry,
+// populates fs.FreezeEpoch, and fires PostgreSQL LISTEN/NOTIFY via trigger.
+func (s *Store) TransitionFreezeState(ctx context.Context, fs *models.FreezeState) error {
 	var thawRaw []byte
 	if fs.ThawDSSE != nil {
 		var err error
@@ -198,12 +200,22 @@ func (s *Store) SetFreezeState(ctx context.Context, fs models.FreezeState) error
 	if fs.UpdatedAt.IsZero() {
 		fs.UpdatedAt = time.Now().UTC()
 	}
-	_, err := s.pool.Exec(ctx, `
+	return s.pool.QueryRow(ctx, `
 		UPDATE system_freeze_state
-		SET mode = $1, actor = $2, reason_code = $3, thaw_dsse = $4, updated_at = $5
+		SET mode = $1,
+		    actor = $2,
+		    reason_code = $3,
+		    freeze_epoch = CASE WHEN $1 IN ('FREEZE_HOLD', 'FREEZE_ROLLBACK') THEN freeze_epoch + 1 ELSE freeze_epoch END,
+		    thaw_dsse = $4,
+		    updated_at = $5
 		WHERE singleton_id = 1
-	`, fs.Mode, fs.Actor, fs.ReasonCode, thawRaw, fs.UpdatedAt)
-	return err
+		RETURNING freeze_epoch
+	`, fs.Mode, fs.Actor, fs.ReasonCode, thawRaw, fs.UpdatedAt).Scan(&fs.FreezeEpoch)
+}
+
+// SetFreezeState updates the singleton freeze posture and fires PostgreSQL LISTEN/NOTIFY via trigger.
+func (s *Store) SetFreezeState(ctx context.Context, fs models.FreezeState) error {
+	return s.TransitionFreezeState(ctx, &fs)
 }
 
 // ListenFreezeNotifications subscribes to PostgreSQL LISTEN warrant_freeze_channel.
@@ -223,18 +235,20 @@ func (s *Store) ListenFreezeNotifications(ctx context.Context, onChange func(mod
 			return err
 		}
 		var payload struct {
-			Mode       string `json:"mode"`
-			Actor      string `json:"actor"`
-			ReasonCode string `json:"reason_code"`
-			UpdatedAt  string `json:"updated_at"`
+			Mode        string `json:"mode"`
+			Actor       string `json:"actor"`
+			ReasonCode  string `json:"reason_code"`
+			FreezeEpoch int64  `json:"freeze_epoch"`
+			UpdatedAt   string `json:"updated_at"`
 		}
 		if json.Unmarshal([]byte(notif.Payload), &payload) == nil {
 			ts, _ := time.Parse(time.RFC3339, payload.UpdatedAt)
 			onChange(models.FreezeState{
-				Mode:       payload.Mode,
-				Actor:      payload.Actor,
-				ReasonCode: payload.ReasonCode,
-				UpdatedAt:  ts,
+				Mode:        payload.Mode,
+				Actor:       payload.Actor,
+				ReasonCode:  payload.ReasonCode,
+				FreezeEpoch: payload.FreezeEpoch,
+				UpdatedAt:   ts,
 			})
 		}
 	}
@@ -1018,6 +1032,7 @@ func (s *Store) ComputeScoreboard(ctx context.Context) (*models.GlobalScoreboard
 			f.mode,
 			f.actor,
 			f.reason_code,
+			f.freeze_epoch,
 			f.thaw_dsse,
 			f.updated_at,
 			(
@@ -1056,6 +1071,7 @@ func (s *Store) ComputeScoreboard(ctx context.Context) (*models.GlobalScoreboard
 		&fs.Mode,
 		&fs.Actor,
 		&fs.ReasonCode,
+		&fs.FreezeEpoch,
 		&thawRaw,
 		&fs.UpdatedAt,
 		&activeWarrants,
@@ -1099,7 +1115,9 @@ func (s *Store) ComputeScoreboard(ctx context.Context) (*models.GlobalScoreboard
 }
 
 // RegisterKernelPublicKey appends the active kernel attestation public key into the immutable, hash-chained kernel_public_keys ring.
-func (s *Store) RegisterKernelPublicKey(ctx context.Context, pk crypto.PrincipalKey, backendMode string) error {
+// Any key beyond seq_no = 1 MUST carry a valid rotation_dsse signed by the preceding kernel key (or 2-of-2 active SO+AO principals)
+// OR match the configured external KMS signing identity (WARRANT_KMS_SIGN_URL + WARRANT_KMS_PUBLIC_KEY_B64).
+func (s *Store) RegisterKernelPublicKey(ctx context.Context, pk crypto.PrincipalKey, backendMode string, rotationDSSE ...*crypto.Envelope) error {
 	pubB64 := base64.StdEncoding.EncodeToString(pk.PublicKeyBytes)
 
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
@@ -1125,16 +1143,67 @@ func (s *Store) RegisterKernelPublicKey(ctx context.Context, pk crypto.Principal
 	}
 
 	prevHash := GenesisHash
-	err = tx.QueryRow(ctx, `SELECT entry_hash FROM kernel_public_keys ORDER BY seq_no DESC LIMIT 1`).Scan(&prevHash)
+	var prevKeyID, prevAlg, prevPubB64, prevFP string
+	err = tx.QueryRow(ctx, `
+		SELECT entry_hash, key_id, alg, public_key_b64, key_fingerprint
+		FROM kernel_public_keys ORDER BY seq_no DESC LIMIT 1
+	`).Scan(&prevHash, &prevKeyID, &prevAlg, &prevPubB64, &prevFP)
+	hasPriorKey := err == nil
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
+
+	var rotEnv *crypto.Envelope
+	if len(rotationDSSE) > 0 {
+		rotEnv = rotationDSSE[0]
+	}
+
+	if hasPriorKey {
+		kmsURL := strings.TrimSpace(os.Getenv("WARRANT_KMS_SIGN_URL"))
+		kmsPub := strings.TrimSpace(os.Getenv("WARRANT_KMS_PUBLIC_KEY_B64"))
+		matchesKMS := backendMode == "NON_EXPORTABLE_EXTERNAL_KMS_HSM" && kmsURL != "" && kmsPub != "" && kmsPub == pubB64
+		if !matchesKMS && rotEnv == nil {
+			return fmt.Errorf("%s: kernel key rotation beyond seq_no=1 requires rotation_dsse signed by preceding kernel key %s or 2-of-2 AC-5 principals", CodeUnattestedAuthorityLineageInsert, prevKeyID)
+		}
+		if rotEnv != nil {
+			rawRot, dErr := rotEnv.DecodePayload()
+			if dErr != nil {
+				return fmt.Errorf("decode rotation_dsse: %w", dErr)
+			}
+			prevPubBytes, _ := crypto.DecodeBase64Any(prevPubB64)
+			prevPK := &crypto.PrincipalKey{
+				PrincipalID:    "sys-warrantd-kernel",
+				Role:           crypto.RoleAttestationKernel,
+				KeyID:          prevKeyID,
+				Alg:            prevAlg,
+				PublicKeyBytes: prevPubBytes,
+				KeyFingerprint: prevFP,
+			}
+			signedByPrev := len(rotEnv.Signatures) >= 1 && rotEnv.Signatures[0].KeyID == prevKeyID &&
+				crypto.VerifySingleSignature(rotEnv.PayloadType, rawRot, rotEnv.Signatures[0], prevPK, s.WebAuthnConfig()) == nil
+			if !signedByPrev {
+				resolver := StoreKeyResolver{Store: s, Ctx: ctx}
+				if _, dualErr := crypto.VerifyDualHumanCeremony(rotEnv, crypto.PayloadTypeKernelKeyRotation, resolver, s.WebAuthnConfig()); dualErr != nil {
+					return fmt.Errorf("%s: invalid rotation_dsse for kernel key %s: %w", CodeUnattestedAuthorityLineageInsert, pk.KeyID, dualErr)
+				}
+			}
+		}
+	}
+
+	var rotRaw []byte
+	if rotEnv != nil {
+		rotRaw, err = crypto.CanonicalizeStruct(rotEnv)
+		if err != nil {
+			return err
+		}
+	}
+
 	entryHash := ComputeKernelKeyEntryHash(prevHash, pk.KeyID, pk.Alg, pubB64, pk.KeyFingerprint, backendMode)
 
 	_, err = tx.Exec(ctx, `
-		INSERT INTO kernel_public_keys (key_id, alg, public_key_b64, key_fingerprint, backend_mode, prev_hash, entry_hash, registered_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-	`, pk.KeyID, pk.Alg, pubB64, pk.KeyFingerprint, backendMode, prevHash, entryHash, time.Now().UTC())
+		INSERT INTO kernel_public_keys (key_id, alg, public_key_b64, key_fingerprint, backend_mode, rotation_dsse, prev_hash, entry_hash, registered_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+	`, pk.KeyID, pk.Alg, pubB64, pk.KeyFingerprint, backendMode, rotRaw, prevHash, entryHash, time.Now().UTC())
 	if err != nil {
 		return err
 	}
@@ -1144,7 +1213,7 @@ func (s *Store) RegisterKernelPublicKey(ctx context.Context, pk crypto.Principal
 // ListKernelPublicKeys returns all historical and active kernel verification public keys newest first.
 func (s *Store) ListKernelPublicKeys(ctx context.Context) ([]models.KernelPublicKeyRecord, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT key_id, alg, public_key_b64, key_fingerprint, backend_mode, prev_hash, entry_hash, registered_at
+		SELECT key_id, alg, public_key_b64, key_fingerprint, backend_mode, rotation_dsse, prev_hash, entry_hash, registered_at
 		FROM kernel_public_keys
 		ORDER BY seq_no DESC
 	`)
@@ -1155,8 +1224,15 @@ func (s *Store) ListKernelPublicKeys(ctx context.Context) ([]models.KernelPublic
 	out := []models.KernelPublicKeyRecord{}
 	for rows.Next() {
 		var r models.KernelPublicKeyRecord
-		if err := rows.Scan(&r.KeyID, &r.Alg, &r.PublicKeyB64, &r.KeyFingerprint, &r.BackendMode, &r.PrevHash, &r.EntryHash, &r.RegisteredAt); err != nil {
+		var rotRaw []byte
+		if err := rows.Scan(&r.KeyID, &r.Alg, &r.PublicKeyB64, &r.KeyFingerprint, &r.BackendMode, &rotRaw, &r.PrevHash, &r.EntryHash, &r.RegisteredAt); err != nil {
 			return nil, err
+		}
+		if len(rotRaw) > 0 {
+			var env crypto.Envelope
+			if json.Unmarshal(rotRaw, &env) == nil {
+				r.RotationDSSE = &env
+			}
 		}
 		out = append(out, r)
 	}

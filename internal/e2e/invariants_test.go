@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -339,9 +340,19 @@ func TestInvariant2_AC5SeparationOfDutiesAndLiveRevocation(t *testing.T) {
 		t.Fatalf("expected AC5_SYSADMIN_PROHIBITED, got %v", err)
 	}
 
-	// 3. Mint valid Elena + Marcus warrant, then revoke Marcus before N2 execution
+	// 3. Mint valid Elena + Marcus warrant, then Bob (same-role AO) revokes Marcus via 1-of-2 DSSE before N2 execution
 	w := mintDualWarrant(t, h, "wrt-revoke-live", []string{"identity-sso-gateway"}, h.elena, h.marcus)
-	if _, err := h.orch.N1Warrant.RevokeSigner(h.ctx, h.marcus.PrincipalID, h.marcus.KeyFingerprint, "AO_DEPARTED_ROLE", "sec-admin"); err != nil {
+	revEnv, _, _ := crypto.NewUnsignedEnvelope(crypto.PayloadTypePrincipalGovernance, models.PrincipalGovernancePayload{
+		EnvelopeID:           "gov-inv2-rev-" + uuid.NewString(),
+		Action:               models.GovActionRevokePrincipal,
+		TargetPrincipalID:    h.marcus.PrincipalID,
+		TargetKeyFingerprint: h.marcus.KeyFingerprint,
+		ReasonCode:           "AO_DEPARTED_ROLE",
+		IssuedAt:             time.Now().UTC().Format(time.RFC3339),
+		ExpiresAt:            time.Now().UTC().Add(5 * time.Minute).Format(time.RFC3339),
+	})
+	_ = revEnv.SignEd25519(1, h.bob.ToPrincipalKey(), h.bob.PrivateKey)
+	if _, err := h.orch.N1Warrant.RevokeSignerWithGovernance(h.ctx, h.marcus.PrincipalID, h.marcus.KeyFingerprint, "AO_DEPARTED_ROLE", h.bob.PrincipalID, h.bob.Role, false, revEnv); err != nil {
 		t.Fatal(err)
 	}
 
@@ -457,14 +468,27 @@ func TestInvariant4_AsymmetricFreezeAndDualKeyThaw(t *testing.T) {
 	}
 
 	// Single-signature Thaw attempt MUST fail closed
-	badThaw, _, _ := crypto.NewUnsignedEnvelope(crypto.PayloadTypeThaw, map[string]string{"action": "THAW"})
+	curFS, _ := h.store.GetFreezeState(h.ctx)
+	badThaw, _, _ := crypto.NewUnsignedEnvelope(crypto.PayloadTypeThaw, models.ThawPayload{
+		EnvelopeID:  "thaw-inv4-bad-" + uuid.NewString(),
+		Action:      "THAW",
+		FreezeEpoch: curFS.FreezeEpoch,
+		IssuedAt:    time.Now().UTC().Format(time.RFC3339),
+		ExpiresAt:   time.Now().UTC().Add(10 * time.Minute).Format(time.RFC3339),
+	})
 	_ = badThaw.SignEd25519(1, h.alice.ToPrincipalKey(), h.alice.PrivateKey)
 	if _, err := h.orch.N1Warrant.ThawEmergencyFreeze(h.ctx, *badThaw); err == nil {
 		t.Fatal("expected single-signature Thaw to be rejected")
 	}
 
-	// Valid 2-of-2 DSSE Thaw ceremony (Alice + Bob) restores OPERATIONAL state
-	validThaw, _, _ := crypto.NewUnsignedEnvelope(crypto.PayloadTypeThaw, map[string]string{"action": "THAW"})
+	// Valid 2-of-2 DSSE Thaw ceremony (Alice + Bob) bound to active freeze_epoch restores OPERATIONAL state
+	validThaw, _, _ := crypto.NewUnsignedEnvelope(crypto.PayloadTypeThaw, models.ThawPayload{
+		EnvelopeID:  "thaw-inv4-ok-" + uuid.NewString(),
+		Action:      "THAW",
+		FreezeEpoch: curFS.FreezeEpoch,
+		IssuedAt:    time.Now().UTC().Format(time.RFC3339),
+		ExpiresAt:   time.Now().UTC().Add(10 * time.Minute).Format(time.RFC3339),
+	})
 	_ = validThaw.SignEd25519(1, h.alice.ToPrincipalKey(), h.alice.PrivateKey)
 	_ = validThaw.SignEd25519(2, h.bob.ToPrincipalKey(), h.bob.PrivateKey)
 	thawed, err := h.orch.N1Warrant.ThawEmergencyFreeze(h.ctx, *validThaw)
@@ -545,7 +569,19 @@ func TestInvariant6_ImmutableHashChainedLedger(t *testing.T) {
 	}
 
 	// 1. Prove PostgreSQL BEFORE UPDATE OR DELETE triggers block mutations on all 6 immutable tables
-	_, _ = h.orch.N1Warrant.RevokeSigner(h.ctx, h.mallory.PrincipalID, h.mallory.KeyFingerprint, "TEST_IMMUTABLE_REV", h.alice.PrincipalID)
+	revEnv6, _, _ := crypto.NewUnsignedEnvelope(crypto.PayloadTypePrincipalGovernance, models.PrincipalGovernancePayload{
+		EnvelopeID:           "gov-inv6-rev-" + uuid.NewString(),
+		Action:               models.GovActionRevokePrincipal,
+		TargetPrincipalID:    h.mallory.PrincipalID,
+		TargetKeyFingerprint: h.mallory.KeyFingerprint,
+		ReasonCode:           "TEST_IMMUTABLE_REV",
+		IssuedAt:             time.Now().UTC().Format(time.RFC3339),
+		ExpiresAt:            time.Now().UTC().Add(5 * time.Minute).Format(time.RFC3339),
+	})
+	_ = revEnv6.SignEd25519(1, h.alice.ToPrincipalKey(), h.alice.PrivateKey)
+	if _, err := h.orch.N1Warrant.RevokeSignerWithGovernance(h.ctx, h.mallory.PrincipalID, h.mallory.KeyFingerprint, "TEST_IMMUTABLE_REV", h.alice.PrincipalID, h.alice.Role, false, revEnv6); err != nil {
+		t.Fatal(err)
+	}
 	immutableChecks := []string{
 		fmt.Sprintf(`UPDATE warrant_envelopes SET max_cvss = 5.0 WHERE warrant_id = '%s'`, w.WarrantID),
 		fmt.Sprintf(`DELETE FROM warrant_envelopes WHERE warrant_id = '%s'`, w.WarrantID),
@@ -596,6 +632,7 @@ func TestInvariant6_ImmutableHashChainedLedger(t *testing.T) {
 
 // LIVE THREAT & SCANNER FEEDS: Offline Enclave Default + Sanitized CISA KEV, OSV.dev & Trivy SARIF Intake
 func TestLiveFeeds_OfflineDefaultAndCISAKEVOSVTrivyEnrichment(t *testing.T) {
+	t.Setenv("WARRANT_INTAKE_TOKEN", "in_live_trivy_scanner_secret_token_01")
 	h := setupIsolatedHarness(t)
 	mintDualWarrant(t, h, "wrt-live-feeds", []string{"payments-ledger-api"}, h.alice, h.bob)
 
@@ -671,11 +708,25 @@ func TestLiveFeeds_OfflineDefaultAndCISAKEVOSVTrivyEnrichment(t *testing.T) {
 			"results": [{"ruleId": "CVE-2023-38545", "level": "error"}]
 		}]
 	}`)
-	resp, err := http.Post(
+	// Unauthenticated POST /api/v1/intake/sarif in live feed mode MUST be rejected with 401!
+	unauthIntakeResp, err := http.Post(
 		h.httpSrv.URL+"/api/v1/intake/sarif?target_service=payments-ledger-api&max_findings=2",
 		"application/json",
 		bytes.NewReader(trivySARIF),
 	)
+	if err != nil || unauthIntakeResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected unauthenticated intake in live mode to return 401, got resp=%v err=%v", unauthIntakeResp, err)
+	}
+	_ = unauthIntakeResp.Body.Close()
+
+	intakeReq, _ := http.NewRequest(
+		http.MethodPost,
+		h.httpSrv.URL+"/api/v1/intake/sarif?target_service=payments-ledger-api&max_findings=2",
+		bytes.NewReader(trivySARIF),
+	)
+	intakeReq.Header.Set("Content-Type", "application/json")
+	intakeReq.Header.Set("X-Warrant-Intake-Token", "in_live_trivy_scanner_secret_token_01")
+	resp, err := http.DefaultClient.Do(intakeReq)
 	if err != nil || resp.StatusCode != http.StatusCreated {
 		t.Fatalf("POST Trivy SARIF failed: resp=%v err=%v", resp, err)
 	}
@@ -816,20 +867,25 @@ func TestInvariant7_ZeroProseAssuranceTiersQuarantinedRollbackAndExternalAnchor(
 	}
 	_ = unauthQRB.Body.Close()
 
-	// 3b. Authenticated 1-of-2 DSSE active principal signature (Alice) succeeds!
+	// 3b. Authenticated request-scoped 1-of-2 DSSE active principal signature (Alice) succeeds!
+	qrbBody := []byte(`{"reason":"LATENT_CONN_POOL_EXHAUSTION"}`)
+	qrbPath := "/api/v1/pipeline/" + rpItems[0].RemediationID + "/emergency-rollback"
 	govEnv, _, err := crypto.NewUnsignedEnvelope(crypto.PayloadTypePrincipalGovernance, models.PrincipalGovernancePayload{
-		EnvelopeID:    "gov-qrb-" + uuid.NewString(),
-		Action:        models.GovActionEmergencyRollback,
-		RemediationID: rpItems[0].RemediationID,
-		ReasonCode:    "LATENT_CONN_POOL_EXHAUSTION",
-		IssuedAt:      time.Now().UTC().Format(time.RFC3339),
-		ExpiresAt:     time.Now().UTC().Add(5 * time.Minute).Format(time.RFC3339),
+		EnvelopeID:        "gov-qrb-" + uuid.NewString(),
+		Action:            models.GovActionEmergencyRollback,
+		HTTPMethod:        http.MethodPost,
+		CanonicalPath:     qrbPath,
+		RequestBodySHA256: crypto.SHA256Hex(qrbBody),
+		RemediationID:     rpItems[0].RemediationID,
+		ReasonCode:        "LATENT_CONN_POOL_EXHAUSTION",
+		IssuedAt:          time.Now().UTC().Format(time.RFC3339),
+		ExpiresAt:         time.Now().UTC().Add(5 * time.Minute).Format(time.RFC3339),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = govEnv.SignEd25519(1, h.alice.ToPrincipalKey(), h.alice.PrivateKey)
-	qrbReq, _ := http.NewRequest(http.MethodPost, h.httpSrv.URL+"/api/v1/pipeline/"+rpItems[0].RemediationID+"/emergency-rollback", bytes.NewReader([]byte(`{"reason":"LATENT_CONN_POOL_EXHAUSTION"}`)))
+	qrbReq, _ := http.NewRequest(http.MethodPost, h.httpSrv.URL+qrbPath, bytes.NewReader(qrbBody))
 	qrbReq.Header.Set("Content-Type", "application/json")
 	qrbReq.Header.Set("X-Warrant-Governance-DSSE", server.EncodeGovernanceHeader(*govEnv))
 	qrbResp, err := http.DefaultClient.Do(qrbReq)
@@ -1237,6 +1293,9 @@ func TestInvariant9_TargetedHardeningDelta_KeyRingStartupGuardAndOrderSensitiveC
 	simSrv := httptest.NewServer(fleetsim.NewClusterSimulator().Handler())
 	defer simSrv.Close()
 
+	// Simulate warrantd restart with an attested kernel key rotation against the same PostgreSQL DB
+	t.Setenv("WARRANT_PREV_KERNEL_SEED", "test-kernel-seed")
+	t.Setenv("WARRANT_KERNEL_KEY_FILE", filepath.Join(t.TempDir(), "rotated-kernel-v2.json"))
 	orch2, err := server.NewOrchestrator(h.ctx, h.store, extSrv.URL, simSrv.URL, "", h.orch.WebAuthnCfg)
 	if err != nil {
 		t.Fatalf("NewOrchestrator #2 failed: %v", err)
@@ -1431,11 +1490,12 @@ func TestInvariant10_V101BootstrapSealAsymmetricRevokeSplitKeygenMutatingAuthAnd
 		}
 	}
 	// Insert a pre-v1.0.1 kernel_public_keys row (no seq_no/prev_hash/entry_hash yet)
-	v100Pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	legacyKernel := crypto.NewSeededDevEd25519Signer("legacy-v100-kernel-seed")
+	legacyPK := legacyKernel.PublicKey()
 	_, err = upgStore.Pool().Exec(ctx, `
 		INSERT INTO kernel_public_keys (key_id, alg, public_key_b64, key_fingerprint, backend_mode)
-		VALUES ('kernel-legacy-v100', 'Ed25519', $1, $2, 'EPHEMERAL_MEMORY_ED25519')
-	`, base64.StdEncoding.EncodeToString(v100Pub), crypto.SHA256Hex(v100Pub))
+		VALUES ($1, 'Ed25519', $2, $3, 'DEV_SEEDED_MEMORY_ED25519')
+	`, legacyPK.KeyID, base64.StdEncoding.EncodeToString(legacyPK.PublicKeyBytes), legacyPK.KeyFingerprint)
 	if err != nil {
 		t.Fatalf("seed legacy v1.0.0 kernel key: %v", err)
 	}
@@ -1457,6 +1517,7 @@ func TestInvariant10_V101BootstrapSealAsymmetricRevokeSplitKeygenMutatingAuthAnd
 	t.Setenv("WARRANT_ENABLE_TEST_SMARTCARDS", "false")
 	t.Setenv("WARRANT_EXTERNAL_ANCHOR_PATH", anchorFile)
 	t.Setenv("WARRANT_BOOTSTRAP_ADMIN_TOKEN", bootstrapSecret)
+	t.Setenv("WARRANT_PREV_KERNEL_SEED", "legacy-v100-kernel-seed")
 
 	extSrv := httptest.NewServer(extractor.NewHTTPHandler("sha256-extractor-v101"))
 	defer extSrv.Close()
@@ -1613,14 +1674,23 @@ func TestInvariant10_V101BootstrapSealAsymmetricRevokeSplitKeygenMutatingAuthAnd
 		t.Fatal("expected unauthenticated RevokePrincipal to fail closed")
 	}
 
-	// Honest ao1 unilaterally revokes compromised so1 (1-of-2 DSSE, without needing so1's co-signature!)
+	// Cross-role 1-of-2 revocation (ao1 attempting to revoke so1) MUST be rejected with 409 QUORUM_SURVIVOR_FLOOR_VIOLATION!
 	ao1Cli := warrantsdk.NewClient(httpSrv.URL, warrantsdk.WithSignerBundle(ao1))
-	revRec, err := ao1Cli.RevokePrincipal(ctx, warrantsdk.RevokePrincipalRequest{
+	if _, err := ao1Cli.RevokePrincipal(ctx, warrantsdk.RevokePrincipalRequest{
+		PrincipalID: so1.PrincipalID,
+		ReasonCode:  "CROSS_ROLE_ATTEMPT",
+	}); err == nil || !strings.Contains(err.Error(), "QUORUM_SURVIVOR_FLOOR_VIOLATION") {
+		t.Fatalf("expected cross-role 1-of-2 revocation to return 409 QUORUM_SURVIVOR_FLOOR_VIOLATION, got: %v", err)
+	}
+
+	// Same-role peer soBackup unilaterally revokes compromised so1 (1-of-2 DSSE, preserving >=1 SO and >=1 AO!)
+	soBakCli := warrantsdk.NewClient(httpSrv.URL, warrantsdk.WithSignerBundle(soBackup))
+	revRec, err := soBakCli.RevokePrincipal(ctx, warrantsdk.RevokePrincipalRequest{
 		PrincipalID: so1.PrincipalID,
 		ReasonCode:  "COMPROMISED_LAPTOP_KILLSWITCH",
 	})
-	if err != nil || revRec.RevokedBy != ao1.PrincipalID {
-		t.Fatalf("expected 1-of-2 DSSE revocation by %s to succeed, got rec=%+v err=%v", ao1.PrincipalID, revRec, err)
+	if err != nil || revRec.RevokedBy != soBackup.PrincipalID {
+		t.Fatalf("expected same-role 1-of-2 DSSE revocation by %s to succeed, got rec=%+v err=%v", soBackup.PrincipalID, revRec, err)
 	}
 
 	// Revoked so1 CANNOT revoke ao1!
@@ -1656,13 +1726,12 @@ func TestInvariant10_V101BootstrapSealAsymmetricRevokeSplitKeygenMutatingAuthAnd
 	}
 
 	// Authenticated 1-of-2 DSSE via active soBackup succeeds and records verified PrincipalID as actor!
-	soBakCli := warrantsdk.NewClient(httpSrv.URL, warrantsdk.WithSignerBundle(soBackup))
 	fsHold, err := soBakCli.TriggerFreeze(ctx, warrantsdk.FreezeModeHold, "ignored-untrusted-string", "SIGNED_FREEZE")
 	if err != nil || fsHold.Actor != soBackup.PrincipalID {
 		t.Fatalf("expected signed TriggerFreeze to record verified principal %s, got %+v err=%v", soBackup.PrincipalID, fsHold, err)
 	}
-	// Thaw back to OPERATIONAL via soBackup + ao1
-	thawEnv, _ := warrantsdk.DraftThawEnvelope()
+	// Thaw back to OPERATIONAL via soBackup + ao1 bound to fsHold.FreezeEpoch
+	thawEnv, _ := warrantsdk.DraftThawEnvelopeForEpoch(fsHold.FreezeEpoch)
 	_ = soBackup.SignEnvelope(1, thawEnv)
 	_ = ao1.SignEnvelope(2, thawEnv)
 	if _, err := anonCli.ThawFreeze(ctx, *thawEnv); err != nil {
@@ -1706,6 +1775,459 @@ func TestInvariant10_V101BootstrapSealAsymmetricRevokeSplitKeygenMutatingAuthAnd
 	}
 	if repAttacked.AllValid || repAttacked.ExternalAnchorVerified || !strings.Contains(repAttacked.SuperuserTamperDetail, "DB_SUPERUSER_UNANCHORED_KEY_INJECTION_DETECTED") {
 		t.Fatalf("expected 6-chain External Transparency Anchor to catch rogue kernel_public_keys injection, got %+v", repAttacked)
+	}
+}
+
+// INVARIANT 11 (v1.0.2 Hardening):
+//  (a) Quorum Survivor Floor on 1-of-2 Revocation (409 QUORUM_SURVIVOR_FLOOR_VIOLATION) + Atomic 2-of-2 ROTATE_AND_REVOKE_PRINCIPAL
+//  (b) Pre-Checkpoint Raw SQL INSERT into principals / kernel_public_keys Blocked (UNATTESTED_AUTHORITY_LINEAGE_INSERT_DETECTED)
+//  (c) Strict Request-Scope Binding (method + canonical_path + request_body_sha256 + <=5m TTL + nonce -> 401 DSSE_REQUEST_SCOPE_OR_NONCE_VIOLATION)
+//  (d) Cross-Epoch THAW Replay Blocked via Monotonic freeze_epoch + governance_envelope_nonces
+//  (e) WARRANT_AUTOMATION_TOKEN Scoped Strictly to Feeds/Checkpoints (403 on Human Non-Repudiation Routes),
+//      WARRANT_INTAKE_TOKEN Enforced in Live Mode, HTTP 413 Payload Too Large Caps, and Embedded Console API Flows
+func TestInvariant11_QuorumSurvivorLineageReplayAndConsoleGates(t *testing.T) {
+	adminDSN := os.Getenv("TEST_DATABASE_URL")
+	if adminDSN == "" {
+		adminDSN = "postgres://warrant:warrant@localhost:5432/postgres?sslmode=disable"
+	}
+	ctx := context.Background()
+	adminConn, err := pgx.Connect(ctx, adminDSN)
+	if err != nil {
+		if os.Getenv("REQUIRE_DB_TESTS") == "true" {
+			t.Fatalf("PostgreSQL required: %v", err)
+		}
+		t.Skipf("skipping Invariant 11 E2E (PostgreSQL unavailable): %v", err)
+	}
+	defer adminConn.Close(ctx)
+
+	newCleanRoomServer := func(suffix string) (*db.Store, *server.ControlPlaneOrchestrator, *httptest.Server, *httptest.Server) {
+		dbName := fmt.Sprintf("warrant_v102_%s_%s", suffix, strings.ReplaceAll(uuid.NewString()[:8], "-", ""))
+		if _, err := adminConn.Exec(ctx, fmt.Sprintf("CREATE DATABASE %s", dbName)); err != nil {
+			t.Fatalf("create db %s: %v", dbName, err)
+		}
+		t.Cleanup(func() {
+			c, cErr := pgx.Connect(context.Background(), adminDSN)
+			if cErr == nil {
+				_, _ = c.Exec(context.Background(), fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", dbName))
+				_ = c.Close(context.Background())
+			}
+		})
+		st, err := db.NewStore(ctx, replaceDBName(adminDSN, dbName))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(st.Close)
+		if err := st.Migrate(ctx); err != nil {
+			t.Fatalf("Migrate on %s failed: %v", dbName, err)
+		}
+		extSrv := httptest.NewServer(extractor.NewHTTPHandler("sha256-extractor-v102"))
+		t.Cleanup(extSrv.Close)
+		simSrv := httptest.NewServer(fleetsim.NewClusterSimulator().Handler())
+		t.Cleanup(simSrv.Close)
+		t.Setenv("WARRANT_EXTERNAL_ANCHOR_PATH", filepath.Join(t.TempDir(), "v102-anchor-"+suffix+".jsonl"))
+		orch, err := server.NewOrchestrator(ctx, st, extSrv.URL, simSrv.URL, "v102-kernel-"+suffix, crypto.DefaultWebAuthnConfig())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := orch.SeedEnterpriseEstate(ctx); err != nil {
+			t.Fatal(err)
+		}
+		srv := httptest.NewServer(orch.BuildHTTPHandler())
+		t.Cleanup(srv.Close)
+		return st, orch, srv, extSrv
+	}
+
+	t.Setenv("WARRANT_ENABLE_TEST_SMARTCARDS", "false")
+	t.Setenv("WARRANT_BOOTSTRAP_ADMIN_TOKEN", "bs_v102_genesis_registrar_token_001")
+	t.Setenv("WARRANT_OPERATOR_TOKEN", "op_v102_simulator_operator_token_001")
+	t.Setenv("WARRANT_AUTOMATION_TOKEN", "au_v102_automation_ci_cron_token_001")
+	t.Setenv("WARRANT_INTAKE_TOKEN", "")
+	t.Setenv("WARRANT_EXTERNAL_ANCHOR_PATH", filepath.Join(t.TempDir(), "v102-anchor.jsonl"))
+
+	storeA, _, srvA, extSrvA := newCleanRoomServer("main")
+
+	so1, _ := warrantsdk.GenerateEd25519SignerBundle("usr-v102-so1", "so1@agency.gov", "Primary SO", warrantsdk.RoleServiceOwner)
+	ao1, _ := warrantsdk.GenerateEd25519SignerBundle("usr-v102-ao1", "ao1@agency.gov", "Primary AO", warrantsdk.RoleAuthorizingOfficial)
+	adminCli := warrantsdk.NewClient(srvA.URL, warrantsdk.WithAdminToken("bs_v102_genesis_registrar_token_001"))
+	anonCli := warrantsdk.NewClient(srvA.URL)
+
+	if _, err := adminCli.RegisterPrincipal(ctx, so1.ToRegisterRequest()); err != nil {
+		t.Fatalf("register so1 failed: %v", err)
+	}
+	if _, err := adminCli.RegisterPrincipal(ctx, ao1.ToRegisterRequest()); err != nil {
+		t.Fatalf("register ao1 failed: %v", err)
+	}
+	sealState, err := adminCli.SealBootstrap(ctx)
+	if err != nil || !sealState.Sealed || sealState.GenesisManifestSHA256 == "" || sealState.GenesisSealDSSE == nil {
+		t.Fatalf("expected kernel-signed Genesis Seal Manifest on SealBootstrap, got %+v err=%v", sealState, err)
+	}
+
+	// -----------------------------------------------------------------
+	// (a) Quorum Survivor Floor & Atomic 2-of-2 ROTATE_AND_REVOKE_PRINCIPAL
+	// -----------------------------------------------------------------
+	so1Cli := warrantsdk.NewClient(srvA.URL, warrantsdk.WithSignerBundle(so1))
+
+	// 1. Cross-role 1-of-2 revocation (so1 -> ao1) MUST fail with HTTP 409 QUORUM_SURVIVOR_FLOOR_VIOLATION!
+	_, err = so1Cli.RevokePrincipal(ctx, warrantsdk.RevokePrincipalRequest{
+		PrincipalID: ao1.PrincipalID,
+		ReasonCode:  "SCORCHED_EARTH_CROSS_ROLE_ATTEMPT",
+	})
+	apiErr, ok := err.(*warrantsdk.APIError)
+	if !ok || apiErr.StatusCode != http.StatusConflict || !strings.Contains(apiErr.Message, "QUORUM_SURVIVOR_FLOOR_VIOLATION") {
+		t.Fatalf("expected HTTP 409 QUORUM_SURVIVOR_FLOOR_VIOLATION on cross-role 1-of-2 revoke, got: %v", err)
+	}
+
+	// 2. Last-survivor self-revocation (so1 -> so1 with 0 other SOs) MUST also fail with HTTP 409 QUORUM_SURVIVOR_FLOOR_VIOLATION!
+	_, err = so1Cli.RevokePrincipal(ctx, warrantsdk.RevokePrincipalRequest{
+		PrincipalID: so1.PrincipalID,
+		ReasonCode:  "LAST_SO_SELF_REVOKE_DEADLOCK_ATTEMPT",
+	})
+	apiErr, ok = err.(*warrantsdk.APIError)
+	if !ok || apiErr.StatusCode != http.StatusConflict || !strings.Contains(apiErr.Message, "QUORUM_SURVIVOR_FLOOR_VIOLATION") {
+		t.Fatalf("expected HTTP 409 QUORUM_SURVIVOR_FLOOR_VIOLATION on last-survivor 1-of-2 revoke, got: %v", err)
+	}
+
+	// 3. Atomic 2-of-2 ROTATE_AND_REVOKE_PRINCIPAL replaces last surviving SO (so1 -> so2, even reusing so1@agency.gov!) in one transaction!
+	so2, _ := warrantsdk.GenerateEd25519SignerBundle("usr-v102-so2", "so1@agency.gov", "Rotated Primary SO", warrantsdk.RoleServiceOwner)
+	rotEnv, _, err := warrantsdk.DraftPrincipalRotateAndRevokeEnvelope(
+		so2.ToRegisterRequest(),
+		so1.PrincipalID,
+		so1.KeyFingerprint,
+		"YUBIKEY_LOSS_ATOMIC_ROTATION",
+		5*time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = so1.SignEnvelope(1, rotEnv)
+	_ = ao1.SignEnvelope(2, rotEnv)
+	rotRes, err := anonCli.RotateAndRevokePrincipal(ctx, *rotEnv)
+	if err != nil || rotRes.EnrolledPrincipal.PrincipalID != so2.PrincipalID || rotRes.Revocation.PrincipalID != so1.PrincipalID {
+		t.Fatalf("expected atomic RotateAndRevokePrincipal to succeed, got res=%+v err=%v", rotRes, err)
+	}
+	repAfterRot, err := anonCli.VerifyLedgerChains(ctx)
+	if err != nil || !repAfterRot.AllValid {
+		t.Fatalf("expected VerifyLedgerChains AllValid=true after atomic rotation, got %+v err=%v", repAfterRot, err)
+	}
+
+	// -----------------------------------------------------------------
+	// (c) Strict Request-Scope Binding & Nonce/TTL Enforcement (401 DSSE_REQUEST_SCOPE_OR_NONCE_VIOLATION)
+	// -----------------------------------------------------------------
+	validFreezeBody := []byte(`{"mode":"FREEZE_HOLD","actor":"so2","reason_code":"SCOPE_TEST"}`)
+	tamperedFreezeBody := []byte(`{"mode":"FREEZE_ROLLBACK","actor":"so2","reason_code":"SCOPE_TEST"}`)
+
+	scopedEnv, _, _ := crypto.NewUnsignedEnvelope(crypto.PayloadTypePrincipalGovernance, models.PrincipalGovernancePayload{
+		EnvelopeID:        "gov-scope-ok-" + uuid.NewString(),
+		Action:            models.GovActionEmergencyFreeze,
+		HTTPMethod:        http.MethodPost,
+		CanonicalPath:     "/api/v1/freeze",
+		RequestBodySHA256: crypto.SHA256Hex(validFreezeBody),
+		FreezeMode:        models.FreezeModeHold,
+		ReasonCode:        "SCOPE_TEST",
+		IssuedAt:          time.Now().UTC().Format(time.RFC3339),
+		ExpiresAt:         time.Now().UTC().Add(4 * time.Minute).Format(time.RFC3339),
+	})
+	_ = so2.SignEnvelope(1, scopedEnv)
+	scopedHdr := server.EncodeGovernanceHeader(*scopedEnv)
+
+	// c1. Cross-endpoint replay against /api/v1/auditor-tokens MUST return 401 DSSE_REQUEST_SCOPE_OR_NONCE_VIOLATION
+	crossPathReq, _ := http.NewRequest(http.MethodPost, srvA.URL+"/api/v1/auditor-tokens", bytes.NewReader(validFreezeBody))
+	crossPathReq.Header.Set("Content-Type", "application/json")
+	crossPathReq.Header.Set("X-Warrant-Governance-DSSE", scopedHdr)
+	crossPathResp, err := http.DefaultClient.Do(crossPathReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crossPathBytes, _ := io.ReadAll(crossPathResp.Body)
+	_ = crossPathResp.Body.Close()
+	if crossPathResp.StatusCode != http.StatusUnauthorized || !strings.Contains(string(crossPathBytes), "DSSE_REQUEST_SCOPE_OR_NONCE_VIOLATION") {
+		t.Fatalf("expected 401 DSSE_REQUEST_SCOPE_OR_NONCE_VIOLATION on cross-endpoint header replay, got %d: %s", crossPathResp.StatusCode, string(crossPathBytes))
+	}
+
+	// c2. Cross-payload body swap on /api/v1/freeze MUST return 401 DSSE_REQUEST_SCOPE_OR_NONCE_VIOLATION
+	crossBodyReq, _ := http.NewRequest(http.MethodPost, srvA.URL+"/api/v1/freeze", bytes.NewReader(tamperedFreezeBody))
+	crossBodyReq.Header.Set("Content-Type", "application/json")
+	crossBodyReq.Header.Set("X-Warrant-Governance-DSSE", scopedHdr)
+	crossBodyResp, err := http.DefaultClient.Do(crossBodyReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crossBodyBytes, _ := io.ReadAll(crossBodyResp.Body)
+	_ = crossBodyResp.Body.Close()
+	if crossBodyResp.StatusCode != http.StatusUnauthorized || !strings.Contains(string(crossBodyBytes), "DSSE_REQUEST_SCOPE_OR_NONCE_VIOLATION") {
+		t.Fatalf("expected 401 DSSE_REQUEST_SCOPE_OR_NONCE_VIOLATION on body hash mismatch, got %d: %s", crossBodyResp.StatusCode, string(crossBodyBytes))
+	}
+
+	// c3. 1-of-2 DSSE with >5m TTL (10m) MUST return 401 DSSE_REQUEST_SCOPE_OR_NONCE_VIOLATION
+	overTTLEnv, _, _ := crypto.NewUnsignedEnvelope(crypto.PayloadTypePrincipalGovernance, models.PrincipalGovernancePayload{
+		EnvelopeID:        "gov-over-5m-" + uuid.NewString(),
+		Action:            models.GovActionEmergencyFreeze,
+		HTTPMethod:        http.MethodPost,
+		CanonicalPath:     "/api/v1/freeze",
+		RequestBodySHA256: crypto.SHA256Hex(validFreezeBody),
+		FreezeMode:        models.FreezeModeHold,
+		IssuedAt:          time.Now().UTC().Format(time.RFC3339),
+		ExpiresAt:         time.Now().UTC().Add(10 * time.Minute).Format(time.RFC3339),
+	})
+	_ = so2.SignEnvelope(1, overTTLEnv)
+	overTTLReq, _ := http.NewRequest(http.MethodPost, srvA.URL+"/api/v1/freeze", bytes.NewReader(validFreezeBody))
+	overTTLReq.Header.Set("Content-Type", "application/json")
+	overTTLReq.Header.Set("X-Warrant-Governance-DSSE", server.EncodeGovernanceHeader(*overTTLEnv))
+	overTTLResp, _ := http.DefaultClient.Do(overTTLReq)
+	overTTLBytes, _ := io.ReadAll(overTTLResp.Body)
+	_ = overTTLResp.Body.Close()
+	if overTTLResp.StatusCode != http.StatusUnauthorized || !strings.Contains(string(overTTLBytes), "DSSE_REQUEST_SCOPE_OR_NONCE_VIOLATION") {
+		t.Fatalf("expected >5m 1-of-2 TTL to return 401 DSSE_REQUEST_SCOPE_OR_NONCE_VIOLATION, got %d: %s", overTTLResp.StatusCode, string(overTTLBytes))
+	}
+
+	// c4. Valid request succeeds once (200 OK), and replaying the exact same request returns 401 DSSE_REQUEST_SCOPE_OR_NONCE_VIOLATION!
+	okFreezeReq, _ := http.NewRequest(http.MethodPost, srvA.URL+"/api/v1/freeze", bytes.NewReader(validFreezeBody))
+	okFreezeReq.Header.Set("Content-Type", "application/json")
+	okFreezeReq.Header.Set("X-Warrant-Governance-DSSE", scopedHdr)
+	okFreezeResp, err := http.DefaultClient.Do(okFreezeReq)
+	if err != nil || okFreezeResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected valid scoped freeze request to return 200, got resp=%v err=%v", okFreezeResp, err)
+	}
+	_ = okFreezeResp.Body.Close()
+
+	replayFreezeReq, _ := http.NewRequest(http.MethodPost, srvA.URL+"/api/v1/freeze", bytes.NewReader(validFreezeBody))
+	replayFreezeReq.Header.Set("Content-Type", "application/json")
+	replayFreezeReq.Header.Set("X-Warrant-Governance-DSSE", scopedHdr)
+	replayFreezeResp, _ := http.DefaultClient.Do(replayFreezeReq)
+	replayFreezeBytes, _ := io.ReadAll(replayFreezeResp.Body)
+	_ = replayFreezeResp.Body.Close()
+	if replayFreezeResp.StatusCode != http.StatusUnauthorized || !strings.Contains(string(replayFreezeBytes), "DSSE_REQUEST_SCOPE_OR_NONCE_VIOLATION") {
+		t.Fatalf("expected replayed 1-of-2 DSSE header to return 401 DSSE_REQUEST_SCOPE_OR_NONCE_VIOLATION, got %d: %s", replayFreezeResp.StatusCode, string(replayFreezeBytes))
+	}
+
+	// -----------------------------------------------------------------
+	// (d) Cross-Epoch THAW Replay Blocked via Monotonic freeze_epoch + Nonce
+	// -----------------------------------------------------------------
+	sbEpoch1, err := anonCli.Scoreboard(ctx)
+	if err != nil || sbEpoch1.FreezeState.Mode != warrantsdk.FreezeModeHold {
+		t.Fatalf("expected FREEZE_HOLD on scoreboard, got %+v err=%v", sbEpoch1, err)
+	}
+	epoch1 := sbEpoch1.FreezeState.FreezeEpoch
+
+	thawEpoch1Env, _ := warrantsdk.DraftThawEnvelopeForEpoch(epoch1)
+	_ = so2.SignEnvelope(1, thawEpoch1Env)
+	_ = ao1.SignEnvelope(2, thawEpoch1Env)
+	// Also draft a second distinct-nonce envelope signed for epoch1 BEFORE epoch2 begins (testing pure epoch binding even with unused nonce!)
+	hoardedEpoch1Env, _ := warrantsdk.DraftThawEnvelopeForEpoch(epoch1)
+	_ = so2.SignEnvelope(1, hoardedEpoch1Env)
+	_ = ao1.SignEnvelope(2, hoardedEpoch1Env)
+
+	if _, err := anonCli.ThawFreeze(ctx, *thawEpoch1Env); err != nil {
+		t.Fatalf("ThawFreeze(epoch=%d) failed: %v", epoch1, err)
+	}
+
+	// Trigger second FREEZE_HOLD -> increments freeze_epoch to epoch2 = epoch1 + 1
+	so2Cli := warrantsdk.NewClient(srvA.URL, warrantsdk.WithSignerBundle(so2))
+	fsEpoch2, err := so2Cli.TriggerFreeze(ctx, warrantsdk.FreezeModeHold, "so2", "SECOND_INCIDENT_FREEZE")
+	if err != nil || fsEpoch2.FreezeEpoch <= epoch1 {
+		t.Fatalf("expected freeze_epoch to increment beyond %d, got %+v err=%v", epoch1, fsEpoch2, err)
+	}
+
+	// Replaying either the consumed epoch1 THAW envelope OR the hoarded unused-nonce epoch1 THAW envelope MUST fail closed!
+	if _, err := anonCli.ThawFreeze(ctx, *thawEpoch1Env); err == nil || !strings.Contains(err.Error(), "THAW_EPOCH_REPLAY_DETECTED") {
+		t.Fatalf("expected historical THAW replay in new freeze epoch to fail with THAW_EPOCH_REPLAY_DETECTED, got: %v", err)
+	}
+	if _, err := anonCli.ThawFreeze(ctx, *hoardedEpoch1Env); err == nil || !strings.Contains(err.Error(), "THAW_EPOCH_REPLAY_DETECTED") {
+		t.Fatalf("expected hoarded prior-epoch THAW envelope to fail with THAW_EPOCH_REPLAY_DETECTED, got: %v", err)
+	}
+
+	thawEpoch2Env, _ := warrantsdk.DraftThawEnvelopeForEpoch(fsEpoch2.FreezeEpoch)
+	_ = so2.SignEnvelope(1, thawEpoch2Env)
+	_ = ao1.SignEnvelope(2, thawEpoch2Env)
+	if _, err := anonCli.ThawFreeze(ctx, *thawEpoch2Env); err != nil {
+		t.Fatalf("ThawFreeze(epoch=%d) failed: %v", fsEpoch2.FreezeEpoch, err)
+	}
+
+	// -----------------------------------------------------------------
+	// (e) Console API Flows, WARRANT_AUTOMATION_TOKEN Separation, Live Intake Auth & HTTP 413 Body Caps
+	// -----------------------------------------------------------------
+	// Verify embedded Console HTML & bootstrap state fields
+	consoleResp, err := http.Get(srvA.URL + "/")
+	if err != nil || consoleResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected embedded Console GET / to return 200, got %v err=%v", consoleResp, err)
+	}
+	_ = consoleResp.Body.Close()
+
+	snapMap, err := anonCli.Bootstrap(ctx)
+	if err != nil || snapMap["bootstrap_state"] == nil {
+		t.Fatalf("expected bootstrap_state in /api/v1/bootstrap for Console, got err=%v", err)
+	}
+
+	// Mint Standing Warrant (so2 + ao1), run KEV closure to ATTESTED_CLOSED, and test Console Quarantined Rollback + Auditor Token flows
+	wEnv, _, _ := warrantsdk.DraftWarrantEnvelope(warrantsdk.WarrantDraftOptions{
+		WarrantClass:           "KEV-TIER1-STATELESS",
+		ScopeServices:          []string{"payments-ledger-api"},
+		MaxCVSS:                10.0,
+		KEVEligible:            true,
+		MaxBlastRadiusReplicas: 8,
+		SLABridgeMinutes:       60,
+		MaxP99LatencyMs:        120.0,
+		TTLDays:                14,
+	})
+	_ = so2.SignEnvelope(1, wEnv)
+	_ = ao1.SignEnvelope(2, wEnv)
+	if _, err := anonCli.CreateWarrant(ctx, *wEnv); err != nil {
+		t.Fatalf("CreateWarrant failed: %v", err)
+	}
+	kevSARIF := server.BuildDeterministicSARIF(
+		"CVE-2026-91102", "CWE-787", 9.8, true, "payments-ledger-api",
+		"sha256:a100000000000000000000000000000000000000000000000000000000000001",
+		"sha256:a199999999999999999999999999999999999999999999999999999999999102",
+		"tls_heartbeat_ext_parse_vuln", "TLS_HEARTBEAT", 8443,
+	)
+	ingItems, err := anonCli.IngestSARIF(ctx, kevSARIF, warrantsdk.SARIFIntakeOptions{Profile: "STATELESS_CLEAN"})
+	if err != nil || len(ingItems) != 1 || ingItems[0].Stage != models.StageAttestedClosed {
+		t.Fatalf("IngestSARIF closure failed: items=%+v err=%v", ingItems, err)
+	}
+
+	// WARRANT_AUTOMATION_TOKEN succeeds on /api/v1/feeds/config & /api/v1/ledger/checkpoints,
+	// and is REJECTED (403) on human non-repudiation routes (/api/v1/freeze, /emergency-rollback, /auditor-tokens)!
+	autoCli := warrantsdk.NewClient(srvA.URL, warrantsdk.WithAutomationToken("au_v102_automation_ci_cron_token_001"))
+	if _, err := autoCli.CreateLedgerCheckpoint(ctx); err != nil {
+		t.Fatalf("expected WARRANT_AUTOMATION_TOKEN to succeed on POST /api/v1/ledger/checkpoints, got: %v", err)
+	}
+	if _, err := autoCli.UpdateFeedConfig(ctx, warrantsdk.FeedRuntimeConfig{Mode: warrantsdk.FeedModeLive}); err != nil {
+		t.Fatalf("expected WARRANT_AUTOMATION_TOKEN to succeed on POST /api/v1/feeds/config, got: %v", err)
+	}
+	for name, callFn := range map[string]func() error{
+		"freeze": func() error {
+			_, e := autoCli.TriggerFreeze(ctx, warrantsdk.FreezeModeHold, "cron-bot", "CRON_OVERREACH")
+			return e
+		},
+		"emergency-rollback": func() error {
+			_, e := autoCli.EmergencyRollback(ctx, ingItems[0].RemediationID, "cron-bot", "CRON_OVERREACH")
+			return e
+		},
+		"auditor-tokens": func() error {
+			_, e := autoCli.MintAuditorToken(ctx, "Cron Mint", nil, 1)
+			return e
+		},
+	} {
+		err := callFn()
+		aErr, isAPI := err.(*warrantsdk.APIError)
+		if !isAPI || aErr.StatusCode != http.StatusForbidden || !strings.Contains(aErr.Message, "AUTOMATION_TOKEN_FORBIDDEN_ON_HUMAN_GOVERNANCE_ROUTE") {
+			t.Fatalf("expected WARRANT_AUTOMATION_TOKEN on %s to return 403 AUTOMATION_TOKEN_FORBIDDEN_ON_HUMAN_GOVERNANCE_ROUTE, got: %v", name, err)
+		}
+	}
+
+	// Now that runtime feed mode is LIVE:
+	// 1) Static WARRANT_OPERATOR_TOKEN MUST be rejected (403) on human non-repudiation routes (NIST IA-2 / AU-10)!
+	opCli := warrantsdk.NewClient(srvA.URL, warrantsdk.WithOperatorToken("op_v102_simulator_operator_token_001"))
+	_, err = opCli.MintAuditorToken(ctx, "Shared Static Op Token", nil, 1)
+	if aErr, ok := err.(*warrantsdk.APIError); !ok || aErr.StatusCode != http.StatusForbidden || !strings.Contains(aErr.Message, "STATIC_OPERATOR_TOKEN_FORBIDDEN_IN_LIVE_OR_K8S_MODE") {
+		t.Fatalf("expected static WARRANT_OPERATOR_TOKEN to return 403 in live mode, got: %v", err)
+	}
+	// 2) Individual 1-of-2 DSSE principal signature (so2Cli) succeeds on both MintAuditorToken and EmergencyRollback in live mode!
+	mintedLink, err := so2Cli.MintAuditorToken(ctx, "Console 3PAO Link", []string{ingItems[0].AttestationID}, 12)
+	if err != nil || !strings.HasPrefix(mintedLink.Bearer, "g1aud_") {
+		t.Fatalf("expected individual 1-of-2 DSSE MintAuditorToken to succeed in live mode, got %+v err=%v", mintedLink, err)
+	}
+	qrbItem, err := so2Cli.EmergencyRollback(ctx, ingItems[0].RemediationID, "so2", "CONSOLE_QUARANTINED_ROLLBACK")
+	if err != nil || qrbItem.StatusHealth != models.HealthQuarantinedRollback {
+		t.Fatalf("expected individual 1-of-2 DSSE EmergencyRollback to succeed in live mode, got %+v err=%v", qrbItem, err)
+	}
+	// 3) Unauthenticated /api/v1/intake/secrets in live mode MUST fail closed with 401 MISSING_INTAKE_TOKEN!
+	unauthSecResp, err := http.Post(srvA.URL+"/api/v1/intake/secrets", "application/json", bytes.NewReader([]byte(`[{"RuleID":"github-pat","Secret":"x","service_id":"payments-ledger-api"}]`)))
+	if err != nil || unauthSecResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected unauthenticated /api/v1/intake/secrets in live mode to return 401, got %v err=%v", unauthSecResp, err)
+	}
+	_ = unauthSecResp.Body.Close()
+
+	// 4) Oversized uploads return explicit HTTP 413 Payload Too Large on BOTH warrantd and warrant-extractor!
+	oversizedFreeze := bytes.Repeat([]byte("A"), (1<<20)+4096)
+	r413a, err := http.Post(srvA.URL+"/api/v1/freeze", "application/json", bytes.NewReader(oversizedFreeze))
+	if err != nil || r413a.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected HTTP 413 on oversized /api/v1/freeze body, got resp=%v err=%v", r413a, err)
+	}
+	_ = r413a.Body.Close()
+
+	oversizedAdvisory := bytes.Repeat([]byte("B"), (2<<20)+4096)
+	r413b, err := http.Post(extSrvA.URL+"/extract/advisory", "application/json", bytes.NewReader(oversizedAdvisory))
+	if err != nil || r413b.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected HTTP 413 on oversized warrant-extractor /extract/advisory body, got resp=%v err=%v", r413b, err)
+	}
+	_ = r413b.Body.Close()
+
+	// Verify storeA remains 100% valid across all 6 chains + lineage replay before testing SQL INSERT attacks
+	if repOK, err := storeA.VerifyAllLedgerChains(ctx); err != nil || !repOK.AllValid {
+		t.Fatalf("expected storeA AllValid=true before SQL INSERT tests, got %+v err=%v", repOK, err)
+	}
+
+	// -----------------------------------------------------------------
+	// (b) Pre-Checkpoint Raw SQL INSERT into principals & kernel_public_keys Blocked
+	//     BEFORE ComputeCombinedMerkleRootV2 / CreateLedgerCheckpoint Notarizes Them!
+	// -----------------------------------------------------------------
+	// Attack 1: Raw SQL INSERT into principals on sealed clean-room server BEFORE checkpoint trigger
+	storeB1, _, srvB1, _ := newCleanRoomServer("sql_principals")
+	admB1 := warrantsdk.NewClient(srvB1.URL, warrantsdk.WithAdminToken("bs_v102_genesis_registrar_token_001"))
+	_, _ = admB1.RegisterPrincipal(ctx, so1.ToRegisterRequest())
+	_, _ = admB1.RegisterPrincipal(ctx, ao1.ToRegisterRequest())
+	_, _ = admB1.SealBootstrap(ctx)
+
+	var pTip string
+	_ = storeB1.Pool().QueryRow(ctx, `SELECT entry_hash FROM principals ORDER BY seq_no DESC LIMIT 1`).Scan(&pTip)
+	rogueSOPub, _, _ := ed25519.GenerateKey(rand.Reader)
+	rogueSOPubB64 := base64.StdEncoding.EncodeToString(rogueSOPub)
+	rogueSOFP := crypto.SHA256Hex(rogueSOPub)
+	roguePrincipal := models.Principal{
+		PrincipalID:    "usr-sql-rogue-so",
+		Email:          "rogue-sql@agency.gov",
+		DisplayName:    "Rogue SQL Principal",
+		Role:           warrantsdk.RoleServiceOwner,
+		KeyID:          "ed25519-rogue-sql",
+		Alg:            "Ed25519",
+		PublicKeyB64:   rogueSOPubB64,
+		KeyFingerprint: rogueSOFP,
+	}
+	roguePEntry := db.ComputePrincipalEntryHash(pTip, roguePrincipal)
+	_, err = storeB1.Pool().Exec(ctx, `
+		INSERT INTO principals (principal_id, email, display_name, role, key_id, alg, public_key_b64, key_fingerprint, lineage_mode, prev_hash, entry_hash)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'GENESIS_SEALED',$9,$10)
+	`, roguePrincipal.PrincipalID, roguePrincipal.Email, roguePrincipal.DisplayName, roguePrincipal.Role,
+		roguePrincipal.KeyID, roguePrincipal.Alg, roguePrincipal.PublicKeyB64, roguePrincipal.KeyFingerprint, pTip, roguePEntry)
+	if err != nil {
+		t.Fatalf("raw SQL INSERT into principals failed: %v", err)
+	}
+
+	autoB1 := warrantsdk.NewClient(srvB1.URL, warrantsdk.WithAutomationToken("au_v102_automation_ci_cron_token_001"))
+	_, err = autoB1.CreateLedgerCheckpoint(ctx)
+	if err == nil || !strings.Contains(err.Error(), "UNATTESTED_AUTHORITY_LINEAGE_INSERT_DETECTED") {
+		t.Fatalf("expected CreateLedgerCheckpoint to refuse notarizing raw SQL INSERT in principals with UNATTESTED_AUTHORITY_LINEAGE_INSERT_DETECTED, got: %v", err)
+	}
+	repB1, err := autoB1.VerifyLedgerChains(ctx)
+	if err != nil || repB1.AllValid || !strings.Contains(repB1.SuperuserTamperDetail, "UNATTESTED_AUTHORITY_LINEAGE_INSERT_DETECTED") {
+		t.Fatalf("expected VerifyLedgerChains to flag UNATTESTED_AUTHORITY_LINEAGE_INSERT_DETECTED on principals, got %+v err=%v", repB1, err)
+	}
+
+	// Attack 2: Raw SQL INSERT into kernel_public_keys (seq_no > 1 without rotation_dsse) BEFORE checkpoint trigger
+	storeB2, _, srvB2, _ := newCleanRoomServer("sql_kernel_keys")
+	var kTip string
+	_ = storeB2.Pool().QueryRow(ctx, `SELECT entry_hash FROM kernel_public_keys ORDER BY seq_no DESC LIMIT 1`).Scan(&kTip)
+	rogueKPub, _, _ := ed25519.GenerateKey(rand.Reader)
+	rogueKPubB64 := base64.StdEncoding.EncodeToString(rogueKPub)
+	rogueKFP := crypto.SHA256Hex(rogueKPub)
+	rogueKEntry := db.ComputeKernelKeyEntryHash(kTip, "rogue-prechk-kernel-key", "Ed25519", rogueKPubB64, rogueKFP, "SQL_INJECTED")
+	_, err = storeB2.Pool().Exec(ctx, `
+		INSERT INTO kernel_public_keys (key_id, alg, public_key_b64, key_fingerprint, backend_mode, prev_hash, entry_hash)
+		VALUES ('rogue-prechk-kernel-key', 'Ed25519', $1, $2, 'SQL_INJECTED', $3, $4)
+	`, rogueKPubB64, rogueKFP, kTip, rogueKEntry)
+	if err != nil {
+		t.Fatalf("raw SQL INSERT into kernel_public_keys failed: %v", err)
+	}
+
+	autoB2 := warrantsdk.NewClient(srvB2.URL, warrantsdk.WithAutomationToken("au_v102_automation_ci_cron_token_001"))
+	_, err = autoB2.CreateLedgerCheckpoint(ctx)
+	if err == nil || !strings.Contains(err.Error(), "UNATTESTED_AUTHORITY_LINEAGE_INSERT_DETECTED") {
+		t.Fatalf("expected CreateLedgerCheckpoint to refuse notarizing raw SQL INSERT in kernel_public_keys with UNATTESTED_AUTHORITY_LINEAGE_INSERT_DETECTED, got: %v", err)
+	}
+	repB2, err := autoB2.VerifyLedgerChains(ctx)
+	if err != nil || repB2.AllValid || !strings.Contains(repB2.SuperuserTamperDetail, "UNATTESTED_AUTHORITY_LINEAGE_INSERT_DETECTED") {
+		t.Fatalf("expected VerifyLedgerChains to flag UNATTESTED_AUTHORITY_LINEAGE_INSERT_DETECTED on kernel_public_keys, got %+v err=%v", repB2, err)
 	}
 }
 

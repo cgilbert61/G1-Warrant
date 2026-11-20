@@ -25,8 +25,10 @@ interface View1RacePipelineProps {
   bridges: ContainmentBridge[];
   drifts: DriftIncident[];
   pendingExceptionsCount: number;
+  isLiveFeedMode?: boolean;
   nowMs: number;
   onSimulate: (scenario: 'inject-kev' | 'bad-syscall' | 'stateful-ddl' | 'runtime-drift') => Promise<void>;
+  onEmergencyRollback: (remediationId: string, reason: string) => Promise<void>;
   onJumpToExceptions: () => void;
 }
 
@@ -48,8 +50,10 @@ export const View1RacePipeline: React.FC<View1RacePipelineProps> = ({
   bridges,
   drifts,
   pendingExceptionsCount,
+  isLiveFeedMode = false,
   nowMs,
   onSimulate,
+  onEmergencyRollback,
   onJumpToExceptions,
 }) => {
   const [selectedItem, setSelectedItem] = useState<RemediationItem | null>(null);
@@ -57,6 +61,9 @@ export const View1RacePipeline: React.FC<View1RacePipelineProps> = ({
   const [loadingTraces, setLoadingTraces] = useState(false);
   const [simRunning, setSimRunning] = useState<string | null>(null);
   const [simError, setSimError] = useState<string | null>(null);
+  const [rollbackBusy, setRollbackBusy] = useState(false);
+  const [rollbackError, setRollbackError] = useState<string | null>(null);
+  const [rollbackNotice, setRollbackNotice] = useState<string | null>(null);
 
   useEffect(() => {
     if (!selectedItem) return;
@@ -166,43 +173,49 @@ export const View1RacePipeline: React.FC<View1RacePipelineProps> = ({
             </button>
           </div>
 
-          {/* Interactive Live Simulation Triggers */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-[11px] font-mono uppercase text-slate-500 mr-1">Live Fleet Drills:</span>
-            <button
-              type="button"
-              disabled={simRunning !== null}
-              onClick={() => runSim('inject-kev')}
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-emerald-700 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold disabled:opacity-50"
-            >
-              <Play className="w-3 h-3" />
-              {simRunning === 'inject-kev' ? 'Running Closure...' : 'Inject KEV SARIF'}
-            </button>
-            <button
-              type="button"
-              disabled={simRunning !== null}
-              onClick={() => runSim('bad-syscall')}
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-red-300 bg-red-50 hover:bg-red-100 text-red-950 text-xs font-semibold disabled:opacity-50"
-            >
-              {simRunning === 'bad-syscall' ? 'Testing Canary...' : 'Trigger Bad Syscall Patch'}
-            </button>
-            <button
-              type="button"
-              disabled={simRunning !== null}
-              onClick={() => runSim('stateful-ddl')}
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-950 text-xs font-semibold disabled:opacity-50"
-            >
-              {simRunning === 'stateful-ddl' ? 'Routing...' : 'Trigger Stateful DDL'}
-            </button>
-            <button
-              type="button"
-              disabled={simRunning !== null}
-              onClick={() => runSim('runtime-drift')}
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-800 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold disabled:opacity-50"
-            >
-              {simRunning === 'runtime-drift' ? 'Injecting Drift...' : 'Simulate Runtime Drift'}
-            </button>
-          </div>
+          {/* Interactive Live Simulation Triggers (Hidden when Feed Mode is LIVE) */}
+          {!isLiveFeedMode ? (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[11px] font-mono uppercase text-slate-500 mr-1">Live Fleet Drills:</span>
+              <button
+                type="button"
+                disabled={simRunning !== null}
+                onClick={() => runSim('inject-kev')}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-emerald-700 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold disabled:opacity-50"
+              >
+                <Play className="w-3 h-3" />
+                {simRunning === 'inject-kev' ? 'Running Closure...' : 'Inject KEV SARIF'}
+              </button>
+              <button
+                type="button"
+                disabled={simRunning !== null}
+                onClick={() => runSim('bad-syscall')}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-red-300 bg-red-50 hover:bg-red-100 text-red-950 text-xs font-semibold disabled:opacity-50"
+              >
+                {simRunning === 'bad-syscall' ? 'Testing Canary...' : 'Trigger Bad Syscall Patch'}
+              </button>
+              <button
+                type="button"
+                disabled={simRunning !== null}
+                onClick={() => runSim('stateful-ddl')}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-950 text-xs font-semibold disabled:opacity-50"
+              >
+                {simRunning === 'stateful-ddl' ? 'Routing...' : 'Trigger Stateful DDL'}
+              </button>
+              <button
+                type="button"
+                disabled={simRunning !== null}
+                onClick={() => runSim('runtime-drift')}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-800 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold disabled:opacity-50"
+              >
+                {simRunning === 'runtime-drift' ? 'Injecting Drift...' : 'Simulate Runtime Drift'}
+              </button>
+            </div>
+          ) : (
+            <div className="text-[11px] font-mono font-semibold px-2.5 py-1 rounded border border-emerald-300 bg-emerald-50 text-emerald-950">
+              LIVE FEED POSTURE ACTIVE · FAULT-INJECTION DRILLS DISABLED
+            </div>
+          )}
         </div>
 
         {simError && (
@@ -427,6 +440,47 @@ export const View1RacePipeline: React.FC<View1RacePipelineProps> = ({
                 <span className="text-slate-500">Lockout Policy:</span>{' '}
                 <span className="font-bold">{selectedItem.lockout_policy_id || 'PENDING'}</span>
               </div>
+              {selectedItem.stage === 'ATTESTED_CLOSED' && selectedItem.status_health !== 'QUARANTINED_ROLLBACK' && (
+                <div className="col-span-2 pt-2 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-[11px] text-slate-700 font-sans">
+                    Post-closure functional regression? Execute atomic 3-step Contain-Before-Unban rollback:
+                  </span>
+                  <button
+                    type="button"
+                    disabled={rollbackBusy}
+                    onClick={async () => {
+                      setRollbackBusy(true);
+                      setRollbackError(null);
+                      setRollbackNotice(null);
+                      try {
+                        await onEmergencyRollback(
+                          selectedItem.remediation_id,
+                          'CONSOLE_QUARANTINED_CONTAIN_BEFORE_UNBAN_ROLLBACK'
+                        );
+                        setRollbackNotice('Executed atomic 3-step Quarantined Rollback (Shield re-armed before digest unban).');
+                      } catch (err) {
+                        setRollbackError(err instanceof Error ? err.message : 'Quarantined rollback failed');
+                      } finally {
+                        setRollbackBusy(false);
+                      }
+                    }}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-red-700 bg-red-600 hover:bg-red-700 text-white text-xs font-bold disabled:opacity-50"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    {rollbackBusy ? 'Rolling Back...' : 'Quarantined Rollback'}
+                  </button>
+                </div>
+              )}
+              {rollbackError && (
+                <div role="alert" className="col-span-2 p-2 rounded border border-red-400 bg-red-50 text-red-950 text-xs font-mono">
+                  {rollbackError}
+                </div>
+              )}
+              {rollbackNotice && (
+                <div role="status" className="col-span-2 p-2 rounded border border-emerald-400 bg-emerald-50 text-emerald-950 text-xs font-mono">
+                  {rollbackNotice}
+                </div>
+              )}
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 space-y-2.5">

@@ -40,7 +40,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--url", default=None, help="G1-Warrant server URL (default: $WARRANT_API_URL or http://localhost:8080)")
     parser.add_argument("--signer-key", type=Path, default=None, help="Active principal .priv.json for 1-of-2 DSSE emergency/governance actions")
-    parser.add_argument("--operator-token", default=None, help="Optional WARRANT_OPERATOR_TOKEN")
+    parser.add_argument("--operator-token", default=None, help="Optional WARRANT_OPERATOR_TOKEN (simulator dev mode)")
+    parser.add_argument("--automation-token", default=None, help="Optional WARRANT_AUTOMATION_TOKEN for feeds/checkpoints")
     parser.add_argument("--json", action="store_true", help="Emit JSON output")
     parser.add_argument("--version", action="version", version=f"g1-warrant-sdk v{__version__}")
 
@@ -75,10 +76,17 @@ def main(argv: list[str] | None = None) -> int:
     p_pseal.add_argument("--admin-token", default=None)
     p_pseal.add_argument("--key", type=Path, default=None)
 
-    p_prev = sub.add_parser("principals-revoke", help="Revoke a principal using a 1-of-2 DSSE active principal signature")
+    p_prev = sub.add_parser("principals-revoke", help="Revoke a self or same-role principal using a 1-of-2 DSSE active principal signature")
     p_prev.add_argument("--principal", required=True)
     p_prev.add_argument("--reason", default="CLI_KEY_REVOCATION")
     p_prev.add_argument("--key", type=Path, default=None, help="Active principal .priv.json signing REVOKE_PRINCIPAL")
+
+    p_prot = sub.add_parser("principals-rotate-revoke", help="Atomically enroll replacement principal and revoke target via 2-of-2 DSSE")
+    p_prot.add_argument("--pub", type=Path, required=True, help="Replacement <name>.pub.json")
+    p_prot.add_argument("--principal", required=True, help="Target principal_id to revoke")
+    p_prot.add_argument("--reason", default="CLI_ATOMIC_ROTATE_AND_REVOKE")
+    p_prot.add_argument("--slot1-key", type=Path, required=True)
+    p_prot.add_argument("--slot2-key", type=Path, required=True)
 
     sub.add_parser("pipeline", help="List 5-stage Race Pipeline remediations")
     p_trace = sub.add_parser("traces", help="Show millisecond execution traces for a remediation")
@@ -161,7 +169,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         global_signer = _load_priv_key(args.signer_key)
-        cli = WarrantClient(base_url=args.url, operator_token=args.operator_token, signer_bundle=global_signer)
+        cli = WarrantClient(
+            base_url=args.url,
+            operator_token=args.operator_token,
+            automation_token=args.automation_token,
+            signer_bundle=global_signer,
+        )
 
         if args.command == "status":
             sb = cli.scoreboard()
@@ -192,6 +205,21 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "principals-revoke":
             _dump(cli.revoke_principal(principal_id=args.principal, reason_code=args.reason, signer_bundle=_load_priv_key(args.key)))
+            return 0
+
+        if args.command == "principals-rotate-revoke":
+            pub_ident = load_public_identity_file(args.pub)
+            s1 = _load_priv_key(args.slot1_key)
+            s2 = _load_priv_key(args.slot2_key)
+            _dump(
+                cli.rotate_and_revoke_principal(
+                    replacement_public_or_signer_bundle=pub_ident,
+                    target_principal_id=args.principal,
+                    reason_code=args.reason,
+                    slot1_signer=s1,
+                    slot2_signer=s2,
+                )
+            )
             return 0
 
         if args.command == "warrants":
@@ -252,7 +280,8 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 if not args.slot1_key or not args.slot2_key:
                     raise ValueError("--slot1-key and --slot2-key are required for 2-of-2 fleet thaw")
-                env = draft_thaw_envelope()
+                epoch = int((cli.scoreboard().get("freeze_state") or {}).get("freeze_epoch") or 2)
+                env = draft_thaw_envelope(freeze_epoch=epoch)
                 s1 = SignerKeyBundle.from_dict(json.loads(args.slot1_key.read_text(encoding="utf-8")))
                 s2 = SignerKeyBundle.from_dict(json.loads(args.slot2_key.read_text(encoding="utf-8")))
                 s1.sign_envelope(1, env)

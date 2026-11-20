@@ -25,6 +25,8 @@ const (
 	PayloadTypeAttestation         = "application/vnd.g1163rt.oscal-attestation.v1+json"
 	PayloadTypeTaskWarrant         = "application/vnd.g1163rt.task-warrant.v1+json"
 	PayloadTypePrincipalGovernance = "application/vnd.g1163rt.principal-governance.v1+json"
+	PayloadTypeGenesisSeal         = "application/vnd.g1163rt.genesis-seal.v1+json"
+	PayloadTypeKernelKeyRotation   = "application/vnd.g1163rt.kernel-key-rotation.v1+json"
 
 	RoleServiceOwner        = "SERVICE_OWNER"
 	RoleAuthorizingOfficial = "AUTHORIZING_OFFICIAL"

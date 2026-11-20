@@ -319,24 +319,40 @@ func DraftWarrantEnvelope(opts WarrantDraftOptions) (*Envelope, WarrantPayload, 
 	return env, payload, nil
 }
 
-// DraftThawEnvelope creates an unsigned DSSEv1 emergency fleet-thaw envelope ready for 2-of-2 co-signing.
+// DraftThawEnvelope creates an unsigned DSSEv1 emergency fleet-thaw envelope (for default initial freeze epoch 2).
+// Prefer DraftThawEnvelopeForEpoch with the live FreezeState.FreezeEpoch from Client.Scoreboard.
 func DraftThawEnvelope() (*Envelope, error) {
-	env, _, err := crypto.NewUnsignedEnvelope(PayloadTypeThaw, map[string]any{
-		"action":       "THAW_FLEET",
-		"requested_at": time.Now().UTC().Format(time.RFC3339),
-	})
+	return DraftThawEnvelopeForEpoch(2)
+}
+
+// DraftThawEnvelopeForEpoch creates an unsigned DSSEv1 emergency fleet-thaw envelope bound to a specific monotonic freeze_epoch
+// and single-use envelope_id (preventing cross-epoch THAW replay).
+func DraftThawEnvelopeForEpoch(freezeEpoch int64) (*Envelope, error) {
+	now := time.Now().UTC()
+	payload := ThawPayload{
+		EnvelopeID:  "thaw-" + uuid.NewString(),
+		Action:      "THAW",
+		FreezeEpoch: freezeEpoch,
+		IssuedAt:    now.Format(time.RFC3339),
+		ExpiresAt:   now.Add(15 * time.Minute).Format(time.RFC3339),
+	}
+	env, _, err := crypto.NewUnsignedEnvelope(PayloadTypeThaw, payload)
 	return env, err
 }
 
-// DraftExceptionResolutionEnvelope creates an unsigned DSSEv1 envelope to approve or reject a ceiling exception.
+// DraftExceptionResolutionEnvelope creates an unsigned DSSEv1 envelope bound to ex.ExceptionID and a single-use envelope_id.
 func DraftExceptionResolutionEnvelope(ex CeilingException) (*Envelope, error) {
-	env, _, err := crypto.NewUnsignedEnvelope(PayloadTypeException, map[string]any{
-		"exception_id":   ex.ExceptionID,
-		"remediation_id": ex.RemediationID,
-		"service_id":     ex.ServiceID,
-		"cve_id":         ex.CVEID,
-		"evaluated_at":   time.Now().UTC().Format(time.RFC3339),
-	})
+	now := time.Now().UTC()
+	payload := ExceptionResolutionPayload{
+		EnvelopeID:    "exc-" + uuid.NewString(),
+		ExceptionID:   ex.ExceptionID,
+		RemediationID: ex.RemediationID,
+		ServiceID:     ex.ServiceID,
+		CVEID:         ex.CVEID,
+		IssuedAt:      now.Format(time.RFC3339),
+		ExpiresAt:     now.Add(15 * time.Minute).Format(time.RFC3339),
+	}
+	env, _, err := crypto.NewUnsignedEnvelope(PayloadTypeException, payload)
 	return env, err
 }
 
@@ -380,12 +396,47 @@ func DraftPrincipalEnrollEnvelope(req RegisterPrincipalRequest, ttl time.Duratio
 }
 
 // DraftPrincipalRevokeEnvelope builds an unsigned 1-of-2 DSSE Principal Governance envelope (REVOKE_PRINCIPAL)
-// so any single active enrolled principal can immediately revoke a compromised or departed key.
+// so any single active enrolled principal can immediately revoke itself or a same-role peer while preserving survivor floor.
 func DraftPrincipalRevokeEnvelope(targetPrincipalID, targetKeyFingerprint, reasonCode string, ttl time.Duration) (*Envelope, PrincipalGovernancePayload, error) {
 	if reasonCode == "" {
 		reasonCode = "SDK_KEY_REVOCATION"
 	}
+	if ttl <= 0 || ttl > 5*time.Minute {
+		ttl = 5 * time.Minute
+	}
 	return DraftGovernanceEnvelope(GovActionRevokePrincipal, PrincipalGovernancePayload{
+		HTTPMethod:           "POST",
+		CanonicalPath:        "/api/v1/principals/revoke",
+		TargetPrincipalID:    targetPrincipalID,
+		TargetKeyFingerprint: targetKeyFingerprint,
+		ReasonCode:           reasonCode,
+	}, ttl)
+}
+
+// DraftPrincipalRotateAndRevokeEnvelope builds an unsigned atomic 2-of-2 DSSE Principal Governance envelope
+// (ROTATE_AND_REVOKE_PRINCIPAL) enrolling replacement and revoking target in a single serialized transaction.
+func DraftPrincipalRotateAndRevokeEnvelope(
+	replacement RegisterPrincipalRequest,
+	targetPrincipalID string,
+	targetKeyFingerprint string,
+	reasonCode string,
+	ttl time.Duration,
+) (*Envelope, PrincipalGovernancePayload, error) {
+	alg := replacement.Alg
+	if alg == "" {
+		alg = crypto.AlgEd25519
+	}
+	if reasonCode == "" {
+		reasonCode = "ATOMIC_DUAL_KEY_ROTATION_AND_REVOCATION"
+	}
+	return DraftGovernanceEnvelope(GovActionRotateAndRevokePrincipal, PrincipalGovernancePayload{
+		PrincipalID:          replacement.PrincipalID,
+		Email:                replacement.Email,
+		DisplayName:          replacement.DisplayName,
+		Role:                 replacement.Role,
+		KeyID:                replacement.KeyID,
+		Alg:                  alg,
+		PublicKeyB64:         replacement.PublicKeyB64,
 		TargetPrincipalID:    targetPrincipalID,
 		TargetKeyFingerprint: targetKeyFingerprint,
 		ReasonCode:           reasonCode,

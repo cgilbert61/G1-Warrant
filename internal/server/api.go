@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/cgilbert61/G1-Warrant/internal/crypto"
+	"github.com/cgilbert61/G1-Warrant/internal/db"
 	"github.com/cgilbert61/G1-Warrant/internal/models"
 	webui "github.com/cgilbert61/G1-Warrant/web"
 	"github.com/google/uuid"
@@ -131,7 +133,7 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		ctx := r.Context()
 		rawBody, err := readBoundedBody(w, r, 1<<20)
 		if err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
+			writeAPIError(w, statusForBodyReadError(err), err)
 			return
 		}
 		actor := ""
@@ -154,11 +156,12 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			actor = "bootstrap-admin-token"
 		}
 
-		st, err := o.Store.SealBootstrap(ctx, actor, "EXPLICIT_BOOTSTRAP_SEAL")
+		st, err := o.Store.SealBootstrap(ctx, actor, "EXPLICIT_BOOTSTRAP_SEAL", o.N5Ledger.Signer())
 		if err != nil {
 			writeAPIError(w, http.StatusPreconditionFailed, err)
 			return
 		}
+		_, _ = o.N5Ledger.CreateCheckpoint(ctx)
 		o.Broker.Broadcast("BOOTSTRAP_SEALED", st)
 		writeAPIJSON(w, http.StatusOK, st)
 	})
@@ -171,7 +174,7 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		ctx := r.Context()
 		rawBody, err := readBoundedBody(w, r, 1<<20)
 		if err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
+			writeAPIError(w, statusForBodyReadError(err), err)
 			return
 		}
 		if pkErr := rejectPrivateKeyFields(rawBody); pkErr != nil {
@@ -189,6 +192,8 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			PublicKeyB64 string `json:"public_key_b64"`
 		}
 
+		var govEnvPtr *crypto.Envelope
+		lineageMode := models.LineageModeGenesisSealed
 		if env, isDSSE, dErr := extractGovernanceDSSEFromRequest(r, rawBody); isDSSE {
 			if dErr != nil {
 				writeAPIError(w, http.StatusBadRequest, dErr)
@@ -199,6 +204,9 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 				writeAPIError(w, http.StatusUnprocessableEntity, vErr)
 				return
 			}
+			envCopy := env
+			govEnvPtr = &envCopy
+			lineageMode = models.LineageModePostSeal2Of2
 			req.PrincipalID = gp.PrincipalID
 			req.Email = gp.Email
 			req.DisplayName = gp.DisplayName
@@ -247,7 +255,7 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			AuthenticatorMode: "ED25519_ENROLLED",
 			CreatedAt:         time.Now().UTC(),
 		}
-		if err := o.Store.AppendPrincipal(ctx, &p); err != nil {
+		if err := o.Store.AppendPrincipalWithLineage(ctx, &p, lineageMode, govEnvPtr); err != nil {
 			writeAPIError(w, http.StatusConflict, err)
 			return
 		}
@@ -262,7 +270,7 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		ctx := r.Context()
 		rawBody, err := readBoundedBody(w, r, 1<<20)
 		if err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
+			writeAPIError(w, statusForBodyReadError(err), err)
 			return
 		}
 		if pkErr := rejectPrivateKeyFields(rawBody); pkErr != nil {
@@ -279,6 +287,8 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			PublicKeySPKI     string `json:"public_key_spki"`
 		}
 
+		var govEnvPtr *crypto.Envelope
+		lineageMode := models.LineageModeGenesisSealed
 		if env, isDSSE, dErr := extractGovernanceDSSEFromRequest(r, rawBody); isDSSE {
 			if dErr != nil {
 				writeAPIError(w, http.StatusBadRequest, dErr)
@@ -289,6 +299,9 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 				writeAPIError(w, http.StatusUnprocessableEntity, vErr)
 				return
 			}
+			envCopy := env
+			govEnvPtr = &envCopy
+			lineageMode = models.LineageModePostSeal2Of2
 			req.DisplayName = gp.DisplayName
 			req.Email = gp.Email
 			req.Role = gp.Role
@@ -329,7 +342,7 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			CredentialID:      req.CredentialID,
 			CreatedAt:         time.Now().UTC(),
 		}
-		if err := o.Store.AppendPrincipal(ctx, &p); err != nil {
+		if err := o.Store.AppendPrincipalWithLineage(ctx, &p, lineageMode, govEnvPtr); err != nil {
 			writeAPIError(w, http.StatusConflict, err)
 			return
 		}
@@ -338,30 +351,85 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		writeAPIJSON(w, http.StatusCreated, p)
 	})
 
-	// POST /api/v1/principals/revoke enforces Asymmetric 1-of-2 DSSE Principal Governance:
-	// ANY single active enrolled principal (SERVICE_OWNER or AUTHORIZING_OFFICIAL) can immediately revoke a compromised/lost key,
-	// while unauthenticated network callers are rejected fail-closed.
+	// POST /api/v1/principals/revoke enforces Quorum Survivor Floor + same-role/self 1-of-2 DSSE rules
+	// (returning HTTP 409 QUORUM_SURVIVOR_FLOOR_VIOLATION on cross-role or last-survivor 1-of-2 revocation)
+	// and also accepts atomic 2-of-2 ROTATE_AND_REVOKE_PRINCIPAL (or 2-of-2 REVOKE_PRINCIPAL when survivor floor holds).
 	mux.HandleFunc("POST /api/v1/principals/revoke", func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		rawBody, err := readBoundedBody(w, r, 1<<20)
 		if err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
+			writeAPIError(w, statusForBodyReadError(err), err)
+			return
+		}
+		if pkErr := rejectPrivateKeyFields(rawBody); pkErr != nil {
+			writeAPIError(w, http.StatusBadRequest, pkErr)
 			return
 		}
 		env, isDSSE, dErr := extractGovernanceDSSEFromRequest(r, rawBody)
 		if !isDSSE {
-			writeAPIError(w, http.StatusUnauthorized, fmt.Errorf("MISSING_REVOCATION_DSSE_SIGNATURE: POST /api/v1/principals/revoke requires a 1-of-2 DSSE Principal Governance envelope signed by an active principal"))
+			writeAPIError(w, http.StatusUnauthorized, fmt.Errorf("MISSING_REVOCATION_DSSE_SIGNATURE: POST /api/v1/principals/revoke requires a signed DSSE Principal Governance envelope"))
 			return
 		}
 		if dErr != nil {
 			writeAPIError(w, http.StatusBadRequest, dErr)
 			return
 		}
-		gp, singleRes, vErr := o.N1Warrant.VerifySingleGovernanceEnvelope(ctx, env, models.GovActionRevokePrincipal)
-		if vErr != nil {
-			writeAPIError(w, http.StatusUnprocessableEntity, vErr)
+
+		var peekAction struct {
+			Action string `json:"action"`
+		}
+		if rawP, pErr := env.DecodePayload(); pErr == nil {
+			_ = json.Unmarshal(rawP, &peekAction)
+		}
+
+		// Atomic 2-of-2 ROTATE_AND_REVOKE_PRINCIPAL accepted on /api/v1/principals/revoke as well as /api/v1/principals/rotate-and-revoke
+		if peekAction.Action == models.GovActionRotateAndRevokePrincipal {
+			enrolledP, rev, rotErr := o.N1Warrant.RotateAndRevokePrincipal(ctx, env)
+			if rotErr != nil {
+				if db.IsQuorumSurvivorFloorError(rotErr) {
+					writeAPIError(w, http.StatusConflict, rotErr)
+					return
+				}
+				writeAPIError(w, http.StatusUnprocessableEntity, rotErr)
+				return
+			}
+			_, _ = o.N5Ledger.CreateCheckpoint(ctx)
+			writeAPIJSON(w, http.StatusCreated, map[string]any{
+				"enrolled_principal": enrolledP,
+				"revocation":         rev,
+			})
 			return
 		}
+
+		var gp *models.PrincipalGovernancePayload
+		var signerID, signerRole string
+		isDual := len(env.Signatures) >= 2
+		if isDual {
+			var dualRes *crypto.DualHumanVerificationResult
+			var vErr error
+			gp, dualRes, vErr = o.N1Warrant.VerifyDualGovernanceEnvelope(ctx, env, models.GovActionRevokePrincipal)
+			if vErr != nil {
+				writeAPIError(w, http.StatusUnprocessableEntity, vErr)
+				return
+			}
+			signerID = dualRes.Slot1.PrincipalID + "+" + dualRes.Slot2.PrincipalID
+		} else {
+			var singleRes *crypto.SinglePrincipalVerificationResult
+			var vErr error
+			gp, singleRes, vErr = o.N1Warrant.VerifySingleGovernanceEnvelope(ctx, env, models.GovActionRevokePrincipal)
+			if vErr != nil {
+				writeAPIError(w, http.StatusUnprocessableEntity, vErr)
+				return
+			}
+			if (gp.HTTPMethod != "" && !strings.EqualFold(gp.HTTPMethod, http.MethodPost)) ||
+				(gp.CanonicalPath != "" && gp.CanonicalPath != r.URL.Path) {
+				writeAPIError(w, http.StatusUnauthorized, fmt.Errorf("DSSE_REQUEST_SCOPE_OR_NONCE_VIOLATION: revocation envelope request scope mismatch"))
+				return
+			}
+			signerID = singleRes.Signer.PrincipalID
+			signerRole = singleRes.Signer.Role
+		}
+
 		targetID := strings.TrimSpace(gp.TargetPrincipalID)
 		if targetID == "" {
 			targetID = strings.TrimSpace(gp.PrincipalID)
@@ -375,14 +443,55 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		if reasonCode == "" {
 			reasonCode = "ROLE_DEPARTURE_OR_PIV_REVOCATION"
 		}
-		revokedBy := singleRes.Signer.PrincipalID
-		rev, err := o.N1Warrant.RevokeSigner(ctx, targetID, targetFP, reasonCode, revokedBy)
+		rev, err := o.N1Warrant.RevokeSignerWithGovernance(ctx, targetID, targetFP, reasonCode, signerID, signerRole, isDual, &env)
 		if err != nil {
+			if db.IsQuorumSurvivorFloorError(err) {
+				writeAPIError(w, http.StatusConflict, err)
+				return
+			}
 			writeAPIError(w, http.StatusUnprocessableEntity, err)
 			return
 		}
 		_, _ = o.N5Ledger.CreateCheckpoint(ctx)
 		writeAPIJSON(w, http.StatusCreated, rev)
+	})
+
+	// POST /api/v1/principals/rotate-and-revoke executes an atomic 2-of-2 ROTATE_AND_REVOKE_PRINCIPAL ceremony
+	// (enrolling the replacement key and revoking the target key in a single serialized transaction).
+	mux.HandleFunc("POST /api/v1/principals/rotate-and-revoke", func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		rawBody, err := readBoundedBody(w, r, 1<<20)
+		if err != nil {
+			writeAPIError(w, statusForBodyReadError(err), err)
+			return
+		}
+		if pkErr := rejectPrivateKeyFields(rawBody); pkErr != nil {
+			writeAPIError(w, http.StatusBadRequest, pkErr)
+			return
+		}
+		env, isDSSE, dErr := extractGovernanceDSSEFromRequest(r, rawBody)
+		if !isDSSE {
+			writeAPIError(w, http.StatusUnauthorized, fmt.Errorf("MISSING_ROTATION_DSSE_SIGNATURE: POST /api/v1/principals/rotate-and-revoke requires a 2-of-2 ROTATE_AND_REVOKE_PRINCIPAL DSSE envelope"))
+			return
+		}
+		if dErr != nil {
+			writeAPIError(w, http.StatusBadRequest, dErr)
+			return
+		}
+		enrolledP, rev, rotErr := o.N1Warrant.RotateAndRevokePrincipal(ctx, env)
+		if rotErr != nil {
+			if db.IsQuorumSurvivorFloorError(rotErr) {
+				writeAPIError(w, http.StatusConflict, rotErr)
+				return
+			}
+			writeAPIError(w, http.StatusUnprocessableEntity, rotErr)
+			return
+		}
+		_, _ = o.N5Ledger.CreateCheckpoint(ctx)
+		writeAPIJSON(w, http.StatusCreated, map[string]any{
+			"enrolled_principal": enrolledP,
+			"revocation":         rev,
+		})
 	})
 
 	// N1 Standing Warrants
@@ -398,7 +507,7 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 	mux.HandleFunc("POST /api/v1/warrants", func(w http.ResponseWriter, r *http.Request) {
 		var env crypto.Envelope
 		if err := decodeJSONBody(w, r, &env); err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
+			writeAPIError(w, statusForBodyReadError(err), err)
 			return
 		}
 		rec, err := o.N1Warrant.SubmitDualSignedWarrant(r.Context(), env)
@@ -431,7 +540,7 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		ctx := r.Context()
 		rawBody, err := readBoundedBody(w, r, 1<<20)
 		if err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
+			writeAPIError(w, statusForBodyReadError(err), err)
 			return
 		}
 		actor, gp, code, authErr := o.VerifyOperatorOrSinglePrincipalAuth(ctx, r, models.GovActionEmergencyFreeze, rawBody)
@@ -473,7 +582,7 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 	mux.HandleFunc("POST /api/v1/freeze/thaw", func(w http.ResponseWriter, r *http.Request) {
 		var env crypto.Envelope
 		if err := decodeJSONBody(w, r, &env); err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
+			writeAPIError(w, statusForBodyReadError(err), err)
 			return
 		}
 		fs, err := o.N1Warrant.ThawEmergencyFreeze(r.Context(), env)
@@ -503,13 +612,13 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		writeAPIJSON(w, http.StatusOK, traces)
 	})
 
-	// Atomic 3-Step Quarantined Rollback (Contain-Before-Unban) — Authenticated Operator or 1-of-2 Active Principal Required
+	// Atomic 3-Step Quarantined Rollback (Contain-Before-Unban) — Individual 1-of-2 Active Principal Required in Live/K8s
 	mux.HandleFunc("POST /api/v1/pipeline/{id}/emergency-rollback", func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		remID := r.PathValue("id")
 		rawBody, err := readBoundedBody(w, r, 1<<20)
 		if err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
+			writeAPIError(w, statusForBodyReadError(err), err)
 			return
 		}
 		actor, gp, code, authErr := o.VerifyOperatorOrSinglePrincipalAuth(ctx, r, models.GovActionEmergencyRollback, rawBody)
@@ -520,7 +629,7 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		reason := ""
 		if gp != nil {
 			if gp.RemediationID != "" && gp.RemediationID != remID {
-				writeAPIError(w, http.StatusUnprocessableEntity, fmt.Errorf("GOVERNANCE_TARGET_MISMATCH: signed remediation_id %q != URL %q", gp.RemediationID, remID))
+				writeAPIError(w, http.StatusUnauthorized, fmt.Errorf("DSSE_REQUEST_SCOPE_OR_NONCE_VIOLATION: signed remediation_id %q != URL %q", gp.RemediationID, remID))
 				return
 			}
 			reason = gp.ReasonCode
@@ -545,10 +654,9 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			writeAPIError(w, code, authErr)
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, 8<<20)
-		raw, err := io.ReadAll(r.Body)
+		raw, err := readBoundedBody(w, r, 8<<20)
 		if err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
+			writeAPIError(w, statusForBodyReadError(err), err)
 			return
 		}
 		q := r.URL.Query()
@@ -575,10 +683,9 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			writeAPIError(w, code, authErr)
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
-		raw, err := io.ReadAll(r.Body)
+		raw, err := readBoundedBody(w, r, 4<<20)
 		if err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
+			writeAPIError(w, statusForBodyReadError(err), err)
 			return
 		}
 		targetSvc := r.URL.Query().Get("target_service")
@@ -592,10 +699,9 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 
 	// Cilium Tetragon / eBPF Runtime Container Filesystem & Process Immutability Webhook (Dedicated Sensor Auth Required)
 	mux.HandleFunc("POST /api/v1/telemetry/tetragon", func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-		rawBody, err := io.ReadAll(r.Body)
+		rawBody, err := readBoundedBody(w, r, 1<<20)
 		if err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
+			writeAPIError(w, statusForBodyReadError(err), err)
 			return
 		}
 		if code, authErr := o.VerifyTetragonSensorAuth(r, rawBody); authErr != nil {
@@ -639,10 +745,10 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		ctx := r.Context()
 		rawBody, err := readBoundedBody(w, r, 1<<20)
 		if err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
+			writeAPIError(w, statusForBodyReadError(err), err)
 			return
 		}
-		if _, _, code, authErr := o.VerifyOperatorOrSinglePrincipalAuth(ctx, r, models.GovActionFeedMutation, rawBody); authErr != nil {
+		if _, _, code, authErr := o.VerifyAutomationOrPrincipalAuth(ctx, r, models.GovActionFeedMutation, rawBody); authErr != nil {
 			writeAPIError(w, code, authErr)
 			return
 		}
@@ -661,8 +767,12 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 
 	mux.HandleFunc("POST /api/v1/feeds/sync/kev", func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		rawBody, _ := readBoundedBody(w, r, 1<<20)
-		if _, _, code, authErr := o.VerifyOperatorOrSinglePrincipalAuth(ctx, r, models.GovActionFeedMutation, rawBody); authErr != nil {
+		rawBody, err := readBoundedBody(w, r, 1<<20)
+		if err != nil {
+			writeAPIError(w, statusForBodyReadError(err), err)
+			return
+		}
+		if _, _, code, authErr := o.VerifyAutomationOrPrincipalAuth(ctx, r, models.GovActionFeedMutation, rawBody); authErr != nil {
 			writeAPIError(w, code, authErr)
 			return
 		}
@@ -676,8 +786,12 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 
 	mux.HandleFunc("POST /api/v1/feeds/sync/osv", func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		rawBody, _ := readBoundedBody(w, r, 1<<20)
-		if _, _, code, authErr := o.VerifyOperatorOrSinglePrincipalAuth(ctx, r, models.GovActionFeedMutation, rawBody); authErr != nil {
+		rawBody, err := readBoundedBody(w, r, 1<<20)
+		if err != nil {
+			writeAPIError(w, statusForBodyReadError(err), err)
+			return
+		}
+		if _, _, code, authErr := o.VerifyAutomationOrPrincipalAuth(ctx, r, models.GovActionFeedMutation, rawBody); authErr != nil {
 			writeAPIError(w, code, authErr)
 			return
 		}
@@ -701,10 +815,10 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		ctx := r.Context()
 		rawBody, err := readBoundedBody(w, r, 1<<20)
 		if err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
+			writeAPIError(w, statusForBodyReadError(err), err)
 			return
 		}
-		if _, _, code, authErr := o.VerifyOperatorOrSinglePrincipalAuth(ctx, r, models.GovActionFeedMutation, rawBody); authErr != nil {
+		if _, _, code, authErr := o.VerifyAutomationOrPrincipalAuth(ctx, r, models.GovActionFeedMutation, rawBody); authErr != nil {
 			writeAPIError(w, code, authErr)
 			return
 		}
@@ -731,7 +845,11 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			writeAPIError(w, http.StatusForbidden, fmt.Errorf("%s", reason))
 			return
 		}
-		rawBody, _ := readBoundedBody(w, r, 1<<20)
+		rawBody, err := readBoundedBody(w, r, 1<<20)
+		if err != nil {
+			writeAPIError(w, statusForBodyReadError(err), err)
+			return
+		}
 		if _, _, code, authErr := o.VerifyOperatorOrSinglePrincipalAuth(ctx, r, models.GovActionSimulationDrill, rawBody); authErr != nil {
 			writeAPIError(w, code, authErr)
 			return
@@ -895,7 +1013,7 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			DSSEEnvelope crypto.Envelope `json:"dsse_envelope"`
 		}
 		if err := decodeJSONBody(w, r, &req); err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
+			writeAPIError(w, statusForBodyReadError(err), err)
 			return
 		}
 		ex, rem, err := o.ApproveOrRejectException(r.Context(), r.PathValue("id"), req.Decision, req.DSSEEnvelope)
@@ -997,12 +1115,12 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		writeAPIError(w, http.StatusNotFound, fmt.Errorf("attestation %q not found", id))
 	})
 
-	// POST /api/v1/auditor-tokens — Authenticated Operator or 1-of-2 Active Principal Required
+	// POST /api/v1/auditor-tokens — Individual 1-of-2 Active Principal Required in Live/K8s (NIST AU-10)
 	mux.HandleFunc("POST /api/v1/auditor-tokens", func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		rawBody, err := readBoundedBody(w, r, 1<<20)
 		if err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
+			writeAPIError(w, statusForBodyReadError(err), err)
 			return
 		}
 		actor, gp, code, authErr := o.VerifyOperatorOrSinglePrincipalAuth(ctx, r, models.GovActionMintAuditorToken, rawBody)
@@ -1065,13 +1183,21 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 
 	mux.HandleFunc("POST /api/v1/ledger/checkpoints", func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		rawBody, _ := readBoundedBody(w, r, 1<<20)
-		if _, _, code, authErr := o.VerifyOperatorOrSinglePrincipalAuth(ctx, r, models.GovActionCreateCheckpoint, rawBody); authErr != nil {
+		rawBody, err := readBoundedBody(w, r, 1<<20)
+		if err != nil {
+			writeAPIError(w, statusForBodyReadError(err), err)
+			return
+		}
+		if _, _, code, authErr := o.VerifyAutomationOrPrincipalAuth(ctx, r, models.GovActionCreateCheckpoint, rawBody); authErr != nil {
 			writeAPIError(w, code, authErr)
 			return
 		}
 		cp, err := o.N5Ledger.CreateCheckpoint(ctx)
 		if err != nil {
+			if db.IsUnattestedAuthorityLineageError(err) {
+				writeAPIError(w, http.StatusConflict, err)
+				return
+			}
 			writeAPIError(w, http.StatusUnprocessableEntity, err)
 			return
 		}
@@ -1197,6 +1323,14 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) error {
 	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 	defer r.Body.Close()
 	return json.NewDecoder(r.Body).Decode(dst)
+}
+
+func statusForBodyReadError(err error) int {
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		return http.StatusRequestEntityTooLarge
+	}
+	return http.StatusBadRequest
 }
 
 func decodeStrictJSONBytes(raw []byte, dst any) error {

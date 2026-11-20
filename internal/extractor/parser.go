@@ -700,7 +700,7 @@ func NewHTTPHandler(extractorDigest string) http.Handler {
 	mux.HandleFunc("POST /extract/sarif", func(w http.ResponseWriter, r *http.Request) {
 		body, err := readBounded(w, r, 8<<20)
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeJSON(w, statusForExtractorReadErr(err), map[string]string{"error": err.Error()})
 			return
 		}
 		maxFindings := 0
@@ -724,7 +724,7 @@ func NewHTTPHandler(extractorDigest string) http.Handler {
 	mux.HandleFunc("POST /extract/cisa-kev", func(w http.ResponseWriter, r *http.Request) {
 		body, err := readBounded(w, r, 16<<20)
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeJSON(w, statusForExtractorReadErr(err), map[string]string{"error": err.Error()})
 			return
 		}
 		res, err := ParseUntrustedCISAKEV(body, extractorDigest)
@@ -737,7 +737,7 @@ func NewHTTPHandler(extractorDigest string) http.Handler {
 	mux.HandleFunc("POST /extract/osv", func(w http.ResponseWriter, r *http.Request) {
 		body, err := readBounded(w, r, 8<<20)
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeJSON(w, statusForExtractorReadErr(err), map[string]string{"error": err.Error()})
 			return
 		}
 		res, err := ParseUntrustedOSVBundle(body, extractorDigest)
@@ -750,7 +750,7 @@ func NewHTTPHandler(extractorDigest string) http.Handler {
 	mux.HandleFunc("POST /extract/diff", func(w http.ResponseWriter, r *http.Request) {
 		body, err := readBounded(w, r, 4<<20)
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeJSON(w, statusForExtractorReadErr(err), map[string]string{"error": err.Error()})
 			return
 		}
 		res, err := ParseUntrustedDiff(body, extractorDigest)
@@ -763,7 +763,7 @@ func NewHTTPHandler(extractorDigest string) http.Handler {
 	mux.HandleFunc("POST /extract/advisory", func(w http.ResponseWriter, r *http.Request) {
 		body, err := readBounded(w, r, 2<<20)
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeJSON(w, statusForExtractorReadErr(err), map[string]string{"error": err.Error()})
 			return
 		}
 		res, err := ParseUntrustedAdvisory(body, extractorDigest)
@@ -776,7 +776,7 @@ func NewHTTPHandler(extractorDigest string) http.Handler {
 	mux.HandleFunc("POST /extract/secrets", func(w http.ResponseWriter, r *http.Request) {
 		body, err := readBounded(w, r, 4<<20)
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeJSON(w, statusForExtractorReadErr(err), map[string]string{"error": err.Error()})
 			return
 		}
 		defaultSvc := r.URL.Query().Get("target_service")
@@ -986,6 +986,14 @@ func readBounded(w http.ResponseWriter, r *http.Request, maxBytes int64) ([]byte
 		}
 	}
 	return buf, nil
+}
+
+func statusForExtractorReadErr(err error) int {
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		return http.StatusRequestEntityTooLarge
+	}
+	return http.StatusBadRequest
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

@@ -41,6 +41,7 @@ export const CommandBar: React.FC<CommandBarProps> = ({
   const [freezeActor, setFreezeActor] = useState('ops-duty-officer@g1163rt.sec');
   const [freezeReason, setFreezeReason] = useState('ANOMALOUS_UPSTREAM_TELEMETRY');
   const [submittingFreeze, setSubmittingFreeze] = useState(false);
+  const [freezeError, setFreezeError] = useState<string | null>(null);
 
   const fs = scoreboard.freeze_state;
   const isFrozen = fs.mode !== 'OPERATIONAL';
@@ -69,9 +70,12 @@ export const CommandBar: React.FC<CommandBarProps> = ({
 
   const submitFreeze = async () => {
     setSubmittingFreeze(true);
+    setFreezeError(null);
     try {
       await onTriggerFreeze(freezeMode, freezeActor, freezeReason);
       setShowFreezeModal(false);
+    } catch (err) {
+      setFreezeError(err instanceof Error ? err.message : 'Emergency freeze failed');
     } finally {
       setSubmittingFreeze(false);
     }
@@ -361,6 +365,12 @@ export const CommandBar: React.FC<CommandBarProps> = ({
               </div>
             </div>
 
+            {freezeError && (
+              <div role="alert" className="p-2.5 rounded border border-red-400 bg-red-50 text-red-950 text-xs font-mono">
+                {freezeError}
+              </div>
+            )}
+
             <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
               <button
                 type="button"
@@ -413,11 +423,18 @@ export const CommandBar: React.FC<CommandBarProps> = ({
             <DualKeyCeremonyPanel
               title="DSSE Freeze-Thaw Authorization Envelope"
               payloadType="application/vnd.g1163rt.freeze-thaw.v1+json"
-              buildPayload={() => ({
-                action: 'THAW_FLEET',
-                previous_mode: fs.mode,
-                requested_at: new Date().toISOString(),
-              })}
+              buildPayload={() => {
+                const now = new Date();
+                const exp = new Date(now.getTime() + 15 * 60 * 1000);
+                const suffix = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+                return {
+                  envelope_id: `thaw-ui-${suffix}`,
+                  action: 'THAW',
+                  freeze_epoch: fs.freeze_epoch || 2,
+                  issued_at: now.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+                  expires_at: exp.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+                };
+              }}
               testPersonas={testPersonas}
               principals={principals}
               rpId={rpId}

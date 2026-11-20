@@ -16,6 +16,7 @@ from .crypto import (
     draft_governance_envelope,
     draft_principal_enroll_envelope,
     draft_principal_revoke_envelope,
+    draft_principal_rotate_and_revoke_envelope,
     draft_thaw_envelope,
     draft_warrant_envelope,
     dsse_pae,
@@ -26,7 +27,7 @@ from .crypto import (
     write_split_keypair_files,
 )
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 __all__ = [
     "__version__",
@@ -53,6 +54,7 @@ __all__ = [
     "draft_governance_envelope",
     "draft_principal_enroll_envelope",
     "draft_principal_revoke_envelope",
+    "draft_principal_rotate_and_revoke_envelope",
     "verify_oscal_bundle_offline",
     "verify_oscal_bundle_with_keyring",
 ]

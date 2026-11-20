@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -55,6 +57,72 @@ func NewEphemeralEd25519Signer() (*MemoryEd25519Signer, error) {
 func NewSeededDevEd25519Signer(seed string) *MemoryEd25519Signer {
 	pk, priv := KernelKeypair(seed)
 	return &MemoryEd25519Signer{pub: pk, priv: priv, mode: "DEV_SEEDED_MEMORY_ED25519"}
+}
+
+// LoadOrCreateFileEd25519Signer loads an existing 0600 local kernel Ed25519 keypair from path
+// or generates and atomically persists a new one on first boot so non-KMS Docker restarts retain seq_no=1.
+func LoadOrCreateFileEd25519Signer(path string) (*MemoryEd25519Signer, error) {
+	type persistedKernelKey struct {
+		KeyID         string `json:"key_id"`
+		PublicKeyB64  string `json:"public_key_b64"`
+		PrivateKeyB64 string `json:"private_key_b64"`
+	}
+	if raw, err := os.ReadFile(path); err == nil && len(bytes.TrimSpace(raw)) > 0 {
+		var saved persistedKernelKey
+		if err := json.Unmarshal(raw, &saved); err != nil {
+			return nil, fmt.Errorf("parse kernel key file %s: %w", path, err)
+		}
+		privBytes, err := DecodeBase64Any(saved.PrivateKeyB64)
+		if err != nil || len(privBytes) != ed25519.PrivateKeySize {
+			return nil, fmt.Errorf("invalid Ed25519 private key in %s", path)
+		}
+		pubBytes := ed25519.PrivateKey(privBytes).Public().(ed25519.PublicKey)
+		fp := SHA256Hex(pubBytes)
+		keyID := strings.TrimSpace(saved.KeyID)
+		if keyID == "" {
+			keyID = "kernel-ed25519-" + fp[:12]
+		}
+		return &MemoryEd25519Signer{
+			pub: PrincipalKey{
+				PrincipalID:    "sys-warrantd-kernel",
+				Email:          "kernel-seal@g1163rt.sec",
+				DisplayName:    "G1-Warrant Sealed Local Kernel Key",
+				Role:           RoleAttestationKernel,
+				KeyID:          keyID,
+				Alg:            AlgEd25519,
+				PublicKeyBytes: pubBytes,
+				KeyFingerprint: fp,
+			},
+			priv: ed25519.PrivateKey(privBytes),
+			mode: "PERSISTED_LOCAL_ED25519",
+		}, nil
+	}
+
+	m, err := NewEphemeralEd25519Signer()
+	if err != nil {
+		return nil, err
+	}
+	m.mode = "PERSISTED_LOCAL_ED25519"
+	if mkErr := os.MkdirAll(filepath.Dir(path), 0o700); mkErr != nil {
+		return nil, fmt.Errorf("mkdir kernel key dir: %w", mkErr)
+	}
+	b, err := json.MarshalIndent(persistedKernelKey{
+		KeyID:         m.pub.KeyID,
+		PublicKeyB64:  base64.StdEncoding.EncodeToString(m.pub.PublicKeyBytes),
+		PrivateKeyB64: base64.StdEncoding.EncodeToString(m.priv),
+	}, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, b, 0o600); err != nil {
+		return nil, fmt.Errorf("write kernel key file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return nil, fmt.Errorf("commit kernel key file: %w", err)
+	}
+	return m, nil
 }
 
 func (m *MemoryEd25519Signer) PublicKey() PrincipalKey {

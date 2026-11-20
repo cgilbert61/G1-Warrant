@@ -10,7 +10,7 @@ import (
 )
 
 // Version is the semantic version of the G1-Warrant Go SDK.
-const Version = "1.0.1"
+const Version = "1.0.2"
 
 // Re-exported protocol constants for callers outside internal/.
 const (
@@ -29,19 +29,22 @@ const (
 	PayloadTypeException           = crypto.PayloadTypeException
 	PayloadTypeAttestation         = crypto.PayloadTypeAttestation
 	PayloadTypePrincipalGovernance = crypto.PayloadTypePrincipalGovernance
+	PayloadTypeGenesisSeal         = crypto.PayloadTypeGenesisSeal
+	PayloadTypeKernelKeyRotation   = crypto.PayloadTypeKernelKeyRotation
 
 	WarrantClassSecretRotation = models.WarrantClassSecretRotation
 	AssuranceTierSecretRotated = models.AssuranceTierSecretRotated
 
-	GovActionEnrollPrincipal   = models.GovActionEnrollPrincipal
-	GovActionRevokePrincipal   = models.GovActionRevokePrincipal
-	GovActionSealBootstrap     = models.GovActionSealBootstrap
-	GovActionEmergencyFreeze   = models.GovActionEmergencyFreeze
-	GovActionEmergencyRollback = models.GovActionEmergencyRollback
-	GovActionMintAuditorToken  = models.GovActionMintAuditorToken
-	GovActionFeedMutation      = models.GovActionFeedMutation
-	GovActionCreateCheckpoint  = models.GovActionCreateCheckpoint
-	GovActionSimulationDrill   = models.GovActionSimulationDrill
+	GovActionEnrollPrincipal          = models.GovActionEnrollPrincipal
+	GovActionRevokePrincipal          = models.GovActionRevokePrincipal
+	GovActionRotateAndRevokePrincipal = models.GovActionRotateAndRevokePrincipal
+	GovActionSealBootstrap            = models.GovActionSealBootstrap
+	GovActionEmergencyFreeze          = models.GovActionEmergencyFreeze
+	GovActionEmergencyRollback        = models.GovActionEmergencyRollback
+	GovActionMintAuditorToken         = models.GovActionMintAuditorToken
+	GovActionFeedMutation             = models.GovActionFeedMutation
+	GovActionCreateCheckpoint         = models.GovActionCreateCheckpoint
+	GovActionSimulationDrill          = models.GovActionSimulationDrill
 )
 
 // Public type aliases re-exported cleanly for external Go SDK consumers.
@@ -54,6 +57,9 @@ type (
 	Principal                  = models.Principal
 	PrincipalRevocation        = models.PrincipalRevocation
 	PrincipalGovernancePayload = models.PrincipalGovernancePayload
+	ThawPayload                = models.ThawPayload
+	ExceptionResolutionPayload = models.ExceptionResolutionPayload
+	KernelKeyRotationPayload   = models.KernelKeyRotationPayload
 	WarrantPayload           = models.WarrantPayload
 	WarrantRecord            = models.WarrantRecord
 	FreezeState              = models.FreezeState
@@ -122,6 +128,12 @@ type RevokePrincipalRequest struct {
 	KeyFingerprint string `json:"key_fingerprint"`
 	ReasonCode     string `json:"reason_code"`
 	RevokedBy      string `json:"revoked_by"`
+}
+
+// RotateAndRevokeResult represents the atomic response from POST /api/v1/principals/rotate-and-revoke.
+type RotateAndRevokeResult struct {
+	EnrolledPrincipal Principal           `json:"enrolled_principal"`
+	Revocation        PrincipalRevocation `json:"revocation"`
 }
 
 // RegisterPrincipalRequest carries public identity material (never private keys) to POST /api/v1/principals/register.

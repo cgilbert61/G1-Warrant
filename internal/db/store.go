@@ -31,7 +31,21 @@ const (
 
 // Store manages PostgreSQL persistence, append-only hash chains, and LISTEN/NOTIFY streams.
 type Store struct {
-	pool *pgxpool.Pool
+	pool        *pgxpool.Pool
+	webauthnCfg crypto.WebAuthnConfig
+}
+
+// SetWebAuthnConfig binds the control-plane WebAuthn relying-party configuration for lineage replay verification.
+func (s *Store) SetWebAuthnConfig(cfg crypto.WebAuthnConfig) {
+	s.webauthnCfg = cfg
+}
+
+// WebAuthnConfig returns the configured WebAuthnConfig or DefaultWebAuthnConfig.
+func (s *Store) WebAuthnConfig() crypto.WebAuthnConfig {
+	if s.webauthnCfg.RPID == "" && len(s.webauthnCfg.AllowedOrigins) == 0 {
+		return crypto.DefaultWebAuthnConfig()
+	}
+	return s.webauthnCfg
 }
 
 // NewStore connects to PostgreSQL and verifies connectivity.
@@ -133,19 +147,30 @@ func ComputeKernelKeyEntryHash(prevHash, keyID, alg, pubB64, keyFP, backendMode 
 	return crypto.SHA256Hex([]byte(material))
 }
 
-// AppendPrincipal enrolls a new principal in the append-only, hash-chained principals registry.
-// Enforces unique principal_id, email, public_key_b64, and key_fingerprint, and blocks re-enrolling revoked keys.
+// AppendPrincipal enrolls a new genesis principal in the append-only, hash-chained principals registry prior to bootstrap sealing.
 func (s *Store) AppendPrincipal(ctx context.Context, p *models.Principal) error {
-	return s.insertPrincipalTx(ctx, p, false)
+	return s.insertPrincipalTx(ctx, p, false, models.LineageModeGenesisSealed, nil)
+}
+
+// AppendPrincipalWithLineage enrolls a new principal with an explicit lineage mode and authorizing 2-of-2 DSSE Governance Envelope.
+func (s *Store) AppendPrincipalWithLineage(ctx context.Context, p *models.Principal, lineageMode string, govDSSE *crypto.Envelope) error {
+	if lineageMode == "" {
+		if govDSSE != nil {
+			lineageMode = models.LineageModePostSeal2Of2
+		} else {
+			lineageMode = models.LineageModeGenesisSealed
+		}
+	}
+	return s.insertPrincipalTx(ctx, p, false, lineageMode, govDSSE)
 }
 
 // UpsertPrincipal inserts a principal if absent (idempotent only when identical public key material is already enrolled;
 // never mutates existing rows on the append-only principals chain).
 func (s *Store) UpsertPrincipal(ctx context.Context, p models.Principal) error {
-	return s.insertPrincipalTx(ctx, &p, true)
+	return s.insertPrincipalTx(ctx, &p, true, models.LineageModeGenesisSealed, nil)
 }
 
-func (s *Store) insertPrincipalTx(ctx context.Context, p *models.Principal, allowIdenticalIdempotent bool) error {
+func (s *Store) insertPrincipalTx(ctx context.Context, p *models.Principal, allowIdenticalIdempotent bool, lineageMode string, govDSSE *crypto.Envelope) error {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
@@ -170,18 +195,25 @@ func (s *Store) insertPrincipalTx(ctx context.Context, p *models.Principal, allo
 		return revErr
 	}
 
-	// Check for existing principal_id, email, public_key_b64, or key_fingerprint
+	// Check for existing principal_id, key_id, public_key_b64, key_fingerprint, or active unrevoked email
 	var existID, existEmail, existRole, existKeyID, existPubB64, existFP, existPrev, existEntry string
 	var existCreated time.Time
 	dupErr := tx.QueryRow(ctx, `
-		SELECT principal_id, email, role, key_id, public_key_b64, key_fingerprint, prev_hash, entry_hash, created_at
-		FROM principals
-		WHERE principal_id = $1
-		   OR lower(email) = lower($2)
-		   OR public_key_b64 = $3
-		   OR lower(key_fingerprint) = lower($4)
+		SELECT p.principal_id, p.email, p.role, p.key_id, p.public_key_b64, p.key_fingerprint, p.prev_hash, p.entry_hash, p.created_at
+		FROM principals p
+		WHERE p.principal_id = $1
+		   OR p.key_id = $2
+		   OR p.public_key_b64 = $3
+		   OR lower(p.key_fingerprint) = lower($4)
+		   OR (
+		       lower(p.email) = lower($5)
+		       AND NOT EXISTS (
+		           SELECT 1 FROM principal_revocations pr
+		           WHERE pr.principal_id = p.principal_id OR lower(pr.key_fingerprint) = lower(p.key_fingerprint)
+		       )
+		   )
 		LIMIT 1
-	`, p.PrincipalID, p.Email, p.PublicKeyB64, p.KeyFingerprint).Scan(
+	`, p.PrincipalID, p.KeyID, p.PublicKeyB64, p.KeyFingerprint, p.Email).Scan(
 		&existID, &existEmail, &existRole, &existKeyID, &existPubB64, &existFP, &existPrev, &existEntry, &existCreated,
 	)
 	if dupErr == nil {
@@ -203,6 +235,19 @@ func (s *Store) insertPrincipalTx(ctx context.Context, p *models.Principal, allo
 		return dupErr
 	}
 
+	var sealed bool
+	if err := tx.QueryRow(ctx, `SELECT sealed FROM bootstrap_state WHERE singleton_id = 1`).Scan(&sealed); err != nil {
+		return err
+	}
+	if sealed && govDSSE == nil {
+		return errors.New("BOOTSTRAP_SEALED_REQUIRES_DUAL_KEY_DSSE: post-seal principal enrollment requires a 2-of-2 DSSE governance envelope")
+	}
+	if sealed {
+		lineageMode = models.LineageModePostSeal2Of2
+	} else if lineageMode == "" {
+		lineageMode = models.LineageModeGenesisSealed
+	}
+
 	prevHash := GenesisHash
 	err = tx.QueryRow(ctx, `SELECT entry_hash FROM principals ORDER BY seq_no DESC LIMIT 1`).Scan(&prevHash)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -211,17 +256,27 @@ func (s *Store) insertPrincipalTx(ctx context.Context, p *models.Principal, allo
 	if p.CreatedAt.IsZero() {
 		p.CreatedAt = time.Now().UTC()
 	}
+	p.LineageMode = lineageMode
+	p.GovernanceDSSE = govDSSE
 	p.PrevHash = prevHash
 	p.EntryHash = ComputePrincipalEntryHash(prevHash, *p)
+
+	var dsseRaw []byte
+	if govDSSE != nil {
+		dsseRaw, err = crypto.CanonicalizeStruct(govDSSE)
+		if err != nil {
+			return err
+		}
+	}
 
 	_, err = tx.Exec(ctx, `
 		INSERT INTO principals (
 			principal_id, email, display_name, role, key_id, alg, public_key_b64, key_fingerprint,
-			authenticator_mode, credential_id, prev_hash, entry_hash, created_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+			authenticator_mode, credential_id, lineage_mode, governance_dsse, prev_hash, entry_hash, created_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 	`,
 		p.PrincipalID, p.Email, p.DisplayName, p.Role, p.KeyID, p.Alg, p.PublicKeyB64, p.KeyFingerprint,
-		p.AuthenticatorMode, p.CredentialID, p.PrevHash, p.EntryHash, p.CreatedAt,
+		p.AuthenticatorMode, p.CredentialID, p.LineageMode, dsseRaw, p.PrevHash, p.EntryHash, p.CreatedAt,
 	)
 	if err != nil {
 		return err
@@ -229,11 +284,12 @@ func (s *Store) insertPrincipalTx(ctx context.Context, p *models.Principal, allo
 	return tx.Commit(ctx)
 }
 
-// ListPrincipals returns all registered principals with live revocation status and hash-chain links.
+// ListPrincipals returns all registered principals with live revocation status, lineage mode, and hash-chain links.
 func (s *Store) ListPrincipals(ctx context.Context) ([]models.Principal, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT p.principal_id, p.email, p.display_name, p.role, p.key_id, p.alg,
 		       p.public_key_b64, p.key_fingerprint, p.authenticator_mode, p.credential_id,
+		       p.lineage_mode, p.governance_dsse,
 		       p.prev_hash, p.entry_hash, p.created_at,
 		       COALESCE(r.reason_code, '') AS revoke_reason,
 		       (r.revocation_id IS NOT NULL) AS is_revoked
@@ -254,66 +310,38 @@ func (s *Store) ListPrincipals(ctx context.Context) ([]models.Principal, error) 
 	out := []models.Principal{}
 	for rows.Next() {
 		var p models.Principal
+		var dsseRaw []byte
 		if err := rows.Scan(
 			&p.PrincipalID, &p.Email, &p.DisplayName, &p.Role, &p.KeyID, &p.Alg,
 			&p.PublicKeyB64, &p.KeyFingerprint, &p.AuthenticatorMode, &p.CredentialID,
+			&p.LineageMode, &dsseRaw,
 			&p.PrevHash, &p.EntryHash, &p.CreatedAt,
 			&p.RevokeReason, &p.Revoked,
 		); err != nil {
 			return nil, err
+		}
+		if len(dsseRaw) > 0 {
+			var env crypto.Envelope
+			if json.Unmarshal(dsseRaw, &env) == nil {
+				p.GovernanceDSSE = &env
+			}
 		}
 		out = append(out, p)
 	}
 	return out, rows.Err()
 }
 
-// RevokePrincipal appends a live revocation into the hash-chained principal_revocations ledger.
+// RevokePrincipal appends a revocation into principal_revocations while enforcing survivor floor and post-seal DSSE requirements.
 func (s *Store) RevokePrincipal(ctx context.Context, rev models.PrincipalRevocation) error {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, lockRevocationChain); err != nil {
-		return err
-	}
-
-	// Resolve principal_id / key_fingerprint if only one was supplied
-	if rev.PrincipalID == "" && rev.KeyFingerprint != "" {
-		_ = tx.QueryRow(ctx, `SELECT principal_id FROM principals WHERE lower(key_fingerprint) = lower($1) LIMIT 1`, rev.KeyFingerprint).Scan(&rev.PrincipalID)
-	} else if rev.PrincipalID != "" && rev.KeyFingerprint == "" {
-		_ = tx.QueryRow(ctx, `SELECT key_fingerprint FROM principals WHERE principal_id = $1 LIMIT 1`, rev.PrincipalID).Scan(&rev.KeyFingerprint)
-	}
-	if rev.PrincipalID == "" {
-		return fmt.Errorf("REVOCATION_TARGET_NOT_FOUND: principal not found")
-	}
-
-	prevHash := GenesisHash
-	err = tx.QueryRow(ctx, `SELECT entry_hash FROM principal_revocations ORDER BY seq_no DESC LIMIT 1`).Scan(&prevHash)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return err
-	}
-	if rev.RevokedAt.IsZero() {
-		rev.RevokedAt = time.Now().UTC()
-	}
-	rev.PrevHash = prevHash
-	rev.EntryHash = ComputeRevocationEntryHash(prevHash, rev)
-
-	_, err = tx.Exec(ctx, `
-		INSERT INTO principal_revocations (revocation_id, principal_id, key_fingerprint, reason_code, revoked_by, prev_hash, entry_hash, revoked_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-	`, rev.RevocationID, rev.PrincipalID, rev.KeyFingerprint, rev.ReasonCode, rev.RevokedBy, rev.PrevHash, rev.EntryHash, rev.RevokedAt)
-	if err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	_, err := s.RevokePrincipalEnforced(ctx, rev, rev.PrincipalID, "", models.LineageModeGenesisSealed, false, rev.GovernanceDSSE)
+	return err
 }
 
-// ListRevocations lists all active principal/key revocations.
+// ListRevocations lists all active principal/key revocations with lineage metadata.
 func (s *Store) ListRevocations(ctx context.Context) ([]models.PrincipalRevocation, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT revocation_id, principal_id, key_fingerprint, reason_code, revoked_by, prev_hash, entry_hash, revoked_at
+		SELECT revocation_id, principal_id, key_fingerprint, reason_code, revoked_by,
+		       lineage_mode, governance_dsse, prev_hash, entry_hash, revoked_at
 		FROM principal_revocations ORDER BY seq_no DESC
 	`)
 	if err != nil {
@@ -323,23 +351,44 @@ func (s *Store) ListRevocations(ctx context.Context) ([]models.PrincipalRevocati
 	out := []models.PrincipalRevocation{}
 	for rows.Next() {
 		var r models.PrincipalRevocation
-		if err := rows.Scan(&r.RevocationID, &r.PrincipalID, &r.KeyFingerprint, &r.ReasonCode, &r.RevokedBy, &r.PrevHash, &r.EntryHash, &r.RevokedAt); err != nil {
+		var dsseRaw []byte
+		if err := rows.Scan(
+			&r.RevocationID, &r.PrincipalID, &r.KeyFingerprint, &r.ReasonCode, &r.RevokedBy,
+			&r.LineageMode, &dsseRaw, &r.PrevHash, &r.EntryHash, &r.RevokedAt,
+		); err != nil {
 			return nil, err
+		}
+		if len(dsseRaw) > 0 {
+			var env crypto.Envelope
+			if json.Unmarshal(dsseRaw, &env) == nil {
+				r.GovernanceDSSE = &env
+			}
 		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
 }
 
-// GetBootstrapState returns whether one-shot genesis bootstrap enrollment has been sealed.
+// GetBootstrapState returns whether one-shot genesis bootstrap enrollment has been sealed along with its Genesis Seal Manifest.
 func (s *Store) GetBootstrapState(ctx context.Context) (models.BootstrapState, error) {
 	var st models.BootstrapState
+	var sealRaw []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT sealed, sealed_by, sealed_reason, sealed_at
+		SELECT sealed, sealed_by, sealed_reason, sealed_at,
+		       genesis_principal_max_seq, genesis_revocation_max_seq, genesis_manifest_sha256, genesis_seal_dsse
 		FROM bootstrap_state WHERE singleton_id = 1
-	`).Scan(&st.Sealed, &st.SealedBy, &st.SealedReason, &st.SealedAt)
+	`).Scan(
+		&st.Sealed, &st.SealedBy, &st.SealedReason, &st.SealedAt,
+		&st.GenesisPrincipalMaxSeq, &st.GenesisRevocationMaxSeq, &st.GenesisManifestSHA256, &sealRaw,
+	)
 	if err != nil {
 		return models.BootstrapState{}, err
+	}
+	if len(sealRaw) > 0 {
+		var env crypto.Envelope
+		if json.Unmarshal(sealRaw, &env) == nil {
+			st.GenesisSealDSSE = &env
+		}
 	}
 	return st, nil
 }
@@ -360,26 +409,39 @@ func (s *Store) CountActiveAC5Principals(ctx context.Context) (soCount int, aoCo
 }
 
 // SealBootstrap permanently transitions bootstrap_state.sealed = TRUE once >= 1 active SERVICE_OWNER
-// and >= 1 active AUTHORIZING_OFFICIAL are enrolled.
-func (s *Store) SealBootstrap(ctx context.Context, actor, reason string) (models.BootstrapState, error) {
+// and >= 1 active AUTHORIZING_OFFICIAL are enrolled, recording a kernel-signed Genesis Seal Manifest digest.
+func (s *Store) SealBootstrap(ctx context.Context, actor, reason string, kernelSigner ...crypto.EnvelopeSigner) (models.BootstrapState, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return models.BootstrapState{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, lockBootstrapSeal); err != nil {
-		return models.BootstrapState{}, err
+	for _, lk := range []int64{lockPrincipalChain, lockRevocationChain, lockBootstrapSeal} {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, lk); err != nil {
+			return models.BootstrapState{}, err
+		}
 	}
 
 	var cur models.BootstrapState
+	var curSealRaw []byte
 	if err := tx.QueryRow(ctx, `
-		SELECT sealed, sealed_by, sealed_reason, sealed_at
+		SELECT sealed, sealed_by, sealed_reason, sealed_at,
+		       genesis_principal_max_seq, genesis_revocation_max_seq, genesis_manifest_sha256, genesis_seal_dsse
 		FROM bootstrap_state WHERE singleton_id = 1
-	`).Scan(&cur.Sealed, &cur.SealedBy, &cur.SealedReason, &cur.SealedAt); err != nil {
+	`).Scan(
+		&cur.Sealed, &cur.SealedBy, &cur.SealedReason, &cur.SealedAt,
+		&cur.GenesisPrincipalMaxSeq, &cur.GenesisRevocationMaxSeq, &cur.GenesisManifestSHA256, &curSealRaw,
+	); err != nil {
 		return models.BootstrapState{}, err
 	}
 	if cur.Sealed {
+		if len(curSealRaw) > 0 {
+			var env crypto.Envelope
+			if json.Unmarshal(curSealRaw, &env) == nil {
+				cur.GenesisSealDSSE = &env
+			}
+		}
 		return cur, nil
 	}
 
@@ -403,22 +465,63 @@ func (s *Store) SealBootstrap(ctx context.Context, actor, reason string) (models
 		)
 	}
 
+	maxPSeq, maxRSeq, manifestSHA, err := collectGenesisManifestTx(ctx, tx, 0, 0)
+	if err != nil {
+		return models.BootstrapState{}, err
+	}
+
 	now := time.Now().UTC()
+	var sealEnv *crypto.Envelope
+	var sealEnvJSON []byte
+	if len(kernelSigner) > 0 && kernelSigner[0] != nil {
+		sealPayload := map[string]any{
+			"sealed_by":                  actor,
+			"sealed_reason":              reason,
+			"sealed_at":                  now.Format(time.RFC3339),
+			"genesis_principal_max_seq":  maxPSeq,
+			"genesis_revocation_max_seq": maxRSeq,
+			"genesis_manifest_sha256":    manifestSHA,
+		}
+		env, _, sErr := crypto.NewUnsignedEnvelope(crypto.PayloadTypeGenesisSeal, sealPayload)
+		if sErr != nil {
+			return models.BootstrapState{}, sErr
+		}
+		if sErr := kernelSigner[0].SignEnvelope(ctx, 1, env); sErr != nil {
+			return models.BootstrapState{}, sErr
+		}
+		sealEnvJSON, sErr = crypto.CanonicalizeStruct(env)
+		if sErr != nil {
+			return models.BootstrapState{}, sErr
+		}
+		sealEnv = env
+	}
+
 	if _, err := tx.Exec(ctx, `
 		UPDATE bootstrap_state
-		SET sealed = TRUE, sealed_by = $1, sealed_reason = $2, sealed_at = $3
+		SET sealed = TRUE,
+		    sealed_by = $1,
+		    sealed_reason = $2,
+		    sealed_at = $3,
+		    genesis_principal_max_seq = $4,
+		    genesis_revocation_max_seq = $5,
+		    genesis_manifest_sha256 = $6,
+		    genesis_seal_dsse = $7
 		WHERE singleton_id = 1
-	`, actor, reason, now); err != nil {
+	`, actor, reason, now, maxPSeq, maxRSeq, manifestSHA, sealEnvJSON); err != nil {
 		return models.BootstrapState{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return models.BootstrapState{}, err
 	}
 	return models.BootstrapState{
-		Sealed:       true,
-		SealedBy:     actor,
-		SealedReason: reason,
-		SealedAt:     &now,
+		Sealed:                  true,
+		SealedBy:                actor,
+		SealedReason:            reason,
+		SealedAt:                &now,
+		GenesisPrincipalMaxSeq:  maxPSeq,
+		GenesisRevocationMaxSeq: maxRSeq,
+		GenesisManifestSHA256:   manifestSHA,
+		GenesisSealDSSE:         sealEnv,
 	}, nil
 }
 
@@ -774,7 +877,29 @@ func (s *Store) VerifyAllLedgerChains(ctx context.Context, externalWitnesses ...
 		witnessSlice = externalWitnesses[0]
 	}
 	anchorOK, cpID, merkleRoot, tamperDetail := s.VerifyHistoricalCheckpointConsistency(ctx, witnessSlice)
-	allValid := wStatus.Valid && aStatus.Valid && attStatus.Valid && pStatus.Valid && revStatus.Valid && kStatus.Valid && anchorOK
+
+	lineageOK := true
+	if badTable, lineageErr := s.VerifyAuthorityLineageAttestations(ctx); lineageErr != nil {
+		lineageOK = false
+		if tamperDetail == "" {
+			tamperDetail = lineageErr.Error()
+		} else {
+			tamperDetail = tamperDetail + "; " + lineageErr.Error()
+		}
+		switch badTable {
+		case "principals":
+			pStatus.Valid = false
+			pStatus.FailureDetail = lineageErr.Error()
+		case "principal_revocations":
+			revStatus.Valid = false
+			revStatus.FailureDetail = lineageErr.Error()
+		case "kernel_public_keys":
+			kStatus.Valid = false
+			kStatus.FailureDetail = lineageErr.Error()
+		}
+	}
+
+	allValid := wStatus.Valid && aStatus.Valid && attStatus.Valid && pStatus.Valid && revStatus.Valid && kStatus.Valid && anchorOK && lineageOK
 	return &models.LedgerVerificationReport{
 		AllValid:                allValid,
 		ExternalAnchorVerified:  anchorOK,

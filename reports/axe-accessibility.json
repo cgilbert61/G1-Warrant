@@ -13,7 +13,7 @@
     "compliance": "Section 508 Federal Accessibility",
     "liveEndpointVerified": true
   },
-  "timestamp": "2026-11-20T03:09:08.866349+00:00",
+  "timestamp": "2026-11-20T04:43:38.104605+00:00",
   "filesAudited": 12,
   "violations": [],
   "passes": [
@@ -386,6 +386,18 @@
       "file": "web/src/components/LiveFeedsModal.tsx"
     },
     {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='feed-automation-token'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/LiveFeedsModal.tsx"
+    },
+    {
       "id": "button-name",
       "impact": "critical",
       "description": "Interactive <button> provides discernible accessible text or aria-label",
@@ -472,6 +484,17 @@
         "section508"
       ],
       "file": "web/src/components/LiveFeedsModal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View1RacePipeline.tsx"
     },
     {
       "id": "button-name",
@@ -650,6 +673,18 @@
       "id": "label",
       "impact": "critical",
       "description": "Form control <select id='webauthn-principal-role'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View2WarrantDesk.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='webauthn-bootstrap-token'> has programmatic label association",
       "tags": [
         "wcag2a",
         "wcag131",
@@ -906,8 +941,8 @@
     }
   ],
   "summary": {
-    "totalChecks": 79,
-    "passedChecks": 79,
+    "totalChecks": 82,
+    "passedChecks": 82,
     "violationsCount": 0,
     "status": "PASS"
   }

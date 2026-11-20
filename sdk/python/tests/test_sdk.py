@@ -17,6 +17,8 @@ from g1_warrant import (
     canonicalize_jcs,
     draft_principal_enroll_envelope,
     draft_principal_revoke_envelope,
+    draft_principal_rotate_and_revoke_envelope,
+    draft_thaw_envelope,
     draft_warrant_envelope,
     generate_ed25519_signer_bundle,
     load_public_identity_file,
@@ -61,8 +63,22 @@ class TestG1WarrantCryptoAndSDK(unittest.TestCase):
             self.assertEqual(len(enroll_env["signatures"]), 2)
 
             revoke_env = draft_principal_revoke_envelope(target_principal_id="usr-so2")
-            ao.sign_envelope(1, revoke_env)
+            so.sign_envelope(1, revoke_env)
             self.assertEqual(len(revoke_env["signatures"]), 1)
+
+            rot_env = draft_principal_rotate_and_revoke_envelope(
+                so2.to_public_identity(), target_principal_id="usr-so"
+            )
+            so.sign_envelope(1, rot_env)
+            ao.sign_envelope(2, rot_env)
+            self.assertEqual(len(rot_env["signatures"]), 2)
+            rot_payload = json.loads(base64.b64decode(rot_env["payload"]).decode("utf-8"))
+            self.assertEqual(rot_payload["action"], "ROTATE_AND_REVOKE_PRINCIPAL")
+
+            thaw_env = draft_thaw_envelope(freeze_epoch=9)
+            thaw_payload = json.loads(base64.b64decode(thaw_env["payload"]).decode("utf-8"))
+            self.assertEqual(thaw_payload["freeze_epoch"], 9)
+            self.assertIn("envelope_id", thaw_payload)
 
     def test_dual_key_signing_and_offline_oscal_verification(self) -> None:
         so = generate_ed25519_signer_bundle("usr-so", "so@agency.gov", "Alice SO", ROLE_SERVICE_OWNER)

@@ -339,12 +339,49 @@ def draft_principal_revoke_envelope(
     ttl_seconds: int = 300,
 ) -> dict[str, Any]:
     """Create an unsigned 1-of-2 DSSE Principal Governance envelope (REVOKE_PRINCIPAL)."""
-    fields: dict[str, Any] = {"reason_code": reason_code or "SDK_KEY_REVOCATION"}
+    if ttl_seconds <= 0 or ttl_seconds > 300:
+        ttl_seconds = 300
+    fields: dict[str, Any] = {
+        "http_method": "POST",
+        "canonical_path": "/api/v1/principals/revoke",
+        "reason_code": reason_code or "SDK_KEY_REVOCATION",
+    }
     if target_principal_id:
         fields["target_principal_id"] = target_principal_id
     if target_key_fingerprint:
         fields["target_key_fingerprint"] = target_key_fingerprint
     return draft_governance_envelope("REVOKE_PRINCIPAL", fields, ttl_seconds=ttl_seconds)
+
+
+def draft_principal_rotate_and_revoke_envelope(
+    replacement_public_identity: PublicIdentityBundle | SignerKeyBundle | dict[str, Any],
+    target_principal_id: str = "",
+    target_key_fingerprint: str = "",
+    reason_code: str = "ATOMIC_DUAL_KEY_ROTATION_AND_REVOCATION",
+    ttl_seconds: int = 300,
+) -> dict[str, Any]:
+    """Create an unsigned atomic 2-of-2 DSSE Principal Governance envelope (ROTATE_AND_REVOKE_PRINCIPAL)."""
+    if isinstance(replacement_public_identity, SignerKeyBundle):
+        pub = replacement_public_identity.to_public_identity().to_dict()
+    elif isinstance(replacement_public_identity, PublicIdentityBundle):
+        pub = replacement_public_identity.to_dict()
+    else:
+        pub = PublicIdentityBundle.from_dict(dict(replacement_public_identity)).to_dict()
+    fields: dict[str, Any] = {
+        "principal_id": pub["principal_id"],
+        "email": pub["email"],
+        "display_name": pub.get("display_name", ""),
+        "role": pub["role"],
+        "key_id": pub.get("key_id", ""),
+        "alg": pub.get("alg", "Ed25519"),
+        "public_key_b64": pub["public_key_b64"],
+        "reason_code": reason_code or "ATOMIC_DUAL_KEY_ROTATION_AND_REVOCATION",
+    }
+    if target_principal_id:
+        fields["target_principal_id"] = target_principal_id
+    if target_key_fingerprint:
+        fields["target_key_fingerprint"] = target_key_fingerprint
+    return draft_governance_envelope("ROTATE_AND_REVOKE_PRINCIPAL", fields, ttl_seconds=ttl_seconds)
 
 
 def draft_warrant_envelope(
@@ -387,27 +424,40 @@ def draft_warrant_envelope(
     return draft_unsigned_envelope(PAYLOAD_TYPE_WARRANT, payload)
 
 
-def draft_thaw_envelope() -> dict[str, Any]:
-    """Create an unsigned DSSEv1 emergency fleet-thaw envelope."""
+def draft_thaw_envelope(freeze_epoch: int = 2, ttl_seconds: int = 900) -> dict[str, Any]:
+    """Create an unsigned DSSEv1 emergency fleet-thaw envelope bound to a monotonic freeze_epoch and single-use envelope_id."""
+    if ttl_seconds <= 0 or ttl_seconds > 900:
+        ttl_seconds = 900
+    now = datetime.now(timezone.utc)
+    exp = now + timedelta(seconds=ttl_seconds)
     return draft_unsigned_envelope(
         PAYLOAD_TYPE_THAW,
         {
-            "action": "THAW_FLEET",
-            "requested_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "envelope_id": f"thaw-{uuid.uuid4()}",
+            "action": "THAW",
+            "freeze_epoch": int(freeze_epoch),
+            "issued_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "expires_at": exp.strftime("%Y-%m-%dT%H:%M:%SZ"),
         },
     )
 
 
-def draft_exception_envelope(exception_record: dict[str, Any]) -> dict[str, Any]:
-    """Create an unsigned DSSEv1 ceiling-exception resolution envelope."""
+def draft_exception_envelope(exception_record: dict[str, Any], ttl_seconds: int = 900) -> dict[str, Any]:
+    """Create an unsigned DSSEv1 ceiling-exception resolution envelope bound to exception_id and single-use envelope_id."""
+    if ttl_seconds <= 0 or ttl_seconds > 900:
+        ttl_seconds = 900
+    now = datetime.now(timezone.utc)
+    exp = now + timedelta(seconds=ttl_seconds)
     return draft_unsigned_envelope(
         PAYLOAD_TYPE_EXCEPTION,
         {
+            "envelope_id": f"exc-{uuid.uuid4()}",
             "exception_id": exception_record["exception_id"],
-            "remediation_id": exception_record["remediation_id"],
-            "service_id": exception_record["service_id"],
-            "cve_id": exception_record["cve_id"],
-            "evaluated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "remediation_id": exception_record.get("remediation_id", ""),
+            "service_id": exception_record.get("service_id", ""),
+            "cve_id": exception_record.get("cve_id", ""),
+            "issued_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "expires_at": exp.strftime("%Y-%m-%dT%H:%M:%SZ"),
         },
     )
 

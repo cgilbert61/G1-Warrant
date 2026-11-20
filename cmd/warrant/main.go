@@ -24,11 +24,12 @@ func main() {
 		baseURL = "http://localhost:8080"
 	}
 	opToken := strings.TrimSpace(os.Getenv("WARRANT_OPERATOR_TOKEN"))
+	autoToken := strings.TrimSpace(os.Getenv("WARRANT_AUTOMATION_TOKEN"))
 	inToken := strings.TrimSpace(os.Getenv("WARRANT_INTAKE_TOKEN"))
 	globalSignerPath := strings.TrimSpace(os.Getenv("WARRANT_SIGNER_KEY"))
 	jsonOutput := false
 
-	// Extract global leading/trailing flags (--url, --json, --operator-token, --signer-key) while preserving positional args
+	// Extract global leading/trailing flags (--url, --json, --operator-token, --automation-token, --signer-key) while preserving positional args
 	args := make([]string, 0, len(os.Args)-1)
 	rawArgs := os.Args[1:]
 	for i := 0; i < len(rawArgs); i++ {
@@ -46,6 +47,11 @@ func main() {
 			i++
 		case strings.HasPrefix(a, "--operator-token="):
 			opToken = strings.TrimSpace(strings.TrimPrefix(a, "--operator-token="))
+		case a == "--automation-token" && i+1 < len(rawArgs):
+			autoToken = strings.TrimSpace(rawArgs[i+1])
+			i++
+		case strings.HasPrefix(a, "--automation-token="):
+			autoToken = strings.TrimSpace(strings.TrimPrefix(a, "--automation-token="))
 		case a == "--signer-key" && i+1 < len(rawArgs):
 			globalSignerPath = strings.TrimSpace(rawArgs[i+1])
 			i++
@@ -70,6 +76,9 @@ func main() {
 	clientOpts := []warrantsdk.Option{}
 	if opToken != "" {
 		clientOpts = append(clientOpts, warrantsdk.WithOperatorToken(opToken))
+	}
+	if autoToken != "" {
+		clientOpts = append(clientOpts, warrantsdk.WithAutomationToken(autoToken))
 	}
 	if inToken != "" {
 		clientOpts = append(clientOpts, warrantsdk.WithIntakeToken(inToken))
@@ -234,6 +243,33 @@ func main() {
 			})
 			must(err)
 			printJSON(rev)
+		case "rotate-and-revoke":
+			fs := flag.NewFlagSet("principals rotate-and-revoke", flag.ExitOnError)
+			pubFile := fs.String("pub", "", "Path to replacement <name>.pub.json public identity file")
+			targetID := fs.String("principal", "", "Target Principal ID to revoke atomically")
+			targetFP := fs.String("fingerprint", "", "Optional target SHA-256 key fingerprint to revoke")
+			reason := fs.String("reason", "CLI_ATOMIC_ROTATE_AND_REVOKE", "Rotation/revocation reason code")
+			slot1Key := fs.String("slot1-key", "", "Slot 1 (SERVICE_OWNER) .priv.json")
+			slot2Key := fs.String("slot2-key", "", "Slot 2 (AUTHORIZING_OFFICIAL) .priv.json")
+			_ = fs.Parse(args[2:])
+			if *pubFile == "" || (*targetID == "" && *targetFP == "") || *slot1Key == "" || *slot2Key == "" {
+				fatalf("--pub <new.pub.json>, --principal <target-id>, --slot1-key <so.priv.json>, and --slot2-key <ao.priv.json> are required")
+			}
+			pb, pErr := os.ReadFile(*pubFile)
+			must(pErr)
+			pubBundle, bErr := warrantsdk.LoadPublicIdentityFile(pb)
+			must(bErr)
+			s1, err1 := loadPrivateSignerFile(*slot1Key)
+			must(err1)
+			s2, err2 := loadPrivateSignerFile(*slot2Key)
+			must(err2)
+			env, _, dErr := warrantsdk.DraftPrincipalRotateAndRevokeEnvelope(pubBundle.ToRegisterRequest(), *targetID, *targetFP, *reason, 5*time.Minute)
+			must(dErr)
+			must(s1.SignEnvelope(1, env))
+			must(s2.SignEnvelope(2, env))
+			rotRes, rErr := cli.RotateAndRevokePrincipal(ctx, *env)
+			must(rErr)
+			printJSON(rotRes)
 		default:
 			printUsage()
 			os.Exit(1)
@@ -605,7 +641,11 @@ func main() {
 				if *slot1Key == "" || *slot2Key == "" {
 					fatalf("usage: warrant freeze thaw --slot1-key <so.json> --slot2-key <ao.json> (or --envelope <signed.dsse.json>)")
 				}
-				draft, dErr := warrantsdk.DraftThawEnvelope()
+				epoch := int64(2)
+				if sb, sbErr := cli.Scoreboard(ctx); sbErr == nil && sb.FreezeState.FreezeEpoch > 0 {
+					epoch = sb.FreezeState.FreezeEpoch
+				}
+				draft, dErr := warrantsdk.DraftThawEnvelopeForEpoch(epoch)
 				must(dErr)
 				s1Raw, rErr1 := os.ReadFile(*slot1Key)
 				must(rErr1)
@@ -882,7 +922,7 @@ Global Flags:
 Commands:
   warrant status
   warrant keygen --id <id> --email <email> --role <SERVICE_OWNER|AUTHORIZING_OFFICIAL> --out <prefix>
-  warrant principals [list | register --pub <name.pub.json> [--admin-token <tok> | --slot1-key <so.priv.json> --slot2-key <ao.priv.json>] | seal | revoke --principal <id> --key <active.priv.json>]
+  warrant principals [list | register --pub <name.pub.json> [--admin-token <tok> | --slot1-key <so.priv.json> --slot2-key <ao.priv.json>] | seal | revoke --principal <id> --key <active.priv.json> | rotate-and-revoke --pub <new.pub.json> --principal <id> --slot1-key <so.priv.json> --slot2-key <ao.priv.json>]
   warrant warrants [list | verify <id> | draft | sign --key <name.priv.json> | submit <file.dsse.json>]
   warrant exceptions [list | approve <id> --slot1-key <so.priv.json> --slot2-key <ao.priv.json> | reject <id> ...]
   warrant pipeline [list | trace <remediation-id> | rollback <remediation-id> --key <active.priv.json>]
