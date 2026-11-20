@@ -23,7 +23,7 @@
 
 ## What Is G1-Warrant & What Problem Does It Solve?
 
-**G1-Warrant** is a deterministic agentic defense control plane that enforces KEV-driven remediation, egress/metadata quarantine, and WORM-anchored cryptographic audit trails across autonomous execution environments.
+**G1-Warrant** is a deterministic remediation, containment, and cryptographic attestation control plane built to outpace autonomous/agentic intrusions—enforcing KEV-driven remediation, egress/metadata quarantine, and externally Merkle-anchored cryptographic audit trails across production execution environments.
 
 > **Threat Context:** Standard perimeter and IAM controls fail when compromised workloads or autonomous agents inherit ambient credentials and unrestricted metadata/egress paths. G1-Warrant exists to enforce hard, fail-closed execution boundaries against active exploitation patterns—specifically addressing the attack primitives detailed in **FBI Flash Advisory `FLASH-20261113-001` (`ARTEX`)**—without relying on probabilistic detection.
 
@@ -117,6 +117,9 @@ flowchart LR
 # 1. Start PostgreSQL 16 ledger store, zero-egress warrant-extractor, fleet-sim, and warrantd
 docker compose up --build -d
 
+#    (Optional: enable seeded sandbox PIV personas for interactive local Console demos)
+#    docker compose -f docker-compose.yml -f docker-compose.demo.yml up --build -d
+
 # 2. Open the embedded 5-View G1-Warrant Console (W3C WebAuthn localhost enabled)
 #    -> http://localhost:8080
 
@@ -124,18 +127,23 @@ docker compose up --build -d
 docker compose exec warrantd /warrant status
 ```
 
-### Optional \$0 Live Threat & Scanner Feeds (`offline` Enclave Default vs. `live`)
+> **Production Kubernetes Cluster Handoff (`k8s/`):** To point `warrantd` at a live Kubernetes + Cilium cluster instead of `fleet-sim`, configure:
+> - `WARRANT_CLUSTER_DRIVER=kubernetes` (uses in-cluster SA mounts or `WARRANT_KUBE_API_URL`) and `WARRANT_TETRAGON_SENSOR_TOKEN=<sensor-secret>`
+> - `WARRANT_KMS_SIGN_URL=https://<vault-or-kms-proxy>/v1/sign` and `WARRANT_KMS_PUBLIC_KEY_B64=<ed25519-pub-b64>`
+> - `WARRANT_EXTERNAL_ANCHOR_URL=https://<rekor-or-s3-object-lock-webhook>/anchor` and `WARRANT_BOOTSTRAP_ADMIN_TOKEN=<iam-registrar-token>`
+
+### Optional Zero-Cost Live Threat & Scanner Feeds (`offline` Enclave Default vs. `live`)
 
 By default, `WARRANT_FEED_MODE=offline` keeps G1-Warrant 100% air-gapped for federal enclaves and deterministic CI runs. To pull **live US Government CISA KEV bulletins (`cisa.gov`)**, **Google OSV.dev SBOM advisories (`api.osv.dev`)**, and **live `aquasec/trivy` container `SARIF 2.1.0` scans** (all sanitized through `warrant-extractor`):
 
 ```powershell
-# Windows PowerShell (WARRANT_ENABLE_TEST_SMARTCARDS must be false when WARRANT_FEED_MODE=live)
-$env:WARRANT_ENABLE_TEST_SMARTCARDS="false"; $env:WARRANT_FEED_MODE="live"; $env:WARRANT_TRIVY_ENABLED="true"; docker compose --profile live-feeds up --build -d
+# Windows PowerShell
+$env:WARRANT_FEED_MODE="live"; $env:WARRANT_TRIVY_ENABLED="true"; docker compose --profile live-feeds up --build -d
 ```
 
 ```bash
-# Linux / macOS (WARRANT_ENABLE_TEST_SMARTCARDS must be false when WARRANT_FEED_MODE=live)
-WARRANT_ENABLE_TEST_SMARTCARDS=false WARRANT_FEED_MODE=live WARRANT_TRIVY_ENABLED=true docker compose --profile live-feeds up --build -d
+# Linux / macOS
+WARRANT_FEED_MODE=live WARRANT_TRIVY_ENABLED=true docker compose --profile live-feeds up --build -d
 ```
 
 ---
@@ -160,6 +168,10 @@ go build -o warrant ./cmd/warrant
 ./warrant keygen --id usr-so-01 --email so@agency.gov --role SERVICE_OWNER --out so-key.json
 ./warrant keygen --id usr-ao-01 --email ao@agency.gov --role AUTHORIZING_OFFICIAL --out ao-key.json
 
+# Enroll public keys in N1 (private keys never leave disk; requires out-of-band WARRANT_BOOTSTRAP_ADMIN_TOKEN)
+./warrant principals register --key so-key.json --admin-token "$WARRANT_BOOTSTRAP_ADMIN_TOKEN"
+./warrant principals register --key ao-key.json --admin-token "$WARRANT_BOOTSTRAP_ADMIN_TOKEN"
+
 # Draft, 2-of-2 co-sign, and submit an RFC 8785 JCS Standing Warrant DSSE envelope
 ./warrant warrants draft --class KEV-TIER1-STATELESS --services payments-ledger-api --out warrant.dsse.json
 ./warrant warrants sign --in warrant.dsse.json --slot 1 --key so-key.json
@@ -169,7 +181,7 @@ go build -o warrant ./cmd/warrant
 # Execute atomic 3-step Quarantined Rollback (Contain-Before-Unban) if a post-closure regression occurs
 ./warrant pipeline rollback <remediation-id> --actor sre-oncall --reason LATENT_POOL_LEAK
 
-# Verify all 3 ledger hash chains + External Merkle Checkpoints & verify OSCAL 1.1.2 POA&M offline
+# Verify all 3 ledger hash chains + External Merkle Checkpoints & verify OSCAL 1.1.2 POA&M via kernel key ring
 ./warrant ledger verify
 ./warrant ledger checkpoints
 ./warrant oscal export <attestation-id> poam-bundle.json
@@ -185,36 +197,47 @@ g1-warrant ledger-verify
 ```
 
 ```python
+import os
 from g1_warrant import (
     ROLE_AUTHORIZING_OFFICIAL,
     ROLE_SERVICE_OWNER,
     WarrantClient,
     draft_warrant_envelope,
     generate_ed25519_signer_bundle,
-    verify_oscal_bundle_offline,
+    verify_oscal_bundle_with_keyring,
 )
 
 client = WarrantClient("http://localhost:8080")
+admin_tok = os.environ["WARRANT_BOOTSTRAP_ADMIN_TOKEN"]
 
-# 1. Draft and 2-of-2 co-sign a Standing Warrant using explicit Ed25519 keys
+# 1. Generate, enroll public keys in N1, and 2-of-2 co-sign + submit a Standing Warrant
 so = generate_ed25519_signer_bundle("usr-so-01", "so@agency.gov", "Service Owner", ROLE_SERVICE_OWNER)
 ao = generate_ed25519_signer_bundle("usr-ao-01", "ao@agency.gov", "Authorizing Official", ROLE_AUTHORIZING_OFFICIAL)
+client.register_principal(so, admin_token=admin_tok)
+client.register_principal(ao, admin_token=admin_tok)
+
 env = draft_warrant_envelope(scope_services=["payments-ledger-api"], max_cvss=10.0)
 so.sign_envelope(1, env)
 ao.sign_envelope(2, env)
+warrant = client.create_warrant(env)
+print("Minted Standing Warrant:", warrant["warrant_id"], warrant["live_status"])
 
-# 2. Export a closed NIST OSCAL 1.1.2 POA&M bundle & verify DSSE + RFC 8785 JCS offline
+# 2. Export a closed NIST OSCAL 1.1.2 POA&M bundle & verify against the append-only kernel public-key ring
 atts = client.list_attestations()
 if atts:
     bundle = client.export_oscal_bundle(atts[0]["attestation_id"])
-    proof = verify_oscal_bundle_offline(bundle, client.kernel_public_key_b64())
-    print("Offline OSCAL DSSE Verified:", proof["valid"], "PAE SHA-256:", proof["pae_sha256"])
+    proof = verify_oscal_bundle_with_keyring(bundle, client.kernel_public_key_ring())
+    print("Offline OSCAL DSSE Verified:", proof["valid"], "KeyID:", proof["signer_key_id"])
 ```
 
 ### 3. Go Client SDK (`pkg/warrantsdk`)
 
+```bash
+go get github.com/cgilbert61/G1-Warrant/pkg/warrantsdk@v1.0.0
+```
+
 ```go
-import "github.com/g1163rt-labs/g1-warrant/pkg/warrantsdk"
+import "github.com/cgilbert61/G1-Warrant/pkg/warrantsdk"
 
 cli := warrantsdk.NewClient("http://localhost:8080")
 sb, err := cli.Scoreboard(ctx)
@@ -262,6 +285,19 @@ make compliance-check
 # Run embedded OPA Rego policy tests (22/22) + Go -race 9-invariant & live-feed E2E suite
 make docker-test
 ```
+
+---
+
+## Repository Layout
+
+- [`cmd/`](cmd/) — `warrantd` control plane, `warrant` native Go CLI, `warrant-extractor` zero-egress parser, and `fleet-sim` simulator
+- [`internal/`](internal/) — Deterministic Pure-Go engines (`warrant`, `gate`, `verify`, `agentcp`, `ledger`, `crypto`, `policy`, `adapters`, `db`, `e2e`)
+- [`policies/`](policies/) — Embedded OPA Rego v1 policies & unit tests (`warrant_ac5.rego`, `gate_eligibility.rego`, `verify_closure.rego`)
+- [`db/migrations/`](db/migrations/) — PostgreSQL 16 schema & `BEFORE UPDATE OR DELETE` append-only immutability triggers (`001`–`005`)
+- [`pkg/warrantsdk/`](pkg/warrantsdk/) & [`sdk/python/`](sdk/python/) — Official Go & Python Client SDKs and offline DSSE/OSCAL verifiers
+- [`k8s/`](k8s/) — Production Kubernetes Deployment, `NetworkPolicy` zero-egress isolation, and RBAC manifests
+- [`web/`](web/) — Embedded React 19 + TypeScript Section 508 / WCAG 2.1 AA 5-View Operator Console
+- [`docs/`](docs/) & [`reports/`](reports/) — [`g1_warrant_system_security_plan.md`](docs/g1_warrant_system_security_plan.md), [`sdk_and_cli_guide.md`](docs/sdk_and_cli_guide.md), OSCAL `1.1.2` component definitions, CycloneDX `1.5` SBOM, and 9-Gate DevSecOps audit artifacts
 
 ---
 

@@ -5,8 +5,8 @@ package warrantsdk
 import (
 	"fmt"
 
-	"github.com/g1163rt-labs/g1-warrant/internal/crypto"
-	"github.com/g1163rt-labs/g1-warrant/internal/models"
+	"github.com/cgilbert61/G1-Warrant/internal/crypto"
+	"github.com/cgilbert61/G1-Warrant/internal/models"
 )
 
 // Version is the semantic version of the G1-Warrant Go SDK.
@@ -109,6 +109,17 @@ type RevokePrincipalRequest struct {
 	KeyFingerprint string `json:"key_fingerprint"`
 	ReasonCode     string `json:"reason_code"`
 	RevokedBy      string `json:"revoked_by"`
+}
+
+// RegisterPrincipalRequest carries public identity material (never private keys) to POST /api/v1/principals/register.
+type RegisterPrincipalRequest struct {
+	PrincipalID  string `json:"principal_id"`
+	Email        string `json:"email"`
+	DisplayName  string `json:"display_name"`
+	Role         string `json:"role"`
+	KeyID        string `json:"key_id"`
+	Alg          string `json:"alg"`
+	PublicKeyB64 string `json:"public_key_b64"`
 }
 
 // SARIFIntakeOptions configures optional query parameters on POST /api/v1/intake/sarif.

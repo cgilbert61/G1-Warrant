@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/g1163rt-labs/g1-warrant/internal/crypto"
+	"github.com/cgilbert61/G1-Warrant/internal/crypto"
 )
 
 // SignedVirtualPatchRulepack is a publisher-signed L7 containment rulepack binding a known

@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/g1163rt-labs/g1-warrant/db/migrations"
-	"github.com/g1163rt-labs/g1-warrant/internal/crypto"
-	"github.com/g1163rt-labs/g1-warrant/internal/models"
+	"github.com/cgilbert61/G1-Warrant/db/migrations"
+	"github.com/cgilbert61/G1-Warrant/internal/crypto"
+	"github.com/cgilbert61/G1-Warrant/internal/models"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )

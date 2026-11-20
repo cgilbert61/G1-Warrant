@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/g1163rt-labs/g1-warrant/internal/crypto"
+	"github.com/cgilbert61/G1-Warrant/internal/crypto"
 	"github.com/google/uuid"
 )
 
@@ -83,6 +83,20 @@ func (b *SignerKeyBundle) ToPrincipalKey() (PrincipalKey, error) {
 		PublicKeyBytes: pub,
 		KeyFingerprint: b.KeyFingerprint,
 	}, nil
+}
+
+// ToRegisterRequest extracts strictly the public verification identity (stripping PrivateKeyB64)
+// for authenticated enrollment via POST /api/v1/principals/register.
+func (b *SignerKeyBundle) ToRegisterRequest() RegisterPrincipalRequest {
+	return RegisterPrincipalRequest{
+		PrincipalID:  b.PrincipalID,
+		Email:        b.Email,
+		DisplayName:  b.DisplayName,
+		Role:         b.Role,
+		KeyID:        b.KeyID,
+		Alg:          b.Alg,
+		PublicKeyB64: b.PublicKeyB64,
+	}
 }
 
 // SignEnvelope appends a slot-bound Ed25519 signature over DSSEv1 PAE bytes to env.

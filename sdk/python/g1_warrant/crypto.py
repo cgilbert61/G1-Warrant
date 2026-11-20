@@ -291,3 +291,20 @@ def verify_oscal_bundle_offline(bundle: bytes | str | dict[str, Any], kernel_pub
         "signer_key_id": sigs[0].get("keyid", ""),
         "entry_hash": doc.get("entry_hash", ""),
     }
+
+
+def verify_oscal_bundle_with_keyring(
+    bundle: bytes | str | dict[str, Any],
+    key_ring: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Verify a signed NIST OSCAL 1.1.2 POA&M bundle against an append-only Kernel Ed25519 public-key ring."""
+    doc = json.loads(bundle) if isinstance(bundle, (bytes, str)) else bundle
+    sigs = (doc.get("dsse_envelope") or {}).get("signatures") or []
+    if not sigs:
+        raise ValueError("DSSE envelope contains zero signatures")
+    target_kid = sigs[0].get("keyid", "")
+    candidates = key_ring if key_ring else (doc.get("kernel_public_key_ring") or [])
+    for entry in candidates:
+        if entry.get("key_id") == target_kid:
+            return verify_oscal_bundle_offline(doc, str(entry["public_key_b64"]))
+    raise ValueError(f"Kernel signing key {target_kid!r} not found in verification public-key ring ({len(candidates)} keys)")

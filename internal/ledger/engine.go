@@ -8,12 +8,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/g1163rt-labs/g1-warrant/internal/crypto"
-	"github.com/g1163rt-labs/g1-warrant/internal/db"
-	"github.com/g1163rt-labs/g1-warrant/internal/models"
-	"github.com/g1163rt-labs/g1-warrant/internal/policy"
-	"github.com/g1163rt-labs/g1-warrant/internal/verify"
-	"github.com/g1163rt-labs/g1-warrant/internal/warrant"
+	"github.com/cgilbert61/G1-Warrant/internal/crypto"
+	"github.com/cgilbert61/G1-Warrant/internal/db"
+	"github.com/cgilbert61/G1-Warrant/internal/models"
+	"github.com/cgilbert61/G1-Warrant/internal/policy"
+	"github.com/cgilbert61/G1-Warrant/internal/verify"
+	"github.com/cgilbert61/G1-Warrant/internal/warrant"
 	"github.com/google/uuid"
 )
 

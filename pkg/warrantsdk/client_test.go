@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/g1163rt-labs/g1-warrant/internal/crypto"
-	"github.com/g1163rt-labs/g1-warrant/pkg/warrantsdk"
+	"github.com/cgilbert61/G1-Warrant/internal/crypto"
+	"github.com/cgilbert61/G1-Warrant/pkg/warrantsdk"
 )
 
 func TestDualKeyCeremonyAndOfflineOSCALVerification(t *testing.T) {

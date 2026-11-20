@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -13,9 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/g1163rt-labs/g1-warrant/internal/crypto"
-	"github.com/g1163rt-labs/g1-warrant/internal/models"
-	webui "github.com/g1163rt-labs/g1-warrant/web"
+	"github.com/cgilbert61/G1-Warrant/internal/crypto"
+	"github.com/cgilbert61/G1-Warrant/internal/models"
+	webui "github.com/cgilbert61/G1-Warrant/web"
 	"github.com/google/uuid"
 )
 
@@ -112,7 +113,7 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		writeAPIJSON(w, http.StatusOK, sb)
 	})
 
-	// Principals, Hardware WebAuthn Registration, and Live Revocation
+	// Principals, Authenticated Ed25519 Enrollment, Hardware WebAuthn Registration, and Live Revocation
 	mux.HandleFunc("GET /api/v1/principals", func(w http.ResponseWriter, r *http.Request) {
 		list, err := o.Store.ListPrincipals(r.Context())
 		if err != nil {
@@ -120,6 +121,64 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			return
 		}
 		writeAPIJSON(w, http.StatusOK, list)
+	})
+
+	// POST /api/v1/principals/register enrolls an out-of-band verified Ed25519 public key for AC-5 Slot 1 or Slot 2.
+	// Requires WARRANT_BOOTSTRAP_ADMIN_TOKEN so untrusted network callers can NEVER self-enroll signing keys.
+	mux.HandleFunc("POST /api/v1/principals/register", func(w http.ResponseWriter, r *http.Request) {
+		if code, authErr := o.VerifyBootstrapAdminAuth(r); authErr != nil {
+			writeAPIError(w, code, authErr)
+			return
+		}
+		var req struct {
+			PrincipalID  string `json:"principal_id"`
+			Email        string `json:"email"`
+			DisplayName  string `json:"display_name"`
+			Role         string `json:"role"`
+			KeyID        string `json:"key_id"`
+			Alg          string `json:"alg"`
+			PublicKeyB64 string `json:"public_key_b64"`
+		}
+		if err := decodeJSONBody(w, r, &req); err != nil {
+			writeAPIError(w, http.StatusBadRequest, err)
+			return
+		}
+		if req.Role != crypto.RoleServiceOwner && req.Role != crypto.RoleAuthorizingOfficial {
+			writeAPIError(w, http.StatusBadRequest, fmt.Errorf("AC5_INVALID_ENROLLMENT_ROLE: role must be SERVICE_OWNER or AUTHORIZING_OFFICIAL"))
+			return
+		}
+		if strings.TrimSpace(req.PrincipalID) == "" || strings.TrimSpace(req.Email) == "" {
+			writeAPIError(w, http.StatusBadRequest, fmt.Errorf("principal_id and email are required"))
+			return
+		}
+		pubBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(req.PublicKeyB64))
+		if err != nil || len(pubBytes) != ed25519.PublicKeySize {
+			writeAPIError(w, http.StatusUnprocessableEntity, fmt.Errorf("expected valid 32-byte base64 Ed25519 public_key_b64"))
+			return
+		}
+		fp := crypto.SHA256Hex(pubBytes)
+		keyID := strings.TrimSpace(req.KeyID)
+		if keyID == "" {
+			keyID = fmt.Sprintf("ed25519-%s-%s", strings.TrimSpace(req.PrincipalID), fp[:10])
+		}
+		p := models.Principal{
+			PrincipalID:       strings.TrimSpace(req.PrincipalID),
+			Email:             strings.TrimSpace(req.Email),
+			DisplayName:       strings.TrimSpace(req.DisplayName),
+			Role:              req.Role,
+			KeyID:             keyID,
+			Alg:               crypto.AlgEd25519,
+			PublicKeyB64:      base64.StdEncoding.EncodeToString(pubBytes),
+			KeyFingerprint:    fp,
+			AuthenticatorMode: "ED25519_ENROLLED",
+			CreatedAt:         time.Now().UTC(),
+		}
+		if err := o.Store.UpsertPrincipal(r.Context(), p); err != nil {
+			writeAPIError(w, http.StatusConflict, err)
+			return
+		}
+		o.Broker.Broadcast("PRINCIPAL_REGISTERED", p)
+		writeAPIJSON(w, http.StatusCreated, p)
 	})
 
 	mux.HandleFunc("POST /api/v1/principals/webauthn/register", func(w http.ResponseWriter, r *http.Request) {

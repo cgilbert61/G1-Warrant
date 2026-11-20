@@ -13,17 +13,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/g1163rt-labs/g1-warrant/internal/adapters"
-	"github.com/g1163rt-labs/g1-warrant/internal/agentcp"
-	"github.com/g1163rt-labs/g1-warrant/internal/crypto"
-	"github.com/g1163rt-labs/g1-warrant/internal/db"
-	"github.com/g1163rt-labs/g1-warrant/internal/feeds"
-	"github.com/g1163rt-labs/g1-warrant/internal/gate"
-	"github.com/g1163rt-labs/g1-warrant/internal/ledger"
-	"github.com/g1163rt-labs/g1-warrant/internal/models"
-	"github.com/g1163rt-labs/g1-warrant/internal/policy"
-	"github.com/g1163rt-labs/g1-warrant/internal/verify"
-	"github.com/g1163rt-labs/g1-warrant/internal/warrant"
+	"github.com/cgilbert61/G1-Warrant/internal/adapters"
+	"github.com/cgilbert61/G1-Warrant/internal/agentcp"
+	"github.com/cgilbert61/G1-Warrant/internal/crypto"
+	"github.com/cgilbert61/G1-Warrant/internal/db"
+	"github.com/cgilbert61/G1-Warrant/internal/feeds"
+	"github.com/cgilbert61/G1-Warrant/internal/gate"
+	"github.com/cgilbert61/G1-Warrant/internal/ledger"
+	"github.com/cgilbert61/G1-Warrant/internal/models"
+	"github.com/cgilbert61/G1-Warrant/internal/policy"
+	"github.com/cgilbert61/G1-Warrant/internal/verify"
+	"github.com/cgilbert61/G1-Warrant/internal/warrant"
 	"github.com/google/uuid"
 )
 
@@ -46,6 +46,7 @@ type ControlPlaneOrchestrator struct {
 	WebAuthnCfg         crypto.WebAuthnConfig
 	tetragonSensorToken string
 	tetragonHMACSecret  string
+	bootstrapAdminToken string
 }
 
 // ValidateStartupSecurityGuards enforces fail-closed startup invariants so built-in test smartcard personas
@@ -65,6 +66,36 @@ func ValidateStartupSecurityGuards(getenv func(string) string) error {
 // TetragonSensorToken returns the dedicated sensor authentication token required by POST /api/v1/telemetry/tetragon.
 func (o *ControlPlaneOrchestrator) TetragonSensorToken() string {
 	return o.tetragonSensorToken
+}
+
+// BootstrapAdminToken returns the configured out-of-band IAM registrar token (if set).
+func (o *ControlPlaneOrchestrator) BootstrapAdminToken() string {
+	return o.bootstrapAdminToken
+}
+
+// VerifyBootstrapAdminAuth enforces out-of-band IAM registrar authentication on POST /api/v1/principals/register
+// so untrusted network callers cannot self-enroll arbitrary Ed25519 keys as SERVICE_OWNER or AUTHORIZING_OFFICIAL.
+func (o *ControlPlaneOrchestrator) VerifyBootstrapAdminAuth(r *http.Request) (int, error) {
+	if strings.TrimSpace(o.bootstrapAdminToken) == "" {
+		return http.StatusForbidden, fmt.Errorf("PRINCIPAL_ENROLLMENT_DISABLED: configure WARRANT_BOOTSTRAP_ADMIN_TOKEN to enable remote Ed25519 principal enrollment")
+	}
+	tok := strings.TrimSpace(r.Header.Get("X-Warrant-Admin-Token"))
+	if tok == "" {
+		auth := strings.TrimSpace(r.Header.Get("Authorization"))
+		if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+			tok = strings.TrimSpace(auth[7:])
+		}
+	}
+	if tok == "" {
+		return http.StatusUnauthorized, fmt.Errorf("MISSING_BOOTSTRAP_ADMIN_TOKEN: X-Warrant-Admin-Token or Authorization Bearer required")
+	}
+	if strings.HasPrefix(tok, "g1aud_") || strings.HasPrefix(tok, "g1tet_") {
+		return http.StatusForbidden, fmt.Errorf("INVALID_BOOTSTRAP_ADMIN_TOKEN: auditor and sensor tokens cannot enroll AC-5 principals")
+	}
+	if subtle.ConstantTimeCompare([]byte(tok), []byte(o.bootstrapAdminToken)) != 1 {
+		return http.StatusForbidden, fmt.Errorf("INVALID_BOOTSTRAP_ADMIN_TOKEN")
+	}
+	return http.StatusOK, nil
 }
 
 // VerifyTetragonSensorAuth enforces dedicated eBPF/Tetragon DaemonSet authentication (distinct from operator and g1aud_* auditor tokens)
@@ -151,6 +182,7 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 		tetToken = "g1tet_" + hex.EncodeToString(rnd[:])
 	}
 	tetHMAC := strings.TrimSpace(os.Getenv("WARRANT_TETRAGON_HMAC_SECRET"))
+	adminTok := strings.TrimSpace(os.Getenv("WARRANT_BOOTSTRAP_ADMIN_TOKEN"))
 
 	n1, err := warrant.NewEngine(ctx, store, pol, webauthnCfg, broker.Broadcast)
 	if err != nil {
@@ -207,6 +239,7 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 		WebAuthnCfg:         webauthnCfg,
 		tetragonSensorToken: tetToken,
 		tetragonHMACSecret:  tetHMAC,
+		bootstrapAdminToken: adminTok,
 	}, nil
 }
 

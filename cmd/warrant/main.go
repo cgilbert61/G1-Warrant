@@ -12,7 +12,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/g1163rt-labs/g1-warrant/pkg/warrantsdk"
+	"github.com/cgilbert61/G1-Warrant/pkg/warrantsdk"
 )
 
 func main() {
@@ -111,6 +111,30 @@ func main() {
 					p.PrincipalID, p.Role, p.AuthenticatorMode, p.Revoked, p.KeyID, p.Email)
 			}
 			_ = tw.Flush()
+		case "register":
+			fs := flag.NewFlagSet("principals register", flag.ExitOnError)
+			keyFile := fs.String("key", "", "Path to SignerKeyBundle JSON (only public key fields are transmitted)")
+			adminTok := fs.String("admin-token", os.Getenv("WARRANT_BOOTSTRAP_ADMIN_TOKEN"), "Bootstrap IAM admin token (or $WARRANT_BOOTSTRAP_ADMIN_TOKEN)")
+			_ = fs.Parse(args[2:])
+			if *keyFile == "" {
+				fatalf("--key <bundle.json> is required")
+			}
+			if strings.TrimSpace(*adminTok) == "" {
+				fatalf("--admin-token (or WARRANT_BOOTSTRAP_ADMIN_TOKEN) is required for AC-5 principal enrollment")
+			}
+			kb, kErr := os.ReadFile(*keyFile)
+			must(kErr)
+			bundle, bErr := warrantsdk.LoadSignerBundleFile(kb)
+			must(bErr)
+			adminCli := warrantsdk.NewClient(baseURL, warrantsdk.WithAdminToken(*adminTok))
+			enrolled, rErr := adminCli.RegisterPrincipal(ctx, bundle.ToRegisterRequest())
+			must(rErr)
+			if jsonOutput {
+				printJSON(enrolled)
+				return
+			}
+			fmt.Printf("Enrolled AC-5 Principal %s (%s | %s | key_id=%s)\n",
+				enrolled.PrincipalID, enrolled.Role, enrolled.Email, enrolled.KeyID)
 		case "revoke":
 			fs := flag.NewFlagSet("principals revoke", flag.ExitOnError)
 			pid := fs.String("principal", "", "Principal ID to revoke")
@@ -754,7 +778,7 @@ Global Flags:
 Commands:
   warrant status
   warrant keygen --id <id> --email <email> --role <SERVICE_OWNER|AUTHORIZING_OFFICIAL> [--out <key.json>]
-  warrant principals [list | revoke --principal <id> --reason <code>]
+  warrant principals [list | register --key <key.json> [--admin-token <tok>] | revoke --principal <id> --reason <code>]
   warrant warrants [list | verify <id> | draft | sign --key <key.json> | submit <file.dsse.json>]
   warrant exceptions [list | approve <id> --slot1-key <so.json> --slot2-key <ao.json> | reject <id> ...]
   warrant pipeline [list | trace <remediation-id> | rollback <remediation-id>]

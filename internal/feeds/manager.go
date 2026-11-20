@@ -14,10 +14,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/g1163rt-labs/g1-warrant/internal/agentcp"
-	"github.com/g1163rt-labs/g1-warrant/internal/db"
-	"github.com/g1163rt-labs/g1-warrant/internal/extractor"
-	"github.com/g1163rt-labs/g1-warrant/internal/models"
+	"github.com/cgilbert61/G1-Warrant/internal/agentcp"
+	"github.com/cgilbert61/G1-Warrant/internal/db"
+	"github.com/cgilbert61/G1-Warrant/internal/extractor"
+	"github.com/cgilbert61/G1-Warrant/internal/models"
 	"github.com/google/uuid"
 )
 

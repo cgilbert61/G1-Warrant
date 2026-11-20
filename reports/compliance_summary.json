@@ -1,11 +1,11 @@
 {
   "framework": "G1-Warrant Federal DevSecOps Pipeline",
   "fisma_id": "G1-WARRANT-001",
-  "timestamp": "2026-11-20T01:41:17.488754+00:00",
+  "timestamp": "2026-11-20T02:10:33.238448+00:00",
   "total_gates": 9,
   "passed_gates": 9,
   "failed_gates": 0,
-  "duration_seconds": 139.86,
+  "duration_seconds": 133.44,
   "gates": [
     {
       "gate": "SAST & Code Quality",

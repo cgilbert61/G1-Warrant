@@ -16,6 +16,7 @@ from .crypto import (
     dsse_pae,
     generate_ed25519_signer_bundle,
     verify_oscal_bundle_offline,
+    verify_oscal_bundle_with_keyring,
 )
 
 __version__ = "1.0.0"
@@ -39,4 +40,5 @@ __all__ = [
     "draft_thaw_envelope",
     "draft_exception_envelope",
     "verify_oscal_bundle_offline",
+    "verify_oscal_bundle_with_keyring",
 ]

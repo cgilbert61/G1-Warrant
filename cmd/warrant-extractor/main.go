@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/g1163rt-labs/g1-warrant/internal/extractor"
+	"github.com/cgilbert61/G1-Warrant/internal/extractor"
 )
 
 func main() {

@@ -3,8 +3,8 @@ package adapters
 import (
 	"context"
 
-	"github.com/g1163rt-labs/g1-warrant/internal/fleetsim"
-	"github.com/g1163rt-labs/g1-warrant/internal/models"
+	"github.com/cgilbert61/G1-Warrant/internal/fleetsim"
+	"github.com/cgilbert61/G1-Warrant/internal/models"
 )
 
 // SignedPatchArtifact represents an upstream binary/patch artifact with cryptographic publisher provenance.

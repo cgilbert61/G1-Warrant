@@ -12,7 +12,7 @@ G1-Warrant ships with two first-class client SDKs and two command-line interface
 ### Installation
 
 ```bash
-go get github.com/g1163rt-labs/g1-warrant/pkg/warrantsdk
+go get github.com/cgilbert61/G1-Warrant/pkg/warrantsdk
 ```
 
 ### Programmatic Go Example
@@ -26,7 +26,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/g1163rt-labs/g1-warrant/pkg/warrantsdk"
+	"github.com/cgilbert61/G1-Warrant/pkg/warrantsdk"
 )
 
 func main() {
@@ -90,20 +90,24 @@ Production SDKs and CLIs ship **zero built-in demo signers**. Operators generate
 ./warrant keygen --id usr-so-01 --email so@agency.gov --role SERVICE_OWNER --out so-key.json
 ./warrant keygen --id usr-ao-01 --email ao@agency.gov --role AUTHORIZING_OFFICIAL --out ao-key.json
 
-# Step 2: Draft an unsigned RFC 8785 JCS Standing Warrant DSSE envelope
+# Step 2: Enroll public keys in N1 (private keys never leave disk; requires out-of-band WARRANT_BOOTSTRAP_ADMIN_TOKEN)
+./warrant principals register --key so-key.json --admin-token "$WARRANT_BOOTSTRAP_ADMIN_TOKEN"
+./warrant principals register --key ao-key.json --admin-token "$WARRANT_BOOTSTRAP_ADMIN_TOKEN"
+
+# Step 3: Draft an unsigned RFC 8785 JCS Standing Warrant DSSE envelope
 ./warrant warrants draft \
   --class KEV-TIER1-STATELESS \
   --services payments-ledger-api,identity-sso-gateway \
   --max-cvss 10.0 --max-replicas 8 --sla-minutes 60 --ttl-days 30 \
   --out warrant-draft.dsse.json
 
-# Step 3: Slot 1 (Service Owner) signs over DSSEv1 PAE bytes
+# Step 4: Slot 1 (Service Owner) signs over DSSEv1 PAE bytes
 ./warrant warrants sign --in warrant-draft.dsse.json --slot 1 --key so-key.json
 
-# Step 4: Slot 2 (Authorizing Official) co-signs over identical DSSEv1 PAE bytes
+# Step 5: Slot 2 (Authorizing Official) co-signs over identical DSSEv1 PAE bytes
 ./warrant warrants sign --in warrant-draft.dsse.json --slot 2 --key ao-key.json
 
-# Step 5: Submit the 2-of-2 DSSE envelope to N1 (verified by OPA warrant_ac5.rego + append-only ledger)
+# Step 6: Submit the 2-of-2 DSSE envelope to N1 (verified by OPA warrant_ac5.rego + append-only ledger)
 ./warrant warrants submit warrant-draft.dsse.json
 ```
 
@@ -113,7 +117,7 @@ Production SDKs and CLIs ship **zero built-in demo signers**. Operators generate
 | :--- | :--- |
 | `warrant status [--json]` | Live control-plane posture, active warrants, 30d median TTVR, armed bridges, and estate eligibility. |
 | `warrant keygen --id <id> --email <e> --role <SO\|AO>` | Generate a portable Ed25519 AC-5 signing key bundle (`0600` JSON). |
-| `warrant principals [list \| revoke]` | List registered PIV/WebAuthn principals or revoke a key to trigger instant fail-closed invalidation. |
+| `warrant principals [list \| register --key <k> \| revoke]` | List, enroll (`WARRANT_BOOTSTRAP_ADMIN_TOKEN`), or revoke AC-5 signing keys for instant fail-closed invalidation. |
 | `warrant warrants [list \| verify \| draft \| sign --key <k> \| submit]` | Inspect, verify, or execute `2-of-2` Standing Warrant ceremonies. |
 | `warrant exceptions [list \| approve <id> --slot1-key <so> --slot2-key <ao> \| reject <id> ...]` | Inspect or dual-key resolve stateful/above-ceiling remediation exceptions. |
 | `warrant pipeline [list \| trace <id> \| rollback <id>]` | View Race Pipeline items, millisecond traces, or execute atomic 3-step `QUARANTINED_ROLLBACK` (`Contain-Before-Unban`). |
@@ -141,6 +145,7 @@ pip install -e sdk/python
 ### Python SDK & Offline Verification Example
 
 ```python
+import os
 from g1_warrant import (
     ROLE_AUTHORIZING_OFFICIAL,
     ROLE_SERVICE_OWNER,
@@ -148,17 +153,22 @@ from g1_warrant import (
     WarrantClient,
     draft_warrant_envelope,
     generate_ed25519_signer_bundle,
-    verify_oscal_bundle_offline,
+    verify_oscal_bundle_with_keyring,
 )
 
 cli = WarrantClient("http://localhost:8080")
+admin_tok = os.environ["WARRANT_BOOTSTRAP_ADMIN_TOKEN"]
 
-# 1. Draft and 2-of-2 co-sign a Standing Warrant using explicit Ed25519 keys
+# 1. Generate, enroll public keys in N1, and 2-of-2 co-sign + submit a Standing Warrant
 so = generate_ed25519_signer_bundle("usr-so-01", "so@agency.gov", "Service Owner", ROLE_SERVICE_OWNER)
 ao = generate_ed25519_signer_bundle("usr-ao-01", "ao@agency.gov", "Authorizing Official", ROLE_AUTHORIZING_OFFICIAL)
+cli.register_principal(so, admin_token=admin_tok)
+cli.register_principal(ao, admin_token=admin_tok)
+
 env = draft_warrant_envelope(scope_services=["payments-ledger-api"], max_cvss=10.0)
 so.sign_envelope(1, env)
 ao.sign_envelope(2, env)
+warrant = cli.create_warrant(env)
 
 # 2. Mint a scoped 3PAO Auditor Token & confirm HTTP 403 Operational Isolation
 minted = cli.mint_auditor_token(label="FedRAMP 3PAO Audit", ttl_hours=12)
@@ -170,10 +180,10 @@ try:
 except AuditorScopeViolationError as exc:
     print("Operational isolation enforced:", exc)
 
-# 3. Verify exported NIST OSCAL 1.1.2 POA&M bundle offline
+# 3. Verify exported NIST OSCAL 1.1.2 POA&M bundle offline against append-only kernel public-key ring
 if vault["attestations"]:
     att_id = vault["attestations"][0]["attestation_id"]
     bundle = cli.export_oscal_bundle(att_id)
-    proof = verify_oscal_bundle_offline(bundle, cli.kernel_public_key_b64())
+    proof = verify_oscal_bundle_with_keyring(bundle, cli.kernel_public_key_ring())
     assert proof["valid"] and proof["jcs_canonical_match"]
 ```

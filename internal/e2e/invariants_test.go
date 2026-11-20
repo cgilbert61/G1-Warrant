@@ -13,14 +13,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/g1163rt-labs/g1-warrant/internal/crypto"
-	"github.com/g1163rt-labs/g1-warrant/internal/db"
-	"github.com/g1163rt-labs/g1-warrant/internal/extractor"
-	"github.com/g1163rt-labs/g1-warrant/internal/fleetsim"
-	"github.com/g1163rt-labs/g1-warrant/internal/gate"
-	"github.com/g1163rt-labs/g1-warrant/internal/models"
-	"github.com/g1163rt-labs/g1-warrant/internal/server"
-	"github.com/g1163rt-labs/g1-warrant/pkg/warrantsdk"
+	"github.com/cgilbert61/G1-Warrant/internal/crypto"
+	"github.com/cgilbert61/G1-Warrant/internal/db"
+	"github.com/cgilbert61/G1-Warrant/internal/extractor"
+	"github.com/cgilbert61/G1-Warrant/internal/fleetsim"
+	"github.com/cgilbert61/G1-Warrant/internal/gate"
+	"github.com/cgilbert61/G1-Warrant/internal/models"
+	"github.com/cgilbert61/G1-Warrant/internal/server"
+	"github.com/cgilbert61/G1-Warrant/pkg/warrantsdk"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -1252,6 +1252,52 @@ func TestInvariant9_TargetedHardeningDelta_KeyRingStartupGuardAndOrderSensitiveC
 	if orderItems[0].Stage == models.StageAttestedClosed || orderItems[0].CanaryWeight != 0 {
 		t.Fatalf("expected order-sensitive default to block/rollback reordered shard_nodes array, got stage=%s weight=%d health=%s",
 			orderItems[0].Stage, orderItems[0].CanaryWeight, orderItems[0].StatusHealth)
+	}
+
+	// 4. AC-5 Principal Enrollment Ceremony:
+	//    - Unenrolled freshly generated keys MUST fail CreateWarrant (AC5_UNKNOWN_SIGNER)
+	//    - Unauthenticated RegisterPrincipal MUST fail closed (401/403)
+	//    - Authenticated RegisterPrincipal (WARRANT_BOOTSTRAP_ADMIN_TOKEN) + CreateWarrant succeeds!
+	t.Setenv("WARRANT_BOOTSTRAP_ADMIN_TOKEN", "adm_test_registrar_secret_token_99")
+	orch3, err := server.NewOrchestrator(h.ctx, h.store, extSrv.URL, simSrv.URL, "", h.orch.WebAuthnCfg)
+	if err != nil {
+		t.Fatalf("NewOrchestrator #3 failed: %v", err)
+	}
+	srv3 := httptest.NewServer(orch3.BuildHTTPHandler())
+	defer srv3.Close()
+
+	freshSO, _ := warrantsdk.GenerateEd25519SignerBundle("usr-ext-so", "ext-so@agency.gov", "Ext SO", warrantsdk.RoleServiceOwner)
+	freshAO, _ := warrantsdk.GenerateEd25519SignerBundle("usr-ext-ao", "ext-ao@agency.gov", "Ext AO", warrantsdk.RoleAuthorizingOfficial)
+	draftEnv, _, err := warrantsdk.DraftWarrantEnvelope(warrantsdk.WarrantDraftOptions{
+		WarrantClass:  "KEV-TIER1-STATELESS",
+		ScopeServices: []string{"payments-ledger-api"},
+		MaxCVSS:       10.0,
+		KEVEligible:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = freshSO.SignEnvelope(1, draftEnv)
+	_ = freshAO.SignEnvelope(2, draftEnv)
+
+	unauthCli := warrantsdk.NewClient(srv3.URL)
+	if _, err := unauthCli.CreateWarrant(h.ctx, *draftEnv); err == nil || !strings.Contains(err.Error(), "AC5_UNKNOWN_SIGNER") {
+		t.Fatalf("expected un-enrolled keys to fail CreateWarrant with AC5_UNKNOWN_SIGNER, got: %v", err)
+	}
+	if _, err := unauthCli.RegisterPrincipal(h.ctx, freshSO.ToRegisterRequest()); err == nil {
+		t.Fatal("expected unauthenticated RegisterPrincipal to fail closed")
+	}
+
+	adminCli := warrantsdk.NewClient(srv3.URL, warrantsdk.WithAdminToken("adm_test_registrar_secret_token_99"))
+	if _, err := adminCli.RegisterPrincipal(h.ctx, freshSO.ToRegisterRequest()); err != nil {
+		t.Fatalf("authenticated RegisterPrincipal(SO) failed: %v", err)
+	}
+	if _, err := adminCli.RegisterPrincipal(h.ctx, freshAO.ToRegisterRequest()); err != nil {
+		t.Fatalf("authenticated RegisterPrincipal(AO) failed: %v", err)
+	}
+	mintedWarrant, err := unauthCli.CreateWarrant(h.ctx, *draftEnv)
+	if err != nil || mintedWarrant.LiveStatus != "ACTIVE" {
+		t.Fatalf("expected CreateWarrant after authenticated enrollment to succeed, got rec=%+v err=%v", mintedWarrant, err)
 	}
 }
 

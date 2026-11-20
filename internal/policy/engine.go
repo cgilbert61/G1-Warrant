@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/g1163rt-labs/g1-warrant/policies"
+	"github.com/cgilbert61/G1-Warrant/policies"
 	"github.com/open-policy-agent/opa/v1/rego"
 )
 

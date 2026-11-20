@@ -17,6 +17,7 @@ from g1_warrant import (
     dsse_pae,
     generate_ed25519_signer_bundle,
     verify_oscal_bundle_offline,
+    verify_oscal_bundle_with_keyring,
 )
 from g1_warrant.crypto import draft_unsigned_envelope
 
@@ -57,6 +58,11 @@ class TestG1WarrantCryptoAndSDK(unittest.TestCase):
         verified = verify_oscal_bundle_offline(bundle, kernel.public_key_b64)
         self.assertTrue(verified["valid"])
         self.assertTrue(verified["jcs_canonical_match"])
+
+        ring_verified = verify_oscal_bundle_with_keyring(
+            bundle, [{"key_id": kernel.key_id, "public_key_b64": kernel.public_key_b64}]
+        )
+        self.assertTrue(ring_verified["valid"])
 
         # Tampering with public key must reject
         other = generate_ed25519_signer_bundle("usr-other", "other@agency.gov", "Other", ROLE_AUTHORIZING_OFFICIAL)

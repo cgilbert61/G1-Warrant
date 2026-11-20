@@ -17,6 +17,7 @@ from .crypto import (
     draft_warrant_envelope,
     generate_ed25519_signer_bundle,
     verify_oscal_bundle_offline,
+    verify_oscal_bundle_with_keyring,
 )
 
 
@@ -53,6 +54,10 @@ def main(argv: list[str] | None = None) -> int:
     p_keygen.add_argument("--name", default="G1 Signer")
     p_keygen.add_argument("--role", choices=[ROLE_SERVICE_OWNER, ROLE_AUTHORIZING_OFFICIAL], default=ROLE_SERVICE_OWNER)
     p_keygen.add_argument("--out", default=None)
+
+    p_preg = sub.add_parser("principals-register", help="Enroll an Ed25519 SignerKeyBundle public key in N1 (requires admin token)")
+    p_preg.add_argument("key_file", type=Path)
+    p_preg.add_argument("--admin-token", default=None, help="WARRANT_BOOTSTRAP_ADMIN_TOKEN")
 
     sub.add_parser("pipeline", help="List 5-stage Race Pipeline remediations")
     p_trace = sub.add_parser("traces", help="Show millisecond execution traces for a remediation")
@@ -147,6 +152,11 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  Drift Violations:      {sb['active_drift_violations_count']}")
             return 0
 
+        if args.command == "principals-register":
+            bundle = SignerKeyBundle.from_dict(json.loads(args.key_file.read_text(encoding="utf-8")))
+            _dump(cli.register_principal(bundle, admin_token=args.admin_token))
+            return 0
+
         if args.command == "warrants":
             _dump(cli.list_warrants())
             return 0
@@ -239,17 +249,10 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "oscal-verify":
             raw_text = args.bundle_file.read_text(encoding="utf-8")
-            pk = args.pubkey
-            if not pk:
-                doc = json.loads(raw_text)
-                sig_kid = ((doc.get("dsse_envelope") or {}).get("signatures") or [{}])[0].get("keyid", "")
-                for entry in cli.kernel_public_key_ring():
-                    if entry.get("key_id") == sig_kid:
-                        pk = entry.get("public_key_b64")
-                        break
-                if not pk:
-                    pk = cli.kernel_public_key_b64()
-            res = verify_oscal_bundle_offline(raw_text, pk)
+            if args.pubkey:
+                res = verify_oscal_bundle_offline(raw_text, args.pubkey)
+            else:
+                res = verify_oscal_bundle_with_keyring(raw_text, cli.kernel_public_key_ring())
             _dump(res)
             return 0
 

@@ -3,7 +3,7 @@ package gate
 import (
 	"testing"
 
-	"github.com/g1163rt-labs/g1-warrant/internal/models"
+	"github.com/cgilbert61/G1-Warrant/internal/models"
 )
 
 func TestNormalizeAndDiffHTTPJSON_MasksVolatilesAndDetectsBreaking(t *testing.T) {

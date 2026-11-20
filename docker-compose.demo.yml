@@ -1,0 +1,7 @@
+# Optional local sandbox override enabling seeded PIV test personas in the Console:
+#   docker compose -f docker-compose.yml -f docker-compose.demo.yml up --build -d
+services:
+  warrantd:
+    environment:
+      WARRANT_ENABLE_TEST_SMARTCARDS: "true"
+      WARRANT_FEED_MODE: "offline"

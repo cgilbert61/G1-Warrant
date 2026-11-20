@@ -1,4 +1,4 @@
-module github.com/g1163rt-labs/g1-warrant
+module github.com/cgilbert61/G1-Warrant
 
 go 1.26.0
 

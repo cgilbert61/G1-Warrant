@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/g1163rt-labs/g1-warrant/internal/crypto"
-	"github.com/g1163rt-labs/g1-warrant/internal/models"
+	"github.com/cgilbert61/G1-Warrant/internal/crypto"
+	"github.com/cgilbert61/G1-Warrant/internal/models"
 )
 
 // ComputeCombinedMerkleRoot computes a binary Merkle tree root over the three ledger terminal hashes and row counts.

@@ -124,6 +124,30 @@ class WarrantClient:
     def list_principals(self) -> list[dict[str, Any]]:
         return self._request_json("GET", "/api/v1/principals")
 
+    def register_principal(
+        self,
+        signer_bundle: Any,
+        admin_token: str | None = None,
+    ) -> dict[str, Any]:
+        """Enroll a public Ed25519 AC-5 signing key (SERVICE_OWNER or AUTHORIZING_OFFICIAL) via POST /api/v1/principals/register.
+
+        Private keys are stripped locally and NEVER transmitted over the network.
+        """
+        tok = (admin_token or os.environ.get("WARRANT_BOOTSTRAP_ADMIN_TOKEN") or "").strip()
+        if not tok:
+            raise ValueError("admin_token (or WARRANT_BOOTSTRAP_ADMIN_TOKEN) is required to enroll AC-5 principals")
+        data = signer_bundle.to_dict() if hasattr(signer_bundle, "to_dict") else dict(signer_bundle)
+        pub_payload = {
+            "principal_id": data["principal_id"],
+            "email": data["email"],
+            "display_name": data.get("display_name", ""),
+            "role": data["role"],
+            "key_id": data.get("key_id", ""),
+            "alg": data.get("alg", "Ed25519"),
+            "public_key_b64": data["public_key_b64"],
+        }
+        return self._request_json("POST", "/api/v1/principals/register", pub_payload, bearer_override=tok)
+
     def revoke_principal(
         self,
         principal_id: str = "",

@@ -20,6 +20,7 @@ type Client struct {
 	httpClient   *http.Client
 	auditorToken string
 	sensorToken  string
+	adminToken   string
 	userAgent    string
 }
 
@@ -55,6 +56,14 @@ func WithAuditorToken(bearer string) Option {
 func WithSensorToken(token string) Option {
 	return func(c *Client) {
 		c.sensorToken = strings.TrimSpace(token)
+	}
+}
+
+// WithAdminToken attaches the out-of-band IAM registrar token (WARRANT_BOOTSTRAP_ADMIN_TOKEN)
+// required to enroll new AC-5 principal public keys via POST /api/v1/principals/register.
+func WithAdminToken(token string) Option {
+	return func(c *Client) {
+		c.adminToken = strings.TrimSpace(token)
 	}
 }
 
@@ -148,6 +157,16 @@ func (c *Client) ListPrincipals(ctx context.Context) ([]Principal, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// RegisterPrincipal enrolls a public Ed25519 AC-5 signing identity (Slot 1 SERVICE_OWNER or Slot 2 AUTHORIZING_OFFICIAL)
+// into N1 via POST /api/v1/principals/register (requires WithAdminToken matching WARRANT_BOOTSTRAP_ADMIN_TOKEN).
+func (c *Client) RegisterPrincipal(ctx context.Context, req RegisterPrincipalRequest) (*Principal, error) {
+	var out Principal
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/principals/register", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // RevokePrincipal revokes a principal or hardware key fingerprint in N1, immediately invalidating associated warrants.
@@ -621,6 +640,9 @@ func (c *Client) doRaw(ctx context.Context, method, path, contentType string, bo
 	}
 	if c.sensorToken != "" {
 		req.Header.Set("X-Tetragon-Sensor-Token", c.sensorToken)
+	}
+	if c.adminToken != "" {
+		req.Header.Set("X-Warrant-Admin-Token", c.adminToken)
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
