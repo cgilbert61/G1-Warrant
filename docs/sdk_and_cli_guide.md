@@ -128,6 +128,9 @@ Production SDKs and CLIs ship **zero built-in demo signers**. Operators generate
 | `warrant status [--json]` | Live control-plane posture, active warrants, 30d median TTVR, armed bridges, and estate eligibility. |
 | `warrant keygen --id <id> --email <e> --role <SO\|AO> --out <prefix>` | Generate split Ed25519 AC-5 key files (`<prefix>.priv.json` `0600` + `<prefix>.pub.json` `0644`). |
 | `warrant principals [list \| register --pub <p.pub.json> \| seal \| revoke \| rotate-and-revoke]` | List principals, enroll `.pub.json` (genesis token or post-seal `2-of-2` DSSE), seal bootstrap (`Checkpoint #0`), `1-of-2` self-revoke (`--key`), `2-of-2` peer revoke (`--slot1-key` + `--slot2-key`), or atomic `2-of-2` rotation+revocation. |
+| `warrant functions [list \| upsert \| transfer <fn-id>]` | Register `CommissioningFunction` sponsor charters or execute `2-of-2` DSSE sponsor succession transfers (`v1.1.0`). |
+| `warrant agents [list \| keygen \| prove-build \| enroll \| recertify \| revoke \| token-exchange \| lifecycle]` | Generate agent/builder Ed25519 keys, sign `G1_AGENT_PROVENANCE_V1`, commission agents (`Builder ≠ Commissioner` 3-Way SoD), execute `0s` `1-of-2` kill-switch revocations, or exchange RFC 8693 `cnf` + `act` Ephemeral Task Warrants (`v1.1.0`). |
+| `warrant iga emit --principal <id> --type <ROLE_TRANSFER\|ORG_REORG\|LEAVE_OF_ABSENCE\|TERMINATION\|KEY_COMPROMISE>` | Emit signed HR/IGA lifecycle webhooks driving secondary-sponsor continuity, bounded grace escalation, or `0s` `KEY_COMPROMISE` cutoff (`v1.1.0`). |
 | `warrant warrants [list \| verify \| draft \| sign --key <k.priv.json> \| submit]` | Inspect, verify, or execute `2-of-2` Standing Warrant ceremonies. |
 | `warrant exceptions [list \| approve <id> --slot1-key <so> --slot2-key <ao> \| reject <id> ...]` | Inspect or dual-key resolve stateful/above-ceiling remediation exceptions (single-use `envelope_id` + `exception_id` bound). |
 | `warrant pipeline [list \| trace <id> \| rollback <id> --key <k.priv.json>]` | View Race Pipeline items, millisecond traces, or execute request-scoped `1-of-2` atomic 3-step `QUARANTINED_ROLLBACK`. |
@@ -139,7 +142,7 @@ Production SDKs and CLIs ship **zero built-in demo signers**. Operators generate
 | `warrant freeze [hold \| rollback --key <k.priv.json> \| thaw --slot1-key <so> --slot2-key <ao>]` | Trigger request-scoped `1-of-2` emergency freeze/rollback or `freeze_epoch`-bound `2-of-2` DSSE fleet thaw. |
 | `warrant oscal [export <id> \| verify-offline <bundle.json>]` | Export DSSE-signed NIST OSCAL `1.1.2` POA&M packages and verify signatures air-gapped. |
 | `warrant auditor [mint-token --key <k.priv.json> \| inspect]` | Mint (request-scoped `1-of-2` DSSE) or test a scoped read-only `g1aud_*` external 3PAO auditor bearer link. |
-| `warrant ledger [verify \| actions \| checkpoints \| anchor]` | Verify SHA-256 hash chains + Authority Lineage Attestations + External Merkle Checkpoints across all 6 immutable tables. |
+| `warrant ledger [verify \| actions \| checkpoints \| anchor]` | Verify SHA-256 hash chains + Authority Lineage Attestations + External Merkle Checkpoints (`MerkleVersion=3`) across all 9 immutable WORM tables (`6` core + `3` agent authority chains). |
 | `warrant events` | Stream real-time Server-Sent Events (`SSE`) from `warrantd` in the terminal. |
 
 ---

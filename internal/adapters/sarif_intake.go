@@ -29,7 +29,7 @@ func NewSARIFIntakeAdapter(gw ExtractorGateway) *SARIFIntakeAdapter {
 }
 
 func (s *SARIFIntakeAdapter) IngestSARIF(ctx context.Context, rawSARIF []byte) (*models.ExtractedFindingSet, error) {
-	return s.gateway.ExtractSARIFGoverned(ctx, "BOOTSTRAP_INTAKE", "", "sarif-stream", "sys-intake", "sys-intake", rawSARIF)
+	return s.gateway.ExtractSARIFGoverned(ctx, models.AuthorityModeAutonomousSponsored, "", "sarif-stream", "NONE", "NONE", rawSARIF)
 }
 
 // DeterministicFixProvider verifies publisher-signed OCI patch artifacts and unified diffs against an authoritative

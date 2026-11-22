@@ -21,12 +21,23 @@ import (
 // Engine implements N1: Standing Warrant Engine, Live Principal/Key Revocation,
 // Asymmetric Dual-Mode Emergency Freeze, and Approval Pressure Analytics.
 type Engine struct {
-	store        *db.Store
-	policy       *policy.Engine
-	webauthnCfg  crypto.WebAuthnConfig
-	kernelSigner crypto.EnvelopeSigner
-	freezeCache  atomic.Value // stores models.FreezeState
-	onBroadcast  func(eventType string, payload any)
+	store           *db.Store
+	policy          *policy.Engine
+	webauthnCfg     crypto.WebAuthnConfig
+	kernelSigner    crypto.EnvelopeSigner
+	publisherPubKey ed25519.PublicKey
+	freezeCache     atomic.Value // stores models.FreezeState
+	onBroadcast     func(eventType string, payload any)
+}
+
+// SetPublisherPublicKey configures the authoritative Artifact Publisher / Build Attestor Ed25519 public key
+// used to verify AgentIdentity builder provenance signatures when an explicit builder key is not supplied.
+func (e *Engine) SetPublisherPublicKey(pub ed25519.PublicKey) {
+	if len(pub) == ed25519.PublicKeySize {
+		cp := make(ed25519.PublicKey, ed25519.PublicKeySize)
+		copy(cp, pub)
+		e.publisherPubKey = cp
+	}
 }
 
 // NewEngine constructs the N1 Standing Warrant Engine and loads initial freeze state into memory.
@@ -424,6 +435,16 @@ func (e *Engine) RevokeSignerWithGovernance(
 	if err != nil {
 		return nil, err
 	}
+	igaType := models.IGAEventRoleTransfer
+	if strings.Contains(strings.ToUpper(persisted.ReasonCode), "COMPROMISE") {
+		igaType = models.IGAEventKeyCompromise
+	}
+	_, _ = e.ProcessIGALifecycleEvent(ctx, models.IGAEventRequest{
+		EventType:    igaType,
+		PrincipalID:  persisted.PrincipalID,
+		ReasonCode:   persisted.ReasonCode,
+		SourceSystem: "N1_PRINCIPAL_REVOCATION",
+	}, signerPrincipalID, persisted.LineageMode, govEnv)
 	e.emit("PRINCIPAL_REVOKED", persisted)
 	return persisted, nil
 }

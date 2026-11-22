@@ -22,6 +22,11 @@ services:
       dockerfile: Dockerfile.extractor
     environment:
       EXTRACTOR_LISTEN_ADDR: ":8090"
+      WARRANT_EXTRACTOR_REQUIRE_TASK_POP: "true"
+      WARRANT_KERNEL_PUBLIC_KEY_B64: "${WARRANT_KERNEL_PUBLIC_KEY_B64:-}"
+      WARRANT_KERNEL_PUBLIC_KEY_FILE: "/var/lib/warrant-pubkeys/kernel_public_key.b64"
+    volumes:
+      - warrant_pubkeys:/var/lib/warrant-pubkeys:ro
     read_only: true
     cap_drop:
       - ALL
@@ -37,6 +42,11 @@ services:
       dockerfile: Dockerfile.fleetsim
     environment:
       FLEET_SIM_LISTEN_ADDR: ":8095"
+      FLEET_SIM_REQUIRE_TASK_POP: "true"
+      WARRANT_KERNEL_PUBLIC_KEY_B64: "${WARRANT_KERNEL_PUBLIC_KEY_B64:-}"
+      WARRANT_KERNEL_PUBLIC_KEY_FILE: "/var/lib/warrant-pubkeys/kernel_public_key.b64"
+    volumes:
+      - warrant_pubkeys:/var/lib/warrant-pubkeys:ro
     read_only: true
     cap_drop:
       - ALL
@@ -69,7 +79,10 @@ services:
       WARRANT_RULEPACK_SEED_HEX: "${WARRANT_RULEPACK_SEED_HEX:-}"
       WARRANT_EXTERNAL_ANCHOR_URL: "${WARRANT_EXTERNAL_ANCHOR_URL:-}"
       WARRANT_KERNEL_KEY_PATH: "/var/lib/warrant-anchor/kernel_signer.json"
+      WARRANT_KERNEL_PUBLIC_KEY_EXPORT_PATH: "/var/lib/warrant-pubkeys/kernel_public_key.b64"
       WARRANT_EXTERNAL_ANCHOR_PATH: "/var/lib/warrant-anchor/checkpoints.jsonl"
+      WARRANT_IGA_TOKEN: "${WARRANT_IGA_TOKEN:-}"
+      WARRANT_IGA_WEBHOOK_HMAC_SECRET: "${WARRANT_IGA_WEBHOOK_HMAC_SECRET:-}"
       WARRANT_FEED_MODE: "${WARRANT_FEED_MODE:-offline}"
       WARRANT_CISA_KEV_URL: "${WARRANT_CISA_KEV_URL:-https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json}"
       WARRANT_KEV_POLL_INTERVAL: "${WARRANT_KEV_POLL_INTERVAL:-1h}"
@@ -79,6 +92,7 @@ services:
       - "127.0.0.1:8080:8080"
     volumes:
       - warrant_anchor:/var/lib/warrant-anchor
+      - warrant_pubkeys:/var/lib/warrant-pubkeys
     read_only: true
     cap_drop:
       - ALL
@@ -160,4 +174,5 @@ networks:
 volumes:
   pgdata:
   warrant_anchor:
+  warrant_pubkeys:
   trivy_cache:

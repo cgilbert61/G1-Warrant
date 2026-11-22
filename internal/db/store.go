@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -640,8 +641,10 @@ func ComputeWarrantEntryHash(prevHash, warrantID, warrantClass, s1ID, s1FP, s2ID
 }
 
 // ComputeAgentActionEntryHash computes the deterministic SHA-256 chain link for agent_action_ledger.
+// Preserves exact hash continuity for legacy v1.0.x rows (where AuthorityMode, CommissioningFunctionID, and AgentID are empty)
+// while binding authority_mode, commissioning_function_id, agent_id, and delegation_depth on all v1.1.0+ rows.
 func ComputeAgentActionEntryHash(prevHash string, e models.AgentLedgerEntry) string {
-	material := strings.Join([]string{
+	parts := []string{
 		"agent_action_ledger",
 		prevHash,
 		e.ActionID,
@@ -654,8 +657,11 @@ func ComputeAgentActionEntryHash(prevHash string, e models.AgentLedgerEntry) str
 		e.ExtractorDigest,
 		e.TypedOutputSHA256,
 		e.Status,
-	}, "|")
-	return crypto.SHA256Hex([]byte(material))
+	}
+	if e.AuthorityMode != "" || e.CommissioningFunctionID != "" || e.AgentID != "" || e.DelegationDepth > 0 {
+		parts = append(parts, e.AuthorityMode, e.CommissioningFunctionID, e.AgentID, strconv.Itoa(e.DelegationDepth))
+	}
+	return crypto.SHA256Hex([]byte(strings.Join(parts, "|")))
 }
 
 // ComputeAttestationEntryHash computes the deterministic SHA-256 chain link for attestation_records.
@@ -783,19 +789,27 @@ func (s *Store) AppendAgentAction(ctx context.Context, entry *models.AgentLedger
 	if entry.ExecutedAt.IsZero() {
 		entry.ExecutedAt = time.Now().UTC()
 	}
+	var actChainRaw []byte
+	if entry.ActChain != nil {
+		actChainRaw, _ = crypto.CanonicalizeStruct(entry.ActChain)
+	}
 
 	_, err = tx.Exec(ctx, `
 		INSERT INTO agent_action_ledger (
-			action_id, task_token_id, warrant_id, remediation_id, worker_name, target_asset, action_type,
+			action_id, task_token_id, warrant_id, remediation_id,
+			authority_mode, commissioning_function_id, agent_id, delegation_depth, act_chain_json,
+			worker_name, target_asset, action_type,
 			slot1_principal_id, slot2_principal_id, egress_profile,
 			raw_input_sha256, extractor_digest, typed_output_sha256,
 			token_ttl_sec, status, violation_code, prev_hash, entry_hash, executed_at
 		) VALUES (
-			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24
 		)
 	`,
-		entry.ActionID, entry.TaskTokenID, entry.WarrantID, entry.RemediationID, entry.WorkerName,
-		entry.TargetAsset, entry.ActionType, entry.Slot1PrincipalID, entry.Slot2PrincipalID, entry.EgressProfile,
+		entry.ActionID, entry.TaskTokenID, entry.WarrantID, entry.RemediationID,
+		entry.AuthorityMode, entry.CommissioningFunctionID, entry.AgentID, entry.DelegationDepth, actChainRaw,
+		entry.WorkerName, entry.TargetAsset, entry.ActionType,
+		entry.Slot1PrincipalID, entry.Slot2PrincipalID, entry.EgressProfile,
 		entry.RawInputSHA256, entry.ExtractorDigest, entry.TypedOutputSHA256,
 		entry.TokenTTLSec, entry.Status, entry.ViolationCode, entry.PrevHash, entry.EntryHash, entry.ExecutedAt,
 	)
@@ -871,8 +885,9 @@ func (s *Store) AppendAttestation(ctx context.Context, att *models.AttestationRe
 	return tx.Commit(ctx)
 }
 
-// VerifyAllLedgerChains walks every row in all 6 immutable hash-chained tables
-// (warrant_envelopes, agent_action_ledger, attestation_records, principals, principal_revocations, kernel_public_keys)
+// VerifyAllLedgerChains walks every row in all 9 immutable hash-chained tables
+// (6 core chains: warrant_envelopes, agent_action_ledger, attestation_records, principals, principal_revocations, kernel_public_keys;
+// plus 3 v1.1.0 agent-authority chains: commissioning_functions, agent_identities, agent_lifecycle_events)
 // and verifies prev_hash continuity, recomputed entry_hash integrity, and external Merkle checkpoint consistency.
 func (s *Store) VerifyAllLedgerChains(ctx context.Context, externalWitnesses ...[]models.LedgerCheckpoint) (*models.LedgerVerificationReport, error) {
 	wStatus, err := s.verifyWarrantChain(ctx)
@@ -896,6 +911,18 @@ func (s *Store) VerifyAllLedgerChains(ctx context.Context, externalWitnesses ...
 		return nil, err
 	}
 	kStatus, err := s.verifyKernelKeyChain(ctx)
+	if err != nil {
+		return nil, err
+	}
+	cfStatus, err := s.verifyCommissioningFunctionChain(ctx)
+	if err != nil {
+		return nil, err
+	}
+	aiStatus, err := s.verifyAgentIdentityChain(ctx)
+	if err != nil {
+		return nil, err
+	}
+	aleStatus, err := s.verifyAgentLifecycleChain(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -923,10 +950,22 @@ func (s *Store) VerifyAllLedgerChains(ctx context.Context, externalWitnesses ...
 		case "kernel_public_keys":
 			kStatus.Valid = false
 			kStatus.FailureDetail = lineageErr.Error()
+		case "commissioning_functions":
+			cfStatus.Valid = false
+			cfStatus.FailureDetail = lineageErr.Error()
+		case "agent_identities":
+			aiStatus.Valid = false
+			aiStatus.FailureDetail = lineageErr.Error()
+		case "agent_lifecycle_events":
+			aleStatus.Valid = false
+			aleStatus.FailureDetail = lineageErr.Error()
 		}
 	}
 
-	allValid := wStatus.Valid && aStatus.Valid && attStatus.Valid && pStatus.Valid && revStatus.Valid && kStatus.Valid && anchorOK && lineageOK
+	allValid := wStatus.Valid && aStatus.Valid && attStatus.Valid &&
+		pStatus.Valid && revStatus.Valid && kStatus.Valid &&
+		cfStatus.Valid && aiStatus.Valid && aleStatus.Valid &&
+		anchorOK && lineageOK
 	return &models.LedgerVerificationReport{
 		AllValid:                allValid,
 		ExternalAnchorVerified:  anchorOK,
@@ -935,6 +974,7 @@ func (s *Store) VerifyAllLedgerChains(ctx context.Context, externalWitnesses ...
 		SuperuserTamperDetail:   tamperDetail,
 		VerifiedAt:              time.Now().UTC(),
 		Tables:                  []models.ChainTableStatus{wStatus, aStatus, attStatus, pStatus, revStatus, kStatus},
+		AgentAuthorityTables:    []models.ChainTableStatus{cfStatus, aiStatus, aleStatus},
 	}, nil
 }
 
@@ -988,7 +1028,9 @@ func (s *Store) verifyWarrantChain(ctx context.Context) (models.ChainTableStatus
 
 func (s *Store) verifyAgentChain(ctx context.Context) (models.ChainTableStatus, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT action_id, task_token_id, warrant_id, worker_name, target_asset, action_type,
+		SELECT action_id, task_token_id, warrant_id,
+		       authority_mode, commissioning_function_id, agent_id, delegation_depth,
+		       worker_name, target_asset, action_type,
 		       raw_input_sha256, extractor_digest, typed_output_sha256, status, prev_hash, entry_hash
 		FROM agent_action_ledger ORDER BY seq_no ASC
 	`)
@@ -1002,7 +1044,9 @@ func (s *Store) verifyAgentChain(ctx context.Context) (models.ChainTableStatus, 
 	for rows.Next() {
 		var e models.AgentLedgerEntry
 		if err := rows.Scan(
-			&e.ActionID, &e.TaskTokenID, &e.WarrantID, &e.WorkerName, &e.TargetAsset, &e.ActionType,
+			&e.ActionID, &e.TaskTokenID, &e.WarrantID,
+			&e.AuthorityMode, &e.CommissioningFunctionID, &e.AgentID, &e.DelegationDepth,
+			&e.WorkerName, &e.TargetAsset, &e.ActionType,
 			&e.RawInputSHA256, &e.ExtractorDigest, &e.TypedOutputSHA256, &e.Status, &e.PrevHash, &e.EntryHash,
 		); err != nil {
 			return models.ChainTableStatus{}, err

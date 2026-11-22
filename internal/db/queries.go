@@ -848,7 +848,9 @@ func (s *Store) ListShadowRuns(ctx context.Context) ([]models.ShadowComparisonRe
 // ListAgentActions returns the hash-chained N4 Governed Agent Ledger entries.
 func (s *Store) ListAgentActions(ctx context.Context) ([]models.AgentLedgerEntry, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT action_id, task_token_id, warrant_id, remediation_id, worker_name, target_asset, action_type,
+		SELECT action_id, task_token_id, warrant_id, remediation_id,
+		       authority_mode, commissioning_function_id, agent_id, delegation_depth, act_chain_json,
+		       worker_name, target_asset, action_type,
 		       slot1_principal_id, slot2_principal_id, egress_profile,
 		       raw_input_sha256, extractor_digest, typed_output_sha256,
 		       token_ttl_sec, status, violation_code, prev_hash, entry_hash, executed_at
@@ -861,13 +863,22 @@ func (s *Store) ListAgentActions(ctx context.Context) ([]models.AgentLedgerEntry
 	out := []models.AgentLedgerEntry{}
 	for rows.Next() {
 		var e models.AgentLedgerEntry
+		var actRaw []byte
 		if err := rows.Scan(
-			&e.ActionID, &e.TaskTokenID, &e.WarrantID, &e.RemediationID, &e.WorkerName, &e.TargetAsset, &e.ActionType,
+			&e.ActionID, &e.TaskTokenID, &e.WarrantID, &e.RemediationID,
+			&e.AuthorityMode, &e.CommissioningFunctionID, &e.AgentID, &e.DelegationDepth, &actRaw,
+			&e.WorkerName, &e.TargetAsset, &e.ActionType,
 			&e.Slot1PrincipalID, &e.Slot2PrincipalID, &e.EgressProfile,
 			&e.RawInputSHA256, &e.ExtractorDigest, &e.TypedOutputSHA256,
 			&e.TokenTTLSec, &e.Status, &e.ViolationCode, &e.PrevHash, &e.EntryHash, &e.ExecutedAt,
 		); err != nil {
 			return nil, err
+		}
+		if len(actRaw) > 0 {
+			var act models.ActorClaim
+			if json.Unmarshal(actRaw, &act) == nil {
+				e.ActChain = &act
+			}
 		}
 		out = append(out, e)
 	}
@@ -1098,18 +1109,38 @@ func (s *Store) ComputeScoreboard(ctx context.Context) (*models.GlobalScoreboard
 		eligPct = (float64(eligibleCount) / float64(totalServices)) * 100.0
 	}
 
+	activeAgents := 0
+	quarantinedAgents := 0
+	if agents, aErr := s.ListAgentIdentities(ctx); aErr == nil {
+		for _, a := range agents {
+			switch a.SponsorshipState {
+			case models.SponsorshipOrphanQuarantined, models.SponsorshipLeaseExpired, models.SponsorshipRevokedCompromise, models.SponsorshipRevokedKillSwitch:
+				quarantinedAgents++
+			default:
+				activeAgents++
+			}
+		}
+	}
+	pendingTransfersCount := 0
+	if transfers, tErr := s.ListPendingSponsorTransfers(ctx); tErr == nil {
+		pendingTransfersCount = len(transfers)
+	}
+
 	return &models.GlobalScoreboard{
-		FreezeState:                fs,
-		ActiveWarrantsCount:        activeWarrants,
-		FleetMedianTTVRSeconds:     medianTTVR,
-		ActiveBridgesArmed:         activeBridges,
-		MedianBridgeAgeSeconds:     medianBridgeAge,
-		AutonomousEligibilityPct:   eligPct,
-		EligibleServicesCount:      eligibleCount,
-		TotalServicesCount:         totalServices,
-		AwaitingDualKeyInboxCount:  pendingInbox,
-		ActiveDriftViolationsCount: driftCount,
-		RollbackFailuresCount:      rollbackCount,
+		FreezeState:                  fs,
+		ActiveWarrantsCount:          activeWarrants,
+		ActiveAgentsCount:            activeAgents,
+		QuarantinedAgentsCount:       quarantinedAgents,
+		PendingSponsorTransfersCount: pendingTransfersCount,
+		FleetMedianTTVRSeconds:       medianTTVR,
+		ActiveBridgesArmed:           activeBridges,
+		MedianBridgeAgeSeconds:       medianBridgeAge,
+		AutonomousEligibilityPct:     eligPct,
+		EligibleServicesCount:        eligibleCount,
+		TotalServicesCount:           totalServices,
+		AwaitingDualKeyInboxCount:    pendingInbox + pendingTransfersCount,
+		ActiveDriftViolationsCount:   driftCount,
+		RollbackFailuresCount:        rollbackCount,
 	}, nil
 }
 

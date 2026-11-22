@@ -31,6 +31,13 @@ func NewK8sRolloutAdapter(fleetBaseURL string) *K8sRolloutAdapter {
 	}
 }
 
+// SetHTTPTransport configures a governed RoundTripper attaching X-Warrant-Task-DSSE + X-Warrant-Agent-PoP.
+func (k *K8sRolloutAdapter) SetHTTPTransport(rt http.RoundTripper) {
+	if k != nil && k.httpClient != nil && rt != nil {
+		k.httpClient.Transport = rt
+	}
+}
+
 func (k *K8sRolloutAdapter) ProgressCanary(ctx context.Context, serviceID string, req fleetsim.StageRolloutRequest) (*fleetsim.StageRolloutResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {

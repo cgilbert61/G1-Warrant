@@ -13,8 +13,8 @@
     "compliance": "Section 508 Federal Accessibility",
     "liveEndpointVerified": true
   },
-  "timestamp": "2026-11-20T05:25:59.628707+00:00",
-  "filesAudited": 12,
+  "timestamp": "2026-11-22T03:04:55.516140+00:00",
+  "filesAudited": 13,
   "violations": [],
   "passes": [
     {
@@ -59,6 +59,63 @@
         "section508"
       ],
       "file": "web/src/App.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <select id='iga-event-type'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/AgentGovernancePanel.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <select id='iga-principal-select'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/AgentGovernancePanel.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/AgentGovernancePanel.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/AgentGovernancePanel.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/AgentGovernancePanel.tsx"
     },
     {
       "id": "image-alt",
@@ -259,6 +316,18 @@
         "section508"
       ],
       "file": "web/src/components/CommandBar.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='wrapped'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/DualKeyCeremonyPanel.tsx"
     },
     {
       "id": "button-name",
@@ -930,6 +999,28 @@
       "file": "web/src/components/View5AuditorLedger.tsx"
     },
     {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View5AuditorLedger.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View5AuditorLedger.tsx"
+    },
+    {
       "id": "live-dom-shell",
       "impact": "serious",
       "file": "http://localhost:8080/",
@@ -941,8 +1032,8 @@
     }
   ],
   "summary": {
-    "totalChecks": 82,
-    "passedChecks": 82,
+    "totalChecks": 90,
+    "passedChecks": 90,
     "violationsCount": 0,
     "status": "PASS"
   }

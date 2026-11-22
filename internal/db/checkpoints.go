@@ -22,7 +22,7 @@ func ComputeCombinedMerkleRoot(wHead string, wRows int, aHead string, aRows int,
 	return crypto.SHA256Hex([]byte("MERKLE_ROOT_V1:" + leftBranch + ":" + rightBranch))
 }
 
-// ComputeCombinedMerkleRootV2 computes a 6-leaf binary Merkle tree root over all 6 immutable tables:
+// ComputeCombinedMerkleRootV2 computes a 6-leaf binary Merkle tree root over the 6 v1.0.1–v1.0.4 immutable tables:
 // warrant_envelopes, agent_action_ledger, attestation_records, principals, principal_revocations, and kernel_public_keys.
 func ComputeCombinedMerkleRootV2(
 	wHead string, wRows int,
@@ -48,13 +48,47 @@ func ComputeCombinedMerkleRootV2(
 	return crypto.SHA256Hex([]byte("MERKLE_ROOT_V2:" + leftSub + ":" + rightSub))
 }
 
-// SaveLedgerCheckpoint inserts an immutable 6-chain Merkle root checkpoint record.
+// ComputeCombinedMerkleRootV3 computes a 9-leaf binary Merkle tree root over all 9 immutable WORM tables (v1.1.0+):
+// warrant_envelopes, agent_action_ledger, attestation_records, principals, principal_revocations, kernel_public_keys,
+// commissioning_functions, agent_identities, and agent_lifecycle_events.
+func ComputeCombinedMerkleRootV3(
+	wHead string, wRows int,
+	aHead string, aRows int,
+	attHead string, attRows int,
+	pHead string, pRows int,
+	revHead string, revRows int,
+	kHead string, kRows int,
+	cfHead string, cfRows int,
+	aiHead string, aiRows int,
+	aleHead string, aleRows int,
+) string {
+	coreV2 := ComputeCombinedMerkleRootV2(wHead, wRows, aHead, aRows, attHead, attRows, pHead, pRows, revHead, revRows, kHead, kRows)
+	leafCF := crypto.SHA256Hex([]byte(fmt.Sprintf("LEAF:commissioning_functions:%d:%s", cfRows, cfHead)))
+	leafAI := crypto.SHA256Hex([]byte(fmt.Sprintf("LEAF:agent_identities:%d:%s", aiRows, aiHead)))
+	leafALE := crypto.SHA256Hex([]byte(fmt.Sprintf("LEAF:agent_lifecycle_events:%d:%s", aleRows, aleHead)))
+
+	n4 := crypto.SHA256Hex([]byte("NODE:" + leafCF + ":" + leafAI))
+	n5 := crypto.SHA256Hex([]byte("NODE:" + leafALE + ":" + leafALE))
+	agentSub := crypto.SHA256Hex([]byte("NODE:" + n4 + ":" + n5))
+	return crypto.SHA256Hex([]byte("MERKLE_ROOT_V3:" + coreV2 + ":" + agentSub))
+}
+
+// SaveLedgerCheckpoint inserts an immutable 9-chain (or V2/V1) Merkle root checkpoint record.
 func (s *Store) SaveLedgerCheckpoint(ctx context.Context, cp models.LedgerCheckpoint) error {
 	if cp.AnchoredAt.IsZero() {
 		cp.AnchoredAt = time.Now().UTC()
 	}
 	if cp.MerkleVersion <= 0 {
-		cp.MerkleVersion = 2
+		cp.MerkleVersion = 3
+	}
+	if cp.CommissioningHeadHash == "" {
+		cp.CommissioningHeadHash = GenesisHash
+	}
+	if cp.AgentIdentityHeadHash == "" {
+		cp.AgentIdentityHeadHash = GenesisHash
+	}
+	if cp.AgentLifecycleHeadHash == "" {
+		cp.AgentLifecycleHeadHash = GenesisHash
 	}
 	envJSON, err := crypto.CanonicalizeStruct(cp.DSSEEnvelope)
 	if err != nil {
@@ -69,9 +103,12 @@ func (s *Store) SaveLedgerCheckpoint(ctx context.Context, cp models.LedgerCheckp
 			principal_head_hash, principal_row_count,
 			revocation_head_hash, revocation_row_count,
 			kernel_key_head_hash, kernel_key_row_count,
+			commissioning_head_hash, commissioning_row_count,
+			agent_identity_head_hash, agent_identity_row_count,
+			agent_lifecycle_head_hash, agent_lifecycle_row_count,
 			combined_merkle_root, dsse_envelope,
 			external_anchor_target, external_receipt_hash, anchored_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
 		ON CONFLICT (combined_merkle_root) DO NOTHING
 	`,
 		cp.CheckpointID, cp.MerkleVersion,
@@ -81,6 +118,9 @@ func (s *Store) SaveLedgerCheckpoint(ctx context.Context, cp models.LedgerCheckp
 		cp.PrincipalHeadHash, cp.PrincipalRowCount,
 		cp.RevocationHeadHash, cp.RevocationRowCount,
 		cp.KernelKeyHeadHash, cp.KernelKeyRowCount,
+		cp.CommissioningHeadHash, cp.CommissioningRowCount,
+		cp.AgentIdentityHeadHash, cp.AgentIdentityRowCount,
+		cp.AgentLifecycleHeadHash, cp.AgentLifecycleRowCount,
 		cp.CombinedMerkleRoot, envJSON,
 		cp.ExternalAnchorTarget, cp.ExternalReceiptHash, cp.AnchoredAt,
 	)
@@ -97,6 +137,9 @@ func (s *Store) ListLedgerCheckpoints(ctx context.Context) ([]models.LedgerCheck
 		       principal_head_hash, principal_row_count,
 		       revocation_head_hash, revocation_row_count,
 		       kernel_key_head_hash, kernel_key_row_count,
+		       commissioning_head_hash, commissioning_row_count,
+		       agent_identity_head_hash, agent_identity_row_count,
+		       agent_lifecycle_head_hash, agent_lifecycle_row_count,
 		       combined_merkle_root, dsse_envelope,
 		       external_anchor_target, external_receipt_hash, anchored_at
 		FROM ledger_checkpoints ORDER BY anchored_at DESC
@@ -117,6 +160,9 @@ func (s *Store) ListLedgerCheckpoints(ctx context.Context) ([]models.LedgerCheck
 			&cp.PrincipalHeadHash, &cp.PrincipalRowCount,
 			&cp.RevocationHeadHash, &cp.RevocationRowCount,
 			&cp.KernelKeyHeadHash, &cp.KernelKeyRowCount,
+			&cp.CommissioningHeadHash, &cp.CommissioningRowCount,
+			&cp.AgentIdentityHeadHash, &cp.AgentIdentityRowCount,
+			&cp.AgentLifecycleHeadHash, &cp.AgentLifecycleRowCount,
 			&cp.CombinedMerkleRoot, &envRaw,
 			&cp.ExternalAnchorTarget, &cp.ExternalReceiptHash, &cp.AnchoredAt,
 		); err != nil {
@@ -128,9 +174,9 @@ func (s *Store) ListLedgerCheckpoints(ctx context.Context) ([]models.LedgerCheck
 	return out, rows.Err()
 }
 
-// VerifyHistoricalCheckpointConsistency checks that every anchored Merkle checkpoint still matches
-// the exact historical row entry_hash inside PostgreSQL across all 6 chains, AND when external witness
-// checkpoints are supplied, catches unanchored superuser key injections into principals / kernel_public_keys.
+// VerifyHistoricalCheckpointConsistency checks that every anchored Merkle checkpoint (V1 3-chain, V2 6-chain, or V3 9-chain)
+// still matches the exact historical row entry_hash inside PostgreSQL, AND when external witness checkpoints are supplied,
+// catches unanchored superuser key/agent injections into root-of-trust authority tables.
 func (s *Store) VerifyHistoricalCheckpointConsistency(ctx context.Context, externalRecords []models.LedgerCheckpoint) (bool, string, string, string) {
 	checkpoints := externalRecords
 	hasExternalWitness := len(externalRecords) > 0
@@ -145,13 +191,14 @@ func (s *Store) VerifyHistoricalCheckpointConsistency(ctx context.Context, exter
 	latest := checkpoints[0]
 	for _, cp := range checkpoints {
 		var recomputedRoot string
-		if cp.MerkleVersion == 1 {
+		switch cp.MerkleVersion {
+		case 1:
 			recomputedRoot = ComputeCombinedMerkleRoot(
 				cp.WarrantHeadHash, cp.WarrantRowCount,
 				cp.AgentHeadHash, cp.AgentRowCount,
 				cp.AttestationHeadHash, cp.AttestationRowCount,
 			)
-		} else {
+		case 2:
 			recomputedRoot = ComputeCombinedMerkleRootV2(
 				cp.WarrantHeadHash, cp.WarrantRowCount,
 				cp.AgentHeadHash, cp.AgentRowCount,
@@ -159,6 +206,18 @@ func (s *Store) VerifyHistoricalCheckpointConsistency(ctx context.Context, exter
 				cp.PrincipalHeadHash, cp.PrincipalRowCount,
 				cp.RevocationHeadHash, cp.RevocationRowCount,
 				cp.KernelKeyHeadHash, cp.KernelKeyRowCount,
+			)
+		default:
+			recomputedRoot = ComputeCombinedMerkleRootV3(
+				cp.WarrantHeadHash, cp.WarrantRowCount,
+				cp.AgentHeadHash, cp.AgentRowCount,
+				cp.AttestationHeadHash, cp.AttestationRowCount,
+				cp.PrincipalHeadHash, cp.PrincipalRowCount,
+				cp.RevocationHeadHash, cp.RevocationRowCount,
+				cp.KernelKeyHeadHash, cp.KernelKeyRowCount,
+				cp.CommissioningHeadHash, cp.CommissioningRowCount,
+				cp.AgentIdentityHeadHash, cp.AgentIdentityRowCount,
+				cp.AgentLifecycleHeadHash, cp.AgentLifecycleRowCount,
 			)
 		}
 		if !strings.EqualFold(recomputedRoot, cp.CombinedMerkleRoot) {
@@ -184,19 +243,45 @@ func (s *Store) VerifyHistoricalCheckpointConsistency(ctx context.Context, exter
 				return false, latest.CheckpointID, latest.CombinedMerkleRoot, detail
 			}
 		}
+		if cp.MerkleVersion >= 3 {
+			if ok, detail := s.checkHashAtOffset(ctx, "commissioning_functions", cp.CommissioningRowCount, cp.CommissioningHeadHash); !ok {
+				return false, latest.CheckpointID, latest.CombinedMerkleRoot, detail
+			}
+			if ok, detail := s.checkHashAtOffset(ctx, "agent_identities", cp.AgentIdentityRowCount, cp.AgentIdentityHeadHash); !ok {
+				return false, latest.CheckpointID, latest.CombinedMerkleRoot, detail
+			}
+			if ok, detail := s.checkHashAtOffset(ctx, "agent_lifecycle_events", cp.AgentLifecycleRowCount, cp.AgentLifecycleHeadHash); !ok {
+				return false, latest.CheckpointID, latest.CombinedMerkleRoot, detail
+			}
+		}
 	}
 
-	// When external WORM witness checkpoints exist (Merkle V2), detect silent superuser INSERTs into
-	// root-of-trust authority tables (principals, principal_revocations, kernel_public_keys) beyond the anchored root!
 	if hasExternalWitness && latest.MerkleVersion >= 2 {
-		for _, chk := range []struct {
+		checks := []struct {
 			table    string
 			expected int
 		}{
 			{"principals", latest.PrincipalRowCount},
 			{"principal_revocations", latest.RevocationRowCount},
 			{"kernel_public_keys", latest.KernelKeyRowCount},
-		} {
+		}
+		if latest.MerkleVersion >= 3 {
+			checks = append(checks,
+				struct {
+					table    string
+					expected int
+				}{"commissioning_functions", latest.CommissioningRowCount},
+				struct {
+					table    string
+					expected int
+				}{"agent_identities", latest.AgentIdentityRowCount},
+				struct {
+					table    string
+					expected int
+				}{"agent_lifecycle_events", latest.AgentLifecycleRowCount},
+			)
+		}
+		for _, chk := range checks {
 			var actualCount int
 			if err := s.pool.QueryRow(ctx, "SELECT COUNT(*) FROM "+chk.table).Scan(&actualCount); err == nil {
 				if actualCount != chk.expected {
@@ -233,6 +318,12 @@ func (s *Store) checkHashAtOffset(ctx context.Context, tableName string, rowCoun
 		query = `SELECT entry_hash FROM principal_revocations ORDER BY seq_no ASC OFFSET $1 LIMIT 1`
 	case "kernel_public_keys":
 		query = `SELECT entry_hash FROM kernel_public_keys ORDER BY seq_no ASC OFFSET $1 LIMIT 1`
+	case "commissioning_functions":
+		query = `SELECT entry_hash FROM commissioning_functions ORDER BY seq_no ASC OFFSET $1 LIMIT 1`
+	case "agent_identities":
+		query = `SELECT entry_hash FROM agent_identities ORDER BY seq_no ASC OFFSET $1 LIMIT 1`
+	case "agent_lifecycle_events":
+		query = `SELECT entry_hash FROM agent_lifecycle_events ORDER BY seq_no ASC OFFSET $1 LIMIT 1`
 	default:
 		return false, "unknown ledger table"
 	}

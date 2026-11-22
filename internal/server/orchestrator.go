@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -54,6 +56,8 @@ type ControlPlaneOrchestrator struct {
 	operatorToken       string
 	automationToken     string
 	intakeToken         string
+	igaToken            string
+	igaHMACSecret       string
 }
 
 func isWeakOrPlaceholderSecret(val string) bool {
@@ -537,6 +541,91 @@ func (o *ControlPlaneOrchestrator) VerifyTetragonSensorAuth(r *http.Request, raw
 	return http.StatusForbidden, fmt.Errorf("INVALID_TETRAGON_SENSOR_CREDENTIAL")
 }
 
+// VerifyIGAAuth authenticates inbound HR/IAM lifecycle events on POST /api/v1/iga/events via:
+//   1. 1-of-2 DSSE/WebAuthn Principal Governance signature (X-Warrant-Governance-DSSE or DSSE envelope body)
+//   2. Constant-time HMAC-SHA256 webhook signature (X-Warrant-IGA-Signature-256 against WARRANT_IGA_WEBHOOK_HMAC_SECRET)
+//   3. Dedicated IGA webhook bearer/header token (X-Warrant-IGA-Token / Authorization Bearer against WARRANT_IGA_TOKEN)
+func (o *ControlPlaneOrchestrator) VerifyIGAAuth(ctx context.Context, r *http.Request, rawBody []byte) (string, string, *crypto.Envelope, int, error) {
+	// Reject auditor and Tetragon sensor tokens immediately
+	authHdr := strings.TrimSpace(r.Header.Get("Authorization"))
+	bearer := ""
+	if strings.HasPrefix(strings.ToLower(authHdr), "bearer ") {
+		bearer = strings.TrimSpace(authHdr[7:])
+	}
+	if strings.HasPrefix(bearer, "g1aud_") || strings.HasPrefix(bearer, "g1tet_") {
+		return "", "", nil, http.StatusForbidden, fmt.Errorf("INVALID_IGA_CREDENTIAL: auditor and sensor tokens cannot emit IGA events")
+	}
+
+	// 1. Check 1-of-2 DSSE Principal Governance header (X-Warrant-Governance-DSSE)
+	if hdrB64 := strings.TrimSpace(r.Header.Get("X-Warrant-Governance-DSSE")); hdrB64 != "" {
+		envRaw, err := crypto.DecodeBase64Any(hdrB64)
+		if err != nil {
+			return "", "", nil, http.StatusUnauthorized, fmt.Errorf("INVALID_IGA_GOVERNANCE_HEADER: %w", err)
+		}
+		var env crypto.Envelope
+		if err := json.Unmarshal(envRaw, &env); err != nil {
+			return "", "", nil, http.StatusUnauthorized, fmt.Errorf("INVALID_IGA_GOVERNANCE_JSON: %w", err)
+		}
+		bodyHash := crypto.SHA256Hex(rawBody)
+		_, singleRes, vErr := o.N1Warrant.VerifyRequestScopedSingleGovernanceEnvelope(ctx, env, models.GovActionEmitIGAEvent, r.Method, r.URL.Path, bodyHash, true)
+		if vErr != nil {
+			return "", "", nil, http.StatusUnauthorized, vErr
+		}
+		return singleRes.Signer.PrincipalID, models.LineageModePostSeal1Of2, &env, http.StatusOK, nil
+	}
+
+	// 2. Check HMAC-SHA256 webhook signature (X-Warrant-IGA-Signature-256)
+	sigHdr := strings.TrimSpace(r.Header.Get("X-Warrant-IGA-Signature-256"))
+	if sigHdr != "" {
+		if o.igaHMACSecret == "" {
+			return "", "", nil, http.StatusForbidden, fmt.Errorf("IGA_HMAC_UNCONFIGURED: WARRANT_IGA_WEBHOOK_HMAC_SECRET is not set")
+		}
+		providedHex := strings.TrimPrefix(strings.ToLower(sigHdr), "sha256=")
+		providedMAC, err := hex.DecodeString(providedHex)
+		if err != nil {
+			return "", "", nil, http.StatusForbidden, fmt.Errorf("INVALID_IGA_HMAC_HEX")
+		}
+		mac := hmac.New(sha256.New, []byte(o.igaHMACSecret))
+		_, _ = mac.Write(rawBody)
+		if !hmac.Equal(providedMAC, mac.Sum(nil)) {
+			return "", "", nil, http.StatusForbidden, fmt.Errorf("INVALID_IGA_HMAC_SIGNATURE")
+		}
+		return "iga-hmac-webhook", models.LineageModeIGAWebhookAuth, nil, http.StatusOK, nil
+	}
+
+	// 3. Check dedicated IGA token (X-Warrant-IGA-Token or Authorization: Bearer)
+	igaHdrTok := strings.TrimSpace(r.Header.Get("X-Warrant-IGA-Token"))
+	if igaHdrTok == "" {
+		igaHdrTok = bearer
+	}
+	if o.igaToken != "" {
+		if igaHdrTok == "" {
+			return "", "", nil, http.StatusUnauthorized, fmt.Errorf("MISSING_IGA_AUTH: provide X-Warrant-Governance-DSSE, X-Warrant-IGA-Signature-256, or X-Warrant-IGA-Token")
+		}
+		if subtle.ConstantTimeCompare([]byte(igaHdrTok), []byte(o.igaToken)) != 1 {
+			return "", "", nil, http.StatusForbidden, fmt.Errorf("INVALID_IGA_TOKEN")
+		}
+		return "iga-token-webhook", models.LineageModeIGAWebhookAuth, nil, http.StatusOK, nil
+	}
+
+	// 4. If neither WARRANT_IGA_TOKEN nor WARRANT_IGA_WEBHOOK_HMAC_SECRET is configured:
+	//    require 1-of-2 DSSE or HMAC in live/K8s posture, or allow valid X-Warrant-Operator-Token in local offline simulator mode.
+	if o.IsProductionOrLivePosture(ctx) || o.igaHMACSecret != "" {
+		return "", "", nil, http.StatusUnauthorized, fmt.Errorf("MISSING_IGA_AUTH: provide 1-of-2 DSSE governance header or HMAC signature")
+	}
+	opProvided := strings.TrimSpace(r.Header.Get("X-Warrant-Operator-Token"))
+	if opProvided == "" {
+		opProvided = bearer
+	}
+	if opProvided == "" {
+		return "", "", nil, http.StatusUnauthorized, fmt.Errorf("MISSING_IGA_AUTH: provide 1-of-2 DSSE governance header, HMAC signature, X-Warrant-IGA-Token, or X-Warrant-Operator-Token")
+	}
+	if o.operatorToken != "" && subtle.ConstantTimeCompare([]byte(opProvided), []byte(o.operatorToken)) == 1 {
+		return "sandbox-operator-iga", models.LineageModeIGAWebhookAuth, nil, http.StatusOK, nil
+	}
+	return "", "", nil, http.StatusForbidden, fmt.Errorf("INVALID_IGA_CREDENTIAL")
+}
+
 // NewOrchestrator initializes all five control-plane engines (N1-N5), Live Feed Manager, and production adapters.
 func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetURL, kernelSeed string, webauthnCfg crypto.WebAuthnConfig) (*ControlPlaneOrchestrator, error) {
 	pol, err := policy.NewEngine(ctx)
@@ -597,6 +686,14 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 	}
 	_ = store.EnsureGenesisSealSigned(ctx, signer)
 
+	if exportPubPath := strings.TrimSpace(os.Getenv("WARRANT_KERNEL_PUBLIC_KEY_EXPORT_PATH")); exportPubPath != "" {
+		if dir := filepath.Dir(exportPubPath); dir != "" && dir != "." {
+			_ = os.MkdirAll(dir, 0755)
+		}
+		pubB64 := base64.StdEncoding.EncodeToString(signer.PublicKey().PublicKeyBytes)
+		_ = os.WriteFile(exportPubPath, []byte(pubB64+"\n"), 0644)
+	}
+
 	tetToken := strings.TrimSpace(os.Getenv("WARRANT_TETRAGON_SENSOR_TOKEN"))
 	if tetToken == "" {
 		var rnd [16]byte
@@ -608,12 +705,18 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 	opTok := strings.TrimSpace(os.Getenv("WARRANT_OPERATOR_TOKEN"))
 	autoTok := strings.TrimSpace(os.Getenv("WARRANT_AUTOMATION_TOKEN"))
 	inTok := strings.TrimSpace(os.Getenv("WARRANT_INTAKE_TOKEN"))
+	igaTok := strings.TrimSpace(os.Getenv("WARRANT_IGA_TOKEN"))
+	igaHMAC := strings.TrimSpace(os.Getenv("WARRANT_IGA_WEBHOOK_HMAC_SECRET"))
 
 	n1, err := warrant.NewEngine(ctx, store, pol, webauthnCfg, broker.Broadcast, signer)
 	if err != nil {
 		return nil, err
 	}
 	n4 := agentcp.NewControlPlane(store, signer, extractorURL, broker.Broadcast)
+	n4.SetPolicyEngine(pol)
+	if err := n1.BootstrapSystemControlPlaneIdentities(ctx, n4.InternalWorkerManifests()); err != nil {
+		return nil, fmt.Errorf("bootstrap internal N4 agent workload identities: %w", err)
+	}
 	feedMgr, err := feeds.NewManager(ctx, store, n4, broker.Broadcast)
 	if err != nil {
 		return nil, err
@@ -636,8 +739,11 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 		deploy = liveK8s
 		twin = liveK8s
 	} else {
-		shield = adapters.NewCiliumShieldAdapter(fleetURL, rulepacks)
+		simShield := adapters.NewCiliumShieldAdapter(fleetURL, rulepacks)
+		simShield.SetHTTPTransport(n4.NewGovernedRoundTripper("cilium-shield", nil))
 		simK8s := adapters.NewK8sRolloutAdapter(fleetURL)
+		simK8s.SetHTTPTransport(n4.NewGovernedRoundTripper("k8s-rollout", nil))
+		shield = simShield
 		deploy = simK8s
 		twin = simK8s
 	}
@@ -645,6 +751,9 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 	fixProv, err := adapters.NewFixProviderFromEnv(os.Getenv)
 	if err != nil {
 		return nil, fmt.Errorf("configure publisher authority custody: %w", err)
+	}
+	if dfp, ok := any(fixProv).(*adapters.DeterministicFixProvider); ok && dfp != nil {
+		n1.SetPublisherPublicKey(ed25519.PublicKey(dfp.PublisherPublicKey().PublicKeyBytes))
 	}
 	sarifIn := adapters.NewSARIFIntakeAdapter(n4)
 
@@ -657,7 +766,7 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 		log.Printf("%s", warn)
 	}
 
-	// Anchor initial 6-chain Merkle checkpoint covering kernel_public_keys & any migrated authority rows
+	// Anchor initial 9-chain Merkle checkpoint covering kernel_public_keys & system workload identities
 	_, _ = n5.CreateCheckpoint(ctx)
 
 	return &ControlPlaneOrchestrator{
@@ -682,6 +791,8 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 		operatorToken:       opTok,
 		automationToken:     autoTok,
 		intakeToken:         inTok,
+		igaToken:            igaTok,
+		igaHMACSecret:       igaHMAC,
 	}, nil
 }
 
@@ -711,9 +822,9 @@ func (o *ControlPlaneOrchestrator) ExecuteSARIFRemediationWithOptions(
 		}
 	}
 
-	// Stage 1: Zero-privilege SARIF extraction via N4 -> warrant-extractor
+	// Stage 1: Zero-privilege SARIF extraction via N4 -> warrant-extractor (agt-warrant-extractor / AUTONOMOUS_WORKLOAD_SPONSORED)
 	findingSet, err := o.N4AgentCP.ExtractSARIFWithOptionsGoverned(
-		ctx, "BOOTSTRAP_INTAKE", "", "sarif-intake-stream", "sys-intake", "sys-intake",
+		ctx, models.AuthorityModeAutonomousSponsored, "", "sarif-intake-stream", "NONE", "NONE",
 		rawSARIF, targetService, vulnDigest, maxFindings,
 	)
 	if err != nil {
@@ -1065,7 +1176,7 @@ func (o *ControlPlaneOrchestrator) ExecuteSecretRotationRemediation(ctx context.
 		intakeAsset = "secret-intake-stream"
 	}
 	secretSet, err := o.N4AgentCP.ExtractSecretFindingsGoverned(
-		ctx, "BOOTSTRAP_SECRET_INTAKE", "", intakeAsset, "sys-intake", "sys-intake", rawSecretScan,
+		ctx, models.AuthorityModeAutonomousSponsored, "", intakeAsset, "NONE", "NONE", rawSecretScan,
 	)
 	if err != nil {
 		return nil, err

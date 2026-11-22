@@ -113,7 +113,9 @@ export const App: React.FC = () => {
     );
   }
 
-  const pendingExceptionsCount = snapshot.exceptions.filter((e) => e.status === 'PENDING_DUAL_KEY').length;
+  const pendingExceptionsCount =
+    snapshot.exceptions.filter((e) => e.status === 'PENDING_DUAL_KEY').length +
+    (snapshot.pending_sponsor_transfers?.length || 0);
   const rpId = snapshot.webauthn?.rp_id || 'localhost';
 
   const revokedIds = new Set(
@@ -304,12 +306,84 @@ export const App: React.FC = () => {
             estate={snapshot.estate}
             principals={snapshot.principals}
             bootstrapState={snapshot.bootstrap_state}
+            commissioningFunctions={snapshot.commissioning_functions}
+            agents={snapshot.agents}
+            pendingSponsorTransfers={snapshot.pending_sponsor_transfers}
+            nowMs={nowMs}
             testPersonas={snapshot.test_personas}
             rpId={rpId}
             smartcardBarEnabled={smartcardBarEnabled}
             isMobileViewport={isMobileViewport}
             onCreateWarrant={async (env) => {
               await postJSON('/api/v1/warrants', env);
+            }}
+            onRevokeAgent={async (agentId, reasonCode) => {
+              if (smartcardBarEnabled && activePersonas.length > 0) {
+                const env = buildSinglePrincipalGovernanceEnvelope(
+                  'REVOKE_AGENT_IDENTITY',
+                  { agent_id: agentId, reason_code: reasonCode },
+                  activePersonas[0]
+                );
+                await postJSON('/api/v1/agents/revoke', env);
+                return;
+              }
+              if (activeWebAuthnPrincipals.length > 0) {
+                const env = await buildSinglePrincipalGovernanceEnvelopeWebAuthn(
+                  'REVOKE_AGENT_IDENTITY',
+                  { agent_id: agentId, reason_code: reasonCode },
+                  activeWebAuthnPrincipals[0],
+                  rpId
+                );
+                await postJSON('/api/v1/agents/revoke', env);
+                return;
+              }
+              throw new Error('Active SERVICE_OWNER or AUTHORIZING_OFFICIAL key required for 1-of-2 agent kill-switch');
+            }}
+            onEmitIGAEvent={async (eventType, principalId) => {
+              await postActionJSON(
+                '/api/v1/iga/events',
+                { event_type: eventType, principal_id: principalId, reason_code: `CONSOLE_${eventType}` },
+                'EMIT_IGA_EVENT',
+                { target_principal_id: principalId, iga_event_type: eventType, reason_code: `CONSOLE_${eventType}` }
+              );
+            }}
+            onTransferSponsors={async (fn, newSO, newAO) => {
+              const fields: Record<string, unknown> = {
+                function_id: fn.function_id,
+                display_name: fn.display_name,
+                owning_org_unit: fn.owning_org_unit,
+                cost_center: fn.cost_center,
+                primary_so_principal_id: newSO,
+                secondary_so_principal_id: '',
+                primary_ao_principal_id: newAO,
+                secondary_ao_principal_id: '',
+                escalation_contact: fn.escalation_contact,
+                orphan_grace_hours: fn.orphan_grace_hours,
+                reason_code: 'CONSOLE_2OF2_SPONSOR_SUCCESSION',
+              };
+              if (smartcardBarEnabled) {
+                const so = activePersonas.find((p) => p.role === 'SERVICE_OWNER');
+                const ao = activePersonas.find((p) => p.role === 'AUTHORIZING_OFFICIAL');
+                if (so && ao) {
+                  const env = buildDualPrincipalGovernanceEnvelope('TRANSFER_COMMISSIONING_SPONSOR', fields, so, ao);
+                  await postJSON(`/api/v1/commissioning-functions/${encodeURIComponent(fn.function_id)}/transfer`, env);
+                  return;
+                }
+              }
+              const soHw = activeWebAuthnPrincipals.find((p) => p.role === 'SERVICE_OWNER');
+              const aoHw = activeWebAuthnPrincipals.find((p) => p.role === 'AUTHORIZING_OFFICIAL');
+              if (soHw && aoHw) {
+                const env = await buildDualPrincipalGovernanceEnvelopeWebAuthn(
+                  'TRANSFER_COMMISSIONING_SPONSOR',
+                  fields,
+                  soHw,
+                  aoHw,
+                  rpId
+                );
+                await postJSON(`/api/v1/commissioning-functions/${encodeURIComponent(fn.function_id)}/transfer`, env);
+                return;
+              }
+              throw new Error('2-of-2 active SERVICE_OWNER + AUTHORIZING_OFFICIAL keys required for sponsor transfer');
             }}
             onRevokeSigner={async (principalId, keyFp) => {
               const target = snapshot.principals.find(

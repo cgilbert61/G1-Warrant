@@ -924,6 +924,15 @@ func main() {
 			must(err)
 		}
 
+	case "functions":
+		handleFunctionsCommand(ctx, cli, args, jsonOutput)
+
+	case "agents":
+		handleAgentsCommand(ctx, cli, args, jsonOutput)
+
+	case "iga":
+		handleIGACommand(ctx, cli, args, jsonOutput)
+
 	default:
 		printUsage()
 		os.Exit(1)
@@ -942,6 +951,9 @@ Commands:
   warrant status
   warrant keygen --id <id> --email <email> --role <SERVICE_OWNER|AUTHORIZING_OFFICIAL> --out <prefix>
   warrant principals [list | register --pub <name.pub.json> [--admin-token <tok> | --slot1-key <so.priv.json> --slot2-key <ao.priv.json>] | seal | revoke --principal <id> --key <active.priv.json> | rotate-and-revoke --pub <new.pub.json> --principal <id> --slot1-key <so.priv.json> --slot2-key <ao.priv.json>]
+  warrant functions [list | upsert --id <fn> --org <unit> --primary-so <so> --primary-ao <ao> --escalation <email> --slot1-key <so.priv.json> --slot2-key <ao.priv.json> | transfer ...]
+  warrant agents [list | keygen --id <agt> --out <agt.json> | sign-provenance ... | enroll ... | recertify ... | revoke --agent <id> --key <priv.json> | token-exchange ...]
+  warrant iga [list | emit --type <ROLE_TRANSFER|ORG_REORG|LEAVE_OF_ABSENCE|TERMINATION|KEY_COMPROMISE> --principal <id>]
   warrant warrants [list | verify <id> | draft | sign --key <name.priv.json> | submit <file.dsse.json>]
   warrant exceptions [list | approve <id> --slot1-key <so.priv.json> --slot2-key <ao.priv.json> | reject <id> ...]
   warrant pipeline [list | trace <remediation-id> | rollback <remediation-id> --key <active.priv.json>]

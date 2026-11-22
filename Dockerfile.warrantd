@@ -16,13 +16,14 @@ COPY . .
 COPY --from=web-builder /web/dist ./web/dist
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/warrantd ./cmd/warrantd && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/warrant ./cmd/warrant && \
-    mkdir -p /out/warrant-anchor
+    mkdir -p /out/warrant-anchor /out/warrant-pubkeys
 
 # Stage 3: Distroless Non-Root Production Runtime
 FROM gcr.io/distroless/static:nonroot
 COPY --from=go-builder /out/warrantd /warrantd
 COPY --from=go-builder /out/warrant /warrant
 COPY --from=go-builder --chown=65532:65532 /out/warrant-anchor /var/lib/warrant-anchor
+COPY --from=go-builder --chown=65532:65532 /out/warrant-pubkeys /var/lib/warrant-pubkeys
 USER nonroot:nonroot
 EXPOSE 8080
 ENTRYPOINT ["/warrantd"]

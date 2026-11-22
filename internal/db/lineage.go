@@ -928,7 +928,191 @@ func (s *Store) VerifyAuthorityLineageAttestations(ctx context.Context) (string,
 		return "principals", fmt.Errorf("%s: sealed bootstrap_state lacks kernel-signed genesis_seal_dsse", CodeUnattestedAuthorityLineageInsert)
 	}
 
+	// 6. Verify v1.1.0 commissioning_functions and agent_identities authority lineage attestations
+	resolverAtSeq := func(authSeq int64) crypto.MapKeyResolver {
+		res := crypto.MapKeyResolver{}
+		for i := range allP {
+			if !boot.Sealed || allP[i].seqNo <= boot.GenesisPrincipalMaxSeq || allP[i].authoritySeq <= authSeq {
+				cp := *allP[i].pk
+				res[cp.KeyID] = &cp
+			}
+		}
+		for i := range allR {
+			if (boot.Sealed && allR[i].seqNo <= boot.GenesisRevocationMaxSeq) || allR[i].authoritySeq <= authSeq {
+				for _, pk := range res {
+					if pk.PrincipalID == allR[i].rev.PrincipalID || strings.EqualFold(pk.KeyFingerprint, allR[i].rev.KeyFingerprint) {
+						pk.Revoked = true
+						pk.RevokeReason = allR[i].rev.ReasonCode
+					}
+				}
+			}
+		}
+		return res
+	}
+
+	cfRows, err := s.pool.Query(ctx, `
+		SELECT authority_seq, function_id, lineage_mode, governance_dsse
+		FROM commissioning_functions ORDER BY seq_no ASC
+	`)
+	if err != nil {
+		return "commissioning_functions", err
+	}
+	defer cfRows.Close()
+	for cfRows.Next() {
+		var authSeq int64
+		var fnID, lMode string
+		var dsseRaw []byte
+		if err := cfRows.Scan(&authSeq, &fnID, &lMode, &dsseRaw); err != nil {
+			return "commissioning_functions", err
+		}
+		if len(dsseRaw) == 0 {
+			if !boot.Sealed && lMode == models.LineageModeGenesisSealed {
+				continue
+			}
+			return "commissioning_functions", fmt.Errorf("%s: commissioning_function %s lacks governance_dsse", CodeUnattestedAuthorityLineageInsert, fnID)
+		}
+		var env crypto.Envelope
+		if err := json.Unmarshal(dsseRaw, &env); err != nil {
+			return "commissioning_functions", fmt.Errorf("%s: invalid governance_dsse JSON on commissioning_function %s", CodeUnattestedAuthorityLineageInsert, fnID)
+		}
+		switch lMode {
+		case models.LineageModeKernelSystemBoot:
+			if err := verifyKernelSystemBootDSSE(&env, "COMMISSIONING_FUNCTION", fnID, "", verifiedKernelKeys, webauthnCfg); err != nil {
+				return "commissioning_functions", err
+			}
+		case models.LineageModeGenesisSealed:
+			if env.PayloadType == crypto.PayloadTypeSystemAuthorityBoot {
+				if err := verifyKernelSystemBootDSSE(&env, "COMMISSIONING_FUNCTION", fnID, "", verifiedKernelKeys, webauthnCfg); err != nil {
+					return "commissioning_functions", err
+				}
+			} else if len(env.Signatures) >= 2 {
+				if _, vErr := crypto.VerifyDualHumanCeremony(&env, crypto.PayloadTypePrincipalGovernance, resolverAtSeq(authSeq), webauthnCfg); vErr != nil {
+					return "commissioning_functions", fmt.Errorf("%s: genesis 2-of-2 verification failed on commissioning_function %s: %w", CodeUnattestedAuthorityLineageInsert, fnID, vErr)
+				}
+			}
+		default:
+			dualRes, vErr := crypto.VerifyDualHumanCeremony(&env, crypto.PayloadTypePrincipalGovernance, resolverAtSeq(authSeq), webauthnCfg)
+			if vErr != nil {
+				return "commissioning_functions", fmt.Errorf("%s: post-seal 2-of-2 verification failed on commissioning_function %s: %w", CodeUnattestedAuthorityLineageInsert, fnID, vErr)
+			}
+			var gp models.PrincipalGovernancePayload
+			if err := json.Unmarshal(dualRes.CanonicalPayload, &gp); err != nil ||
+				(gp.Action != models.GovActionUpsertCommissioningFunction && gp.Action != models.GovActionTransferCommissioningSponsor) ||
+				gp.FunctionID != fnID {
+				return "commissioning_functions", fmt.Errorf("%s: governance_dsse payload mismatch on commissioning_function %s", CodeUnattestedAuthorityLineageInsert, fnID)
+			}
+		}
+	}
+	if err := cfRows.Err(); err != nil {
+		return "commissioning_functions", err
+	}
+
+	aiRows, err := s.pool.Query(ctx, `
+		SELECT authority_seq, agent_id, agent_kind, key_fingerprint, public_key_b64,
+		       builder_principal_id, builder_key_fingerprint, lineage_mode, governance_dsse
+		FROM agent_identities ORDER BY seq_no ASC
+	`)
+	if err != nil {
+		return "agent_identities", err
+	}
+	defer aiRows.Close()
+	for aiRows.Next() {
+		var authSeq int64
+		var agID, agKind, keyFP, pubB64, bID, bFP, lMode string
+		var dsseRaw []byte
+		if err := aiRows.Scan(&authSeq, &agID, &agKind, &keyFP, &pubB64, &bID, &bFP, &lMode, &dsseRaw); err != nil {
+			return "agent_identities", err
+		}
+		if len(dsseRaw) == 0 {
+			if !boot.Sealed && lMode == models.LineageModeGenesisSealed {
+				continue
+			}
+			return "agent_identities", fmt.Errorf("%s: agent_identity %s lacks governance_dsse", CodeUnattestedAuthorityLineageInsert, agID)
+		}
+		var env crypto.Envelope
+		if err := json.Unmarshal(dsseRaw, &env); err != nil {
+			return "agent_identities", fmt.Errorf("%s: invalid governance_dsse JSON on agent_identity %s", CodeUnattestedAuthorityLineageInsert, agID)
+		}
+		switch lMode {
+		case models.LineageModeKernelSystemBoot:
+			if agKind != models.AgentKindInternalWorker {
+				return "agent_identities", fmt.Errorf("%s: external agent %s cannot claim KERNEL_SYSTEM_BOOT lineage", CodeUnattestedAuthorityLineageInsert, agID)
+			}
+			if err := verifyKernelSystemBootDSSE(&env, "AGENT_IDENTITY", agID, keyFP, verifiedKernelKeys, webauthnCfg); err != nil {
+				return "agent_identities", err
+			}
+		case models.LineageModeGenesisSealed:
+			if env.PayloadType == crypto.PayloadTypeSystemAuthorityBoot {
+				if err := verifyKernelSystemBootDSSE(&env, "AGENT_IDENTITY", agID, keyFP, verifiedKernelKeys, webauthnCfg); err != nil {
+					return "agent_identities", err
+				}
+			} else if len(env.Signatures) >= 2 {
+				if _, vErr := crypto.VerifyDualHumanCeremony(&env, crypto.PayloadTypePrincipalGovernance, resolverAtSeq(authSeq), webauthnCfg); vErr != nil {
+					return "agent_identities", fmt.Errorf("%s: genesis 2-of-2 verification failed on agent_identity %s: %w", CodeUnattestedAuthorityLineageInsert, agID, vErr)
+				}
+			}
+		default:
+			dualRes, vErr := crypto.VerifyDualHumanCeremony(&env, crypto.PayloadTypePrincipalGovernance, resolverAtSeq(authSeq), webauthnCfg)
+			if vErr != nil {
+				return "agent_identities", fmt.Errorf("%s: post-seal 2-of-2 verification failed on agent_identity %s: %w", CodeUnattestedAuthorityLineageInsert, agID, vErr)
+			}
+			var gp models.PrincipalGovernancePayload
+			if err := json.Unmarshal(dualRes.CanonicalPayload, &gp); err != nil ||
+				gp.Action != models.GovActionEnrollAgentIdentity ||
+				gp.AgentID != agID ||
+				strings.TrimSpace(gp.PublicKeyB64) != pubB64 {
+				return "agent_identities", fmt.Errorf("%s: governance_dsse payload mismatch on agent_identity %s", CodeUnattestedAuthorityLineageInsert, agID)
+			}
+			if bID == dualRes.Slot1.PrincipalID || bID == dualRes.Slot2.PrincipalID ||
+				strings.EqualFold(bFP, dualRes.Slot1.KeyFingerprint) || strings.EqualFold(bFP, dualRes.Slot2.KeyFingerprint) {
+				return "agent_identities", fmt.Errorf("%s: SOD_BUILDER_CANNOT_SELF_COMMISSION violated on agent_identity %s", CodeUnattestedAuthorityLineageInsert, agID)
+			}
+		}
+	}
+	if err := aiRows.Err(); err != nil {
+		return "agent_identities", err
+	}
+
 	return "", nil
+}
+
+func verifyKernelSystemBootDSSE(
+	env *crypto.Envelope,
+	expectedKind, expectedID, expectedKeyFP string,
+	verifiedKernelKeys map[string]*crypto.PrincipalKey,
+	webauthnCfg crypto.WebAuthnConfig,
+) error {
+	if env == nil || env.PayloadType != crypto.PayloadTypeSystemAuthorityBoot || len(env.Signatures) == 0 {
+		return fmt.Errorf("%s: invalid KERNEL_SYSTEM_BOOT DSSE envelope for %s %s", CodeUnattestedAuthorityLineageInsert, expectedKind, expectedID)
+	}
+	raw, err := env.DecodePayload()
+	if err != nil {
+		return fmt.Errorf("%s: decode KERNEL_SYSTEM_BOOT DSSE: %w", CodeUnattestedAuthorityLineageInsert, err)
+	}
+	canon, err := crypto.CanonicalizeJSON(raw)
+	if err != nil || string(canon) != string(raw) {
+		return fmt.Errorf("%s: non-canonical KERNEL_SYSTEM_BOOT JCS on %s", CodeUnattestedAuthorityLineageInsert, expectedID)
+	}
+	var body struct {
+		EntityKind     string `json:"entity_kind"`
+		EntityID       string `json:"entity_id"`
+		KeyFingerprint string `json:"key_fingerprint"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil || body.EntityKind != expectedKind || body.EntityID != expectedID {
+		return fmt.Errorf("%s: KERNEL_SYSTEM_BOOT entity mismatch on %s", CodeUnattestedAuthorityLineageInsert, expectedID)
+	}
+	if expectedKeyFP != "" && !strings.EqualFold(body.KeyFingerprint, expectedKeyFP) {
+		return fmt.Errorf("%s: KERNEL_SYSTEM_BOOT fingerprint mismatch on %s", CodeUnattestedAuthorityLineageInsert, expectedID)
+	}
+	sig := env.Signatures[0]
+	kpk := verifiedKernelKeys[sig.KeyID]
+	if kpk == nil {
+		return fmt.Errorf("%s: KERNEL_SYSTEM_BOOT on %s signed by unverified kernel key %q", CodeUnattestedAuthorityLineageInsert, expectedID, sig.KeyID)
+	}
+	if err := crypto.VerifySingleSignature(env.PayloadType, raw, sig, kpk, webauthnCfg); err != nil {
+		return fmt.Errorf("%s: KERNEL_SYSTEM_BOOT signature invalid on %s: %w", CodeUnattestedAuthorityLineageInsert, expectedID, err)
+	}
+	return nil
 }
 
 func verifyEnrolledPrincipalMatchesPayload(p models.Principal, gp models.PrincipalGovernancePayload, webauthnCfg crypto.WebAuthnConfig) error {

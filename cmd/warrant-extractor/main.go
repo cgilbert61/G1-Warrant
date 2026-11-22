@@ -30,7 +30,10 @@ func main() {
 	defer stop()
 
 	go func() {
-		log.Printf("warrant-extractor listening on %s (binary_sha256=%s, profile=ZERO_EGRESS_ISOLATED)", addr, digest)
+		log.Printf(
+			"warrant-extractor listening on %s (binary_sha256=%s, profile=ZERO_EGRESS_ISOLATED, require_wire_pop=%t)",
+			addr, digest, extractor.ShouldRequireExtractorWireAuthFromEnv(),
+		)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("warrant-extractor server failed: %v", err)
 		}

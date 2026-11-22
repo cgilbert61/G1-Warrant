@@ -9,7 +9,7 @@ import {
   Search,
   ExternalLink,
 } from 'lucide-react';
-import type { AgentLedgerEntry, AttestationRecord, LedgerVerificationReport } from '../types';
+import type { ActorClaim, AgentLedgerEntry, AttestationRecord, LedgerVerificationReport } from '../types';
 import { verifyDSSEEnvelopeInBrowser, type BrowserDSSEVerificationResult } from '../lib/crypto';
 import { shortHash } from '../lib/templates';
 
@@ -48,6 +48,17 @@ export const View5AuditorLedger: React.FC<View5AuditorLedgerProps> = ({
   const [chainReport, setChainReport] = useState<LedgerVerificationReport | null>(null);
   const [chainError, setChainError] = useState<string | null>(null);
   const [verifyingChain, setVerifyingChain] = useState(false);
+  const [inspectedActEntry, setInspectedActEntry] = useState<AgentLedgerEntry | null>(null);
+
+  const flattenActChain = (root?: ActorClaim): ActorClaim[] => {
+    const hops: ActorClaim[] = [];
+    let cur = root;
+    while (cur) {
+      hops.push(cur);
+      cur = cur.act;
+    }
+    return hops;
+  };
 
   const filteredAttestations = attestations.filter((a) => {
     if (kevOnly && !a.is_kev) return false;
@@ -360,7 +371,7 @@ export const View5AuditorLedger: React.FC<View5AuditorLedgerProps> = ({
               className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded bg-slate-900 hover:bg-slate-800 text-white text-xs font-mono font-bold"
             >
               <ShieldCheck className="w-4 h-4 text-emerald-400" />
-              {verifyingChain ? 'Verifying 6 Ledger & Authority Chains...' : 'Verify Cryptographic Hash Chains'}
+              {verifyingChain ? 'Verifying 9 Ledger & Authority Chains...' : 'Verify Cryptographic Hash Chains'}
             </button>
           </div>
 
@@ -379,11 +390,14 @@ export const View5AuditorLedger: React.FC<View5AuditorLedgerProps> = ({
               }`}
             >
               <div className="font-bold">
-                IMMUTABLE LEDGER HASH-CHAIN AUDIT: {chainReport.all_valid ? 'ALL 6 CHAINS & LINEAGE INTACT' : 'TAMPER / UNATTESTED INSERT DETECTED'} (Verified{' '}
-                {new Date(chainReport.verified_at).toISOString()})
+                IMMUTABLE LEDGER HASH-CHAIN AUDIT:{' '}
+                {chainReport.all_valid
+                  ? 'ALL 9 CORE & AGENT AUTHORITY CHAINS INTACT'
+                  : 'TAMPER / UNATTESTED INSERT DETECTED'}{' '}
+                (Verified {new Date(chainReport.verified_at).toISOString()})
               </div>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-                {chainReport.tables.map((t) => (
+                {[...chainReport.tables, ...(chainReport.agent_authority_tables || [])].map((t) => (
                   <div key={t.table_name} className="bg-white border border-emerald-200 rounded p-2">
                     <div className="font-bold">{t.table_name}</div>
                     <div>
@@ -396,14 +410,49 @@ export const View5AuditorLedger: React.FC<View5AuditorLedgerProps> = ({
             </div>
           )}
 
+          {inspectedActEntry && (
+            <div
+              role="region"
+              aria-label="RFC 8693 Actor Delegation Chain Inspector"
+              className="p-3 rounded border border-slate-400 bg-slate-900 text-slate-100 text-xs font-mono space-y-2"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="font-bold text-emerald-300">
+                  RFC 8693 Composite Delegation Chain Inspector — {inspectedActEntry.action_id} ({inspectedActEntry.task_token_id})
+                </div>
+                <button
+                  type="button"
+                  aria-label="Close act chain inspector"
+                  onClick={() => setInspectedActEntry(null)}
+                  className="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-white text-[11px]"
+                >
+                  Close
+                </button>
+              </div>
+              <div className="text-[11px] text-slate-300">
+                AuthorityMode={inspectedActEntry.authority_mode || 'WARRANT_DELEGATED_COMPOSITE'} · Function=
+                {inspectedActEntry.commissioning_function_id || 'fn-g1-system-control-plane'} · Depth=
+                {inspectedActEntry.delegation_depth ?? 0}
+              </div>
+              <div className="space-y-1.5">
+                {flattenActChain(inspectedActEntry.act_chain).map((hop, idx) => (
+                  <div key={`${hop.agent_id}-${idx}`} className="p-2 rounded bg-slate-800 border border-slate-700">
+                    <span className="text-amber-300 font-bold">Hop {idx}:</span> agent_id={hop.agent_id} · fn=
+                    {hop.commissioning_function_id} · state={hop.sponsorship_state} · fp={shortHash(hop.key_fingerprint, 16)}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse text-xs font-mono">
               <thead>
                 <tr className="bg-slate-100 border-y border-slate-300 text-[11px] uppercase text-slate-700">
                   <th className="p-2">Action / Token (TTL)</th>
-                  <th className="p-2">Worker &amp; Egress Profile</th>
+                  <th className="p-2">Worker, Function &amp; Egress</th>
                   <th className="p-2">Asset &amp; Action Type</th>
-                  <th className="p-2">Warrant &amp; Principals</th>
+                  <th className="p-2">Authority Mode &amp; RFC 8693 act</th>
                   <th className="p-2">Raw Input SHA-256 -&gt; Typed Output SHA-256</th>
                   <th className="p-2">Chain Link (prev -&gt; entry)</th>
                 </tr>
@@ -419,9 +468,15 @@ export const View5AuditorLedger: React.FC<View5AuditorLedgerProps> = ({
                       <div className="text-[11px] text-slate-600">
                         {act.task_token_id} ({act.token_ttl_sec}s)
                       </div>
+                      {act.violation_code && (
+                        <div className="text-[10px] font-bold text-red-700">{act.violation_code}</div>
+                      )}
                     </td>
                     <td className="p-2">
-                      <div className="font-semibold text-slate-900">{act.worker_name}</div>
+                      <div className="font-semibold text-slate-900">{act.agent_id || act.worker_name}</div>
+                      {act.commissioning_function_id && (
+                        <div className="text-[10px] text-slate-500">{act.commissioning_function_id}</div>
+                      )}
                       <span
                         className={`inline-block text-[10px] px-1.5 py-0.5 rounded border ${
                           act.egress_profile === 'ZERO_EGRESS_ISOLATED'
@@ -437,10 +492,22 @@ export const View5AuditorLedger: React.FC<View5AuditorLedgerProps> = ({
                       <div className="text-[11px] text-slate-600">{act.target_asset}</div>
                     </td>
                     <td className="p-2 text-[11px]">
-                      <div className="font-semibold">{act.warrant_id}</div>
-                      <div className="text-slate-500">
-                        {act.slot1_principal_id} + {act.slot2_principal_id}
+                      <div className="font-semibold text-slate-800">
+                        {act.authority_mode || act.warrant_id}
                       </div>
+                      <div className="text-slate-500">
+                        {act.warrant_id} · depth={act.delegation_depth ?? 0}
+                      </div>
+                      {act.act_chain && (
+                        <button
+                          type="button"
+                          aria-label={`Inspect RFC 8693 act chain for ${act.action_id}`}
+                          onClick={() => setInspectedActEntry(act)}
+                          className="mt-0.5 px-1.5 py-0.5 rounded border border-slate-400 bg-white hover:bg-slate-100 text-[10px] font-bold text-slate-800"
+                        >
+                          Inspect act Chain
+                        </button>
+                      )}
                     </td>
                     <td className="p-2 text-[11px]">
                       <div>in: {shortHash(act.raw_input_sha256, 14)}</div>

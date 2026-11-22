@@ -2,6 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -12,6 +15,7 @@ import (
 	"github.com/cgilbert61/G1-Warrant/internal/crypto"
 	"github.com/cgilbert61/G1-Warrant/internal/gate"
 	"github.com/cgilbert61/G1-Warrant/internal/models"
+	"github.com/google/uuid"
 )
 
 // BuildDeterministicSARIF constructs a valid Wiz/GitHub SARIF 2.1.0 report for seeding and UI simulation triggers.
@@ -226,6 +230,67 @@ func (o *ControlPlaneOrchestrator) SeedEnterpriseEstate(ctx context.Context) err
 	_ = env3.SignEd25519(2, bob.ToPrincipalKey(), bob.PrivateKey)
 	if _, err := o.N1Warrant.SubmitDualSignedWarrant(ctx, *env3); err != nil {
 		return fmt.Errorf("seed secret-rotation warrant 3: %w", err)
+	}
+
+	// 3b. Seed CommissioningFunction (fn-fin-core-remediation) + External Autonomous AgentIdentity (agt-fin-patch-orchestrator)
+	grace168 := 168
+	cfGovPayload := models.PrincipalGovernancePayload{
+		EnvelopeID:             "gov-seed-fn-" + uuid.NewString(),
+		Action:                 models.GovActionUpsertCommissioningFunction,
+		IssuedAt:               now.Format(time.RFC3339),
+		ExpiresAt:              now.Add(10 * time.Minute).Format(time.RFC3339),
+		FunctionID:             "fn-fin-core-remediation",
+		DisplayName:            "Financial Ledger & Checkout Remediation Function",
+		OwningOrgUnit:          "TREASURY_PAYMENTS_PLATFORM",
+		CostCenter:             "CC-FIN-4410",
+		PrimarySOPrincipalID:   alice.PrincipalID,
+		SecondarySOPrincipalID: elena.PrincipalID,
+		PrimaryAOPrincipalID:   bob.PrincipalID,
+		SecondaryAOPrincipalID: marcus.PrincipalID,
+		EscalationContact:      "fin-secops-oncall@agency.gov",
+		OrphanGraceHours:       &grace168,
+	}
+	if cfEnv, _, cErr := crypto.NewUnsignedEnvelope(crypto.PayloadTypePrincipalGovernance, cfGovPayload); cErr == nil {
+		_ = cfEnv.SignEd25519(1, alice.ToPrincipalKey(), alice.PrivateKey)
+		_ = cfEnv.SignEd25519(2, bob.ToPrincipalKey(), bob.PrivateKey)
+		_, _ = o.N1Warrant.UpsertCommissioningFunctionDualSigned(ctx, *cfEnv, models.GovActionUpsertCommissioningFunction)
+	}
+
+	bPub, bPriv, _ := ed25519.GenerateKey(rand.Reader)
+	agPub, _, _ := ed25519.GenerateKey(rand.Reader)
+	agPubB64 := base64.StdEncoding.EncodeToString(agPub)
+	agArtDigest := "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+	if provSig, pErr := crypto.SignAgentBuilderProvenance("agt-fin-patch-orchestrator", agArtDigest, agPubB64, bPriv); pErr == nil {
+		agGovPayload := models.PrincipalGovernancePayload{
+			EnvelopeID:              "gov-seed-agt-" + uuid.NewString(),
+			Action:                  models.GovActionEnrollAgentIdentity,
+			IssuedAt:                now.Format(time.RFC3339),
+			ExpiresAt:               now.Add(10 * time.Minute).Format(time.RFC3339),
+			AgentID:                 "agt-fin-patch-orchestrator",
+			DisplayName:             "Financial Core Autonomous Patch Orchestrator",
+			AgentKind:               models.AgentKindExternalAutonomous,
+			CommissioningFunctionID: "fn-fin-core-remediation",
+			Alg:                     crypto.AlgEd25519,
+			PublicKeyB64:            agPubB64,
+			SPIFFEID:                "spiffe://agency.gov/ns/fin-core/sa/agt-fin-patch-orchestrator",
+			ArtifactDigest:          agArtDigest,
+			BuilderPrincipalID:      "bld-slsa-ci-attestor",
+			BuilderPublicKeyB64:     base64.StdEncoding.EncodeToString(bPub),
+			BuilderKeyFingerprint:   crypto.SHA256Hex(bPub),
+			BuilderProvenanceSigB64: provSig,
+			AllowedActions:          []string{"EXTRACT_SARIF_2_1_0", "EXTRACT_PATCH_DIFF"},
+			AllowedServices:         []string{"payments-ledger-api", "checkout-cart-svc", "fedramp-audit-ingestor"},
+			AllowedEgressProfile:    models.EgressProfileZeroIsolated,
+			MaxTTLSeconds:           180,
+			MaxDelegationDepth:      2,
+			AllowAutonomousIntake:   true,
+			RecertifyDays:           60,
+		}
+		if agEnv, _, aErr := crypto.NewUnsignedEnvelope(crypto.PayloadTypePrincipalGovernance, agGovPayload); aErr == nil {
+			_ = agEnv.SignEd25519(1, alice.ToPrincipalKey(), alice.PrivateKey)
+			_ = agEnv.SignEd25519(2, bob.ToPrincipalKey(), bob.PrivateKey)
+			_, _ = o.N1Warrant.EnrollAgentIdentityDualSigned(ctx, *agEnv)
+		}
 	}
 
 	// 4. Execute real end-to-end KEV closures + active containment bridge + Four-Eyes exception against live extractor & fleet-sim

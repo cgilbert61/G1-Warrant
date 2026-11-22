@@ -171,11 +171,14 @@ type ExtractedAdvisory struct {
 	ExtractorDigest   string   `json:"extractor_digest"`
 }
 
-// Authority Lineage Modes (v1.0.2 SQL INSERT Notarization Protection)
+// Authority Lineage Modes (v1.0.2+ SQL INSERT Notarization Protection)
 const (
-	LineageModeGenesisSealed = "GENESIS_SEALED"
-	LineageModePostSeal2Of2  = "POST_SEAL_2OF2_DSSE"
-	LineageModePostSeal1Of2  = "POST_SEAL_1OF2_DSSE"
+	LineageModeGenesisSealed     = "GENESIS_SEALED"
+	LineageModePostSeal2Of2      = "POST_SEAL_2OF2_DSSE"
+	LineageModePostSeal1Of2      = "POST_SEAL_1OF2_DSSE"
+	LineageModeKernelSystemBoot  = "KERNEL_SYSTEM_BOOT"
+	LineageModeIGAWebhookAuth    = "IGA_AUTHENTICATED_WEBHOOK"
+	LineageModeAgentSelfRevoke   = "AGENT_SELF_REVOCATION_DSSE"
 )
 
 // Principal represents a registered human or system cryptographic identity.
@@ -228,22 +231,29 @@ type BootstrapState struct {
 
 // PrincipalGovernanceActions enumerates DSSE-signed governance & emergency actions.
 const (
-	GovActionEnrollPrincipal          = "ENROLL_PRINCIPAL"
-	GovActionRevokePrincipal          = "REVOKE_PRINCIPAL"
-	GovActionRotateAndRevokePrincipal = "ROTATE_AND_REVOKE_PRINCIPAL"
-	GovActionRotateKernelKey          = "ROTATE_KERNEL_KEY"
-	GovActionSealBootstrap            = "SEAL_BOOTSTRAP"
-	GovActionEmergencyFreeze          = "EMERGENCY_FREEZE"
-	GovActionEmergencyRollback        = "EMERGENCY_ROLLBACK"
-	GovActionMintAuditorToken         = "MINT_AUDITOR_TOKEN"
-	GovActionFeedMutation             = "FEED_MUTATION"
-	GovActionCreateCheckpoint         = "CREATE_CHECKPOINT"
-	GovActionSimulationDrill          = "SIMULATION_DRILL"
+	GovActionEnrollPrincipal              = "ENROLL_PRINCIPAL"
+	GovActionRevokePrincipal              = "REVOKE_PRINCIPAL"
+	GovActionRotateAndRevokePrincipal     = "ROTATE_AND_REVOKE_PRINCIPAL"
+	GovActionRotateKernelKey              = "ROTATE_KERNEL_KEY"
+	GovActionSealBootstrap                = "SEAL_BOOTSTRAP"
+	GovActionEmergencyFreeze              = "EMERGENCY_FREEZE"
+	GovActionEmergencyRollback            = "EMERGENCY_ROLLBACK"
+	GovActionMintAuditorToken             = "MINT_AUDITOR_TOKEN"
+	GovActionFeedMutation                 = "FEED_MUTATION"
+	GovActionCreateCheckpoint             = "CREATE_CHECKPOINT"
+	GovActionSimulationDrill              = "SIMULATION_DRILL"
+	GovActionUpsertCommissioningFunction  = "UPSERT_COMMISSIONING_FUNCTION"
+	GovActionTransferCommissioningSponsor = "TRANSFER_COMMISSIONING_SPONSOR"
+	GovActionEnrollAgentIdentity          = "ENROLL_AGENT_IDENTITY"
+	GovActionRecertifyAgentIdentity       = "RECERTIFY_AGENT_IDENTITY"
+	GovActionRevokeAgentIdentity          = "REVOKE_AGENT_IDENTITY"
+	GovActionEmitIGAEvent                 = "EMIT_IGA_EVENT"
 )
 
 // PrincipalGovernancePayload is the RFC 8785 JCS payload inside a Principal Governance DSSEv1 envelope
-// (2-of-2 required for ENROLL_PRINCIPAL and ROTATE_AND_REVOKE_PRINCIPAL; 1-of-2 active principal accepted for
-// same-role/self REVOKE_PRINCIPAL & request-scoped emergency actions).
+// (2-of-2 required for ENROLL_PRINCIPAL, ROTATE_AND_REVOKE_PRINCIPAL, UPSERT_COMMISSIONING_FUNCTION,
+// TRANSFER_COMMISSIONING_SPONSOR, ENROLL_AGENT_IDENTITY, and RECERTIFY_AGENT_IDENTITY; 1-of-2 active principal
+// accepted for self REVOKE_PRINCIPAL, REVOKE_AGENT_IDENTITY, EMIT_IGA_EVENT & request-scoped emergency actions).
 type PrincipalGovernancePayload struct {
 	EnvelopeID           string   `json:"envelope_id"`
 	Action               string   `json:"action"`
@@ -271,6 +281,35 @@ type PrincipalGovernancePayload struct {
 	ScopedAttestationIDs []string `json:"scoped_attestation_ids,omitempty"`
 	TTLHours             int      `json:"ttl_hours,omitempty"`
 	Scenario             string   `json:"scenario,omitempty"`
+
+	// v1.1.0 Commissioning Function & Agent Identity Governance Fields
+	FunctionID              string   `json:"function_id,omitempty"`
+	OwningOrgUnit           string   `json:"owning_org_unit,omitempty"`
+	CostCenter              string   `json:"cost_center,omitempty"`
+	PrimarySOPrincipalID    string   `json:"primary_so_principal_id,omitempty"`
+	SecondarySOPrincipalID  string   `json:"secondary_so_principal_id,omitempty"`
+	PrimaryAOPrincipalID    string   `json:"primary_ao_principal_id,omitempty"`
+	SecondaryAOPrincipalID  string   `json:"secondary_ao_principal_id,omitempty"`
+	EscalationContact       string   `json:"escalation_contact,omitempty"`
+	OrphanGraceHours        *int     `json:"orphan_grace_hours,omitempty"`
+	AgentID                 string   `json:"agent_id,omitempty"`
+	AgentKind               string   `json:"agent_kind,omitempty"`
+	CommissioningFunctionID string   `json:"commissioning_function_id,omitempty"`
+	SPIFFEID                string   `json:"spiffe_id,omitempty"`
+	ArtifactDigest          string   `json:"artifact_digest,omitempty"`
+	BuilderPrincipalID      string   `json:"builder_principal_id,omitempty"`
+	BuilderPublicKeyB64     string   `json:"builder_public_key_b64,omitempty"`
+	BuilderKeyFingerprint   string   `json:"builder_key_fingerprint,omitempty"`
+	BuilderProvenanceSigB64 string   `json:"builder_provenance_sig_b64,omitempty"`
+	AllowedActions          []string `json:"allowed_actions,omitempty"`
+	AllowedServices         []string `json:"allowed_services,omitempty"`
+	AllowedEgressProfile    string   `json:"allowed_egress_profile,omitempty"`
+	MaxTTLSeconds           int      `json:"max_ttl_seconds,omitempty"`
+	MaxDelegationDepth      int      `json:"max_delegation_depth,omitempty"`
+	AllowAutonomousIntake   bool     `json:"allow_autonomous_intake,omitempty"`
+	RecertifyExpiresAt      string   `json:"recertify_expires_at,omitempty"`
+	RecertifyDays           int      `json:"recertify_days,omitempty"`
+	IGAEventType            string   `json:"iga_event_type,omitempty"`
 }
 
 // ThawPayload is the JCS-canonicalized body inside a 2-of-2 freeze-thaw DSSE envelope,
@@ -610,43 +649,236 @@ type TetragonDriftEvent struct {
 	ObservedAtUnixMs   int64  `json:"observed_at_unix_ms,omitempty"`
 }
 
-// EphemeralTaskWarrantPayload is the JCS body of an N4 short-lived (TTL <= 300s) task token.
+// Agent Kinds, Authority Modes, Egress Profiles, Sponsorship States & IGA Event Types (v1.1.0)
+const (
+	AgentKindInternalWorker     = "INTERNAL_WORKER"
+	AgentKindExternalAutonomous = "EXTERNAL_AUTONOMOUS_AGENT"
+
+	AuthorityModeWarrantComposite    = "WARRANT_DELEGATED_COMPOSITE"
+	AuthorityModeAutonomousSponsored = "AUTONOMOUS_WORKLOAD_SPONSORED"
+
+	EgressProfileZeroIsolated    = "ZERO_EGRESS_ISOLATED"
+	EgressProfileInternalCluster = "INTERNAL_CLUSTER_ONLY"
+
+	SponsorshipActive              = "ACTIVE"
+	SponsorshipSecondaryContinuity = "ACTIVE_SECONDARY_CONTINUITY"
+	SponsorshipGraceEscalated      = "SPONSOR_GRACE_ESCALATED"
+	SponsorshipOrphanQuarantined   = "ORPHAN_QUARANTINED"
+	SponsorshipLeaseExpired        = "LEASE_EXPIRED_QUARANTINED"
+	SponsorshipRevokedCompromise   = "REVOKED_COMPROMISE"
+	SponsorshipRevokedKillSwitch   = "REVOKED_KILL_SWITCH"
+
+	IGAEventRoleTransfer   = "ROLE_TRANSFER"
+	IGAEventOrgReorg       = "ORG_REORG"
+	IGAEventLeaveOfAbsence = "LEAVE_OF_ABSENCE"
+	IGAEventTermination    = "TERMINATION"
+	IGAEventKeyCompromise  = "KEY_COMPROMISE"
+
+	SystemCommissioningFunctionID = "fn-g1-system-control-plane"
+)
+
+// CommissioningFunction anchors agent sponsorship to an organizational function (org unit, cost center,
+// primary + backup SO/AO sponsors, escalation target, and bounded orphan grace window) rather than brittle single-user IDs.
+type CommissioningFunction struct {
+	FunctionID               string           `json:"function_id"`
+	DisplayName              string           `json:"display_name"`
+	OwningOrgUnit            string           `json:"owning_org_unit"`
+	CostCenter               string           `json:"cost_center"`
+	PrimarySOPrincipalID     string           `json:"primary_so_principal_id"`
+	SecondarySOPrincipalID   string           `json:"secondary_so_principal_id,omitempty"`
+	PrimaryAOPrincipalID     string           `json:"primary_ao_principal_id"`
+	SecondaryAOPrincipalID   string           `json:"secondary_ao_principal_id,omitempty"`
+	EscalationContact        string           `json:"escalation_contact"`
+	OrphanGraceHours         int              `json:"orphan_grace_hours"`
+	ActiveSOCount            int              `json:"active_so_count"`
+	ActiveAOCount            int              `json:"active_ao_count"`
+	ContinuityStatus         string           `json:"continuity_status"`
+	PendingSponsorSuccession bool             `json:"pending_sponsor_succession"`
+	DepartedSponsors         []string         `json:"departed_sponsors,omitempty"`
+	LineageMode              string           `json:"lineage_mode,omitempty"`
+	GovernanceDSSE           *crypto.Envelope `json:"governance_dsse,omitempty"`
+	PrevHash                 string           `json:"prev_hash,omitempty"`
+	EntryHash                string           `json:"entry_hash,omitempty"`
+	CreatedAt                time.Time        `json:"created_at"`
+}
+
+// AgentIdentity represents an immutable, cryptographically enrolled workload/agent identity in agent_identities
+// with 3-Way Builder != Commissioner Separation of Duties and live IGA sponsorship health.
+type AgentIdentity struct {
+	AgentID                   string           `json:"agent_id"`
+	DisplayName               string           `json:"display_name"`
+	AgentKind                 string           `json:"agent_kind"` // "INTERNAL_WORKER" | "EXTERNAL_AUTONOMOUS_AGENT"
+	CommissioningFunctionID   string           `json:"commissioning_function_id"`
+	KeyID                     string           `json:"key_id"`
+	Alg                       string           `json:"alg"`
+	PublicKeyB64              string           `json:"public_key_b64"`
+	KeyFingerprint            string           `json:"key_fingerprint"`
+	SPIFFEID                  string           `json:"spiffe_id,omitempty"`
+	ArtifactDigest            string           `json:"artifact_digest"`
+	BuilderPrincipalID        string           `json:"builder_principal_id"`
+	BuilderPublicKeyB64       string           `json:"builder_public_key_b64,omitempty"`
+	BuilderKeyFingerprint     string           `json:"builder_key_fingerprint"`
+	BuilderProvenanceSigB64   string           `json:"builder_provenance_sig_b64"`
+	AllowedActions            []string         `json:"allowed_actions"`
+	AllowedServices           []string         `json:"allowed_services"`
+	AllowedEgressProfile      string           `json:"allowed_egress_profile"`
+	MaxTTLSeconds             int              `json:"max_ttl_seconds"`
+	MaxDelegationDepth        int              `json:"max_delegation_depth"`
+	AllowAutonomousIntake     bool             `json:"allow_autonomous_intake"`
+	RecertifyExpiresAt        time.Time        `json:"recertify_expires_at"`
+	CommissionerSOPrincipalID string           `json:"commissioner_so_principal_id"`
+	CommissionerSOKeyFP       string           `json:"commissioner_so_key_fp"`
+	CommissionerAOPrincipalID string           `json:"commissioner_ao_principal_id"`
+	CommissionerAOKeyFP       string           `json:"commissioner_ao_key_fp"`
+	SponsorshipState          string           `json:"sponsorship_state"`
+	SponsorCompromised        bool             `json:"sponsor_compromised"`
+	GraceActive               bool             `json:"grace_active"`
+	GraceExpiresAt            *time.Time       `json:"grace_expires_at,omitempty"`
+	Revoked                   bool             `json:"revoked"`
+	RevokeReason              string           `json:"revoke_reason,omitempty"`
+	LineageMode               string           `json:"lineage_mode,omitempty"`
+	GovernanceDSSE            *crypto.Envelope `json:"governance_dsse,omitempty"`
+	PrevHash                  string           `json:"prev_hash,omitempty"`
+	EntryHash                 string           `json:"entry_hash,omitempty"`
+	EnrolledAt                time.Time        `json:"enrolled_at"`
+}
+
+// AgentLifecycleEvent records an append-only WORM transition in agent_lifecycle_events
+// (IGA HR transfer/reorg/LOA/termination/compromise, recertification renewal, or agent kill-switch revocation).
+type AgentLifecycleEvent struct {
+	EventID             string           `json:"event_id"`
+	EventType           string           `json:"event_type"`
+	TargetAgentID       string           `json:"target_agent_id,omitempty"`
+	TargetFunctionID    string           `json:"target_function_id,omitempty"`
+	AffectedPrincipalID string           `json:"affected_principal_id,omitempty"`
+	NewSponsorshipState string           `json:"new_sponsorship_state"`
+	GraceExpiresAt      *time.Time       `json:"grace_expires_at,omitempty"`
+	RecertifyExpiresAt  *time.Time       `json:"recertify_expires_at,omitempty"`
+	ReasonCode          string           `json:"reason_code"`
+	TriggeredBy         string           `json:"triggered_by"`
+	LineageMode         string           `json:"lineage_mode,omitempty"`
+	GovernanceDSSE      *crypto.Envelope `json:"governance_dsse,omitempty"`
+	PrevHash            string           `json:"prev_hash,omitempty"`
+	EntryHash           string           `json:"entry_hash,omitempty"`
+	OccurredAt          time.Time        `json:"occurred_at"`
+}
+
+// IGAEventRequest represents an inbound HR/IAM lifecycle event on POST /api/v1/iga/events.
+type IGAEventRequest struct {
+	EventID       string     `json:"event_id,omitempty"`
+	EventType     string     `json:"event_type"` // ROLE_TRANSFER | ORG_REORG | LEAVE_OF_ABSENCE | TERMINATION | KEY_COMPROMISE
+	PrincipalID   string     `json:"principal_id"`
+	ReasonCode    string     `json:"reason_code,omitempty"`
+	SourceSystem  string     `json:"source_system,omitempty"`
+	EffectiveTime *time.Time `json:"effective_time,omitempty"`
+}
+
+// PendingSponsorTransfer surfaces a CommissioningFunction awaiting a 2-of-2 TRANSFER_COMMISSIONING_SPONSOR ceremony in the Console Action Inbox.
+type PendingSponsorTransfer struct {
+	FunctionID            string     `json:"function_id"`
+	DisplayName           string     `json:"display_name"`
+	OwningOrgUnit         string     `json:"owning_org_unit"`
+	EscalationContact     string     `json:"escalation_contact"`
+	ContinuityStatus      string     `json:"continuity_status"`
+	DepartedPrincipals    []string   `json:"departed_principals"`
+	AffectedAgentsCount   int        `json:"affected_agents_count"`
+	EarliestGraceExpiryAt *time.Time `json:"earliest_grace_expiry_at,omitempty"`
+}
+
+// ActorClaim implements RFC 8693 Section 4.1 nested "act" delegation lineage inside an EphemeralTaskWarrant.
+type ActorClaim struct {
+	AgentID                 string      `json:"agent_id"`
+	KeyID                   string      `json:"key_id"`
+	KeyFingerprint          string      `json:"key_fingerprint"`
+	CommissioningFunctionID string      `json:"commissioning_function_id"`
+	SponsorshipState        string      `json:"sponsorship_state"`
+	ParentActor             *ActorClaim `json:"act,omitempty"`
+}
+
+// ConfirmationClaim implements RFC 7800 / RFC 8693 "cnf" Holder-of-Key binding for wire-level X-Warrant-Agent-PoP.
+type ConfirmationClaim struct {
+	Alg            string `json:"alg"`
+	KeyID          string `json:"kid"`
+	PublicKeyB64   string `json:"public_key_b64"`
+	KeyFingerprint string `json:"jkt_sha256"`
+}
+
+// AgentTokenExchangePayload is the JCS body inside a caller-signed DSSE PoP request on POST /api/v1/agents/token-exchange.
+type AgentTokenExchangePayload struct {
+	EnvelopeID             string           `json:"envelope_id"`
+	AgentID                string           `json:"agent_id"`
+	AuthorityMode          string           `json:"authority_mode"`
+	WarrantID              string           `json:"warrant_id,omitempty"`
+	RemediationID          string           `json:"remediation_id,omitempty"`
+	TargetAsset            string           `json:"target_asset"`
+	RequestedAction        string           `json:"requested_action"`
+	RequestedEgressProfile string           `json:"requested_egress_profile,omitempty"`
+	RequestedTTLSeconds    int              `json:"requested_ttl_seconds"`
+	ParentTaskWarrant      *crypto.Envelope `json:"parent_task_warrant,omitempty"`
+	ParentHolderPoPSigB64  string           `json:"parent_holder_pop_sig_b64,omitempty"`
+	IssuedAt               string           `json:"issued_at"`
+	ExpiresAt              string           `json:"expires_at"`
+}
+
+// AgentTokenExchangeResponse returns the kernel-signed RFC 8693 EphemeralTaskWarrant envelope and resolved claims.
+type AgentTokenExchangeResponse struct {
+	TaskWarrantDSSE     crypto.Envelope             `json:"task_warrant_dsse"`
+	Payload             EphemeralTaskWarrantPayload `json:"payload"`
+	EffectiveTTLSeconds int                         `json:"effective_ttl_seconds"`
+	SponsorshipState    string                      `json:"sponsorship_state"`
+}
+
+// EphemeralTaskWarrantPayload is the JCS body of an N4 short-lived (TTL <= 300s) RFC 8693 composite task token.
 type EphemeralTaskWarrantPayload struct {
-	TaskTokenID           string   `json:"task_token_id"`
-	WarrantID             string   `json:"warrant_id"`
-	RemediationID         string   `json:"remediation_id"`
-	WorkerName            string   `json:"worker_name"`
-	TargetAsset           string   `json:"target_asset"`
-	AllowedAction         string   `json:"allowed_action"`
-	ForbiddenPathPrefixes []string `json:"forbidden_path_prefixes,omitempty"`
-	Slot1PrincipalID      string   `json:"slot1_principal_id"`
-	Slot2PrincipalID      string   `json:"slot2_principal_id"`
-	TTLSeconds            int      `json:"ttl_seconds"`
-	IssuedUnix            int64    `json:"issued_unix"`
-	ExpiresUnix           int64    `json:"expires_unix"`
+	TaskTokenID             string             `json:"task_token_id"`
+	WarrantID               string             `json:"warrant_id"`
+	RemediationID           string             `json:"remediation_id"`
+	AuthorityMode           string             `json:"authority_mode,omitempty"`
+	CommissioningFunctionID string             `json:"commissioning_function_id,omitempty"`
+	Sub                     string             `json:"sub,omitempty"`
+	WorkerName              string             `json:"worker_name"`
+	TargetAsset             string             `json:"target_asset"`
+	AllowedAction           string             `json:"allowed_action"`
+	EgressProfile           string             `json:"egress_profile,omitempty"`
+	ForbiddenPathPrefixes   []string           `json:"forbidden_path_prefixes,omitempty"`
+	Slot1PrincipalID        string             `json:"slot1_principal_id"`
+	Slot2PrincipalID        string             `json:"slot2_principal_id"`
+	Act                     *ActorClaim        `json:"act,omitempty"`
+	Cnf                     *ConfirmationClaim `json:"cnf,omitempty"`
+	ParentTaskTokenID       string             `json:"parent_task_token_id,omitempty"`
+	DelegationDepth         int                `json:"delegation_depth,omitempty"`
+	MaxDelegationDepth      int                `json:"max_delegation_depth,omitempty"`
+	TTLSeconds              int                `json:"ttl_seconds"`
+	IssuedUnix              int64              `json:"issued_unix"`
+	ExpiresUnix             int64              `json:"expires_unix"`
 }
 
 // AgentLedgerEntry is an immutable, hash-chained row in agent_action_ledger (N4).
 type AgentLedgerEntry struct {
-	ActionID          string    `json:"action_id"`
-	TaskTokenID       string    `json:"task_token_id"`
-	WarrantID         string    `json:"warrant_id"`
-	RemediationID     string    `json:"remediation_id"`
-	WorkerName        string    `json:"worker_name"`
-	TargetAsset       string    `json:"target_asset"`
-	ActionType        string    `json:"action_type"`
-	Slot1PrincipalID  string    `json:"slot1_principal_id"`
-	Slot2PrincipalID  string    `json:"slot2_principal_id"`
-	EgressProfile     string    `json:"egress_profile"` // "ZERO_EGRESS_ISOLATED" | "INTERNAL_CLUSTER_ONLY"
-	RawInputSHA256    string    `json:"raw_input_sha256"`
-	ExtractorDigest   string    `json:"extractor_digest"`
-	TypedOutputSHA256 string    `json:"typed_output_sha256"`
-	TokenTTLSec       int       `json:"token_ttl_sec"`
-	Status            string    `json:"status"` // "EXECUTED" | "SECURITY_VIOLATION"
-	ViolationCode     string    `json:"violation_code,omitempty"`
-	PrevHash          string    `json:"prev_hash"`
-	EntryHash         string    `json:"entry_hash"`
-	ExecutedAt        time.Time `json:"executed_at"`
+	ActionID                string      `json:"action_id"`
+	TaskTokenID             string      `json:"task_token_id"`
+	WarrantID               string      `json:"warrant_id"`
+	RemediationID           string      `json:"remediation_id"`
+	AuthorityMode           string      `json:"authority_mode,omitempty"`
+	CommissioningFunctionID string      `json:"commissioning_function_id,omitempty"`
+	AgentID                 string      `json:"agent_id,omitempty"`
+	DelegationDepth         int         `json:"delegation_depth,omitempty"`
+	ActChain                *ActorClaim `json:"act_chain,omitempty"`
+	WorkerName              string      `json:"worker_name"`
+	TargetAsset             string      `json:"target_asset"`
+	ActionType              string      `json:"action_type"`
+	Slot1PrincipalID        string      `json:"slot1_principal_id"`
+	Slot2PrincipalID        string      `json:"slot2_principal_id"`
+	EgressProfile           string      `json:"egress_profile"` // "ZERO_EGRESS_ISOLATED" | "INTERNAL_CLUSTER_ONLY"
+	RawInputSHA256          string      `json:"raw_input_sha256"`
+	ExtractorDigest         string      `json:"extractor_digest"`
+	TypedOutputSHA256       string      `json:"typed_output_sha256"`
+	TokenTTLSec             int         `json:"token_ttl_sec"`
+	Status                  string      `json:"status"` // "EXECUTED" | "SECURITY_VIOLATION"
+	ViolationCode           string      `json:"violation_code,omitempty"`
+	PrevHash                string      `json:"prev_hash"`
+	EntryHash               string      `json:"entry_hash"`
+	ExecutedAt              time.Time   `json:"executed_at"`
 }
 
 // PodDigestEntry records a verified live pod digest in N3/N5.
@@ -723,7 +955,7 @@ const (
 	WitnessModeInProcessLocal = "IN_PROCESS_LOCAL"
 )
 
-// LedgerVerificationReport summarizes hash-chain integrity across all 6 append-only tables
+// LedgerVerificationReport summarizes hash-chain integrity across all 6 core + 3 agent-authority append-only tables
 // and cross-verifies against External Transparency Checkpoints to detect DB superuser tampering.
 type LedgerVerificationReport struct {
 	AllValid                bool               `json:"all_valid"`
@@ -734,47 +966,57 @@ type LedgerVerificationReport struct {
 	SuperuserTamperDetail   string             `json:"superuser_tamper_detail,omitempty"`
 	VerifiedAt              time.Time          `json:"verified_at"`
 	Tables                  []ChainTableStatus `json:"tables"`
+	AgentAuthorityTables    []ChainTableStatus `json:"agent_authority_tables,omitempty"`
 }
 
 // LedgerCheckpoint represents a periodic DSSE-signed Merkle Root receipt shipped to an
 // external WORM / Transparency boundary (S3 Object Lock, Rekor, RFC 3161 TSA, or immutable external sink).
 type LedgerCheckpoint struct {
-	CheckpointID         string          `json:"checkpoint_id"`
-	MerkleVersion        int             `json:"merkle_version"`
-	WarrantHeadHash      string          `json:"warrant_head_hash"`
-	WarrantRowCount      int             `json:"warrant_row_count"`
-	AgentHeadHash        string          `json:"agent_head_hash"`
-	AgentRowCount        int             `json:"agent_row_count"`
-	AttestationHeadHash  string          `json:"attestation_head_hash"`
-	AttestationRowCount  int             `json:"attestation_row_count"`
-	PrincipalHeadHash    string          `json:"principal_head_hash"`
-	PrincipalRowCount    int             `json:"principal_row_count"`
-	RevocationHeadHash   string          `json:"revocation_head_hash"`
-	RevocationRowCount   int             `json:"revocation_row_count"`
-	KernelKeyHeadHash    string          `json:"kernel_key_head_hash"`
-	KernelKeyRowCount    int             `json:"kernel_key_row_count"`
-	CombinedMerkleRoot   string          `json:"combined_merkle_root"`
-	DSSEEnvelope         crypto.Envelope `json:"dsse_envelope"`
-	WitnessMode          string          `json:"witness_mode,omitempty"`
-	ExternalAnchorTarget string          `json:"external_anchor_target"`
-	ExternalReceiptHash  string          `json:"external_receipt_hash"`
-	AnchoredAt           time.Time       `json:"anchored_at"`
+	CheckpointID           string          `json:"checkpoint_id"`
+	MerkleVersion          int             `json:"merkle_version"`
+	WarrantHeadHash        string          `json:"warrant_head_hash"`
+	WarrantRowCount        int             `json:"warrant_row_count"`
+	AgentHeadHash          string          `json:"agent_head_hash"`
+	AgentRowCount          int             `json:"agent_row_count"`
+	AttestationHeadHash    string          `json:"attestation_head_hash"`
+	AttestationRowCount    int             `json:"attestation_row_count"`
+	PrincipalHeadHash      string          `json:"principal_head_hash"`
+	PrincipalRowCount      int             `json:"principal_row_count"`
+	RevocationHeadHash     string          `json:"revocation_head_hash"`
+	RevocationRowCount     int             `json:"revocation_row_count"`
+	KernelKeyHeadHash      string          `json:"kernel_key_head_hash"`
+	KernelKeyRowCount      int             `json:"kernel_key_row_count"`
+	CommissioningHeadHash  string          `json:"commissioning_head_hash,omitempty"`
+	CommissioningRowCount  int             `json:"commissioning_row_count,omitempty"`
+	AgentIdentityHeadHash  string          `json:"agent_identity_head_hash,omitempty"`
+	AgentIdentityRowCount  int             `json:"agent_identity_row_count,omitempty"`
+	AgentLifecycleHeadHash string          `json:"agent_lifecycle_head_hash,omitempty"`
+	AgentLifecycleRowCount int             `json:"agent_lifecycle_row_count,omitempty"`
+	CombinedMerkleRoot     string          `json:"combined_merkle_root"`
+	DSSEEnvelope           crypto.Envelope `json:"dsse_envelope"`
+	WitnessMode            string          `json:"witness_mode,omitempty"`
+	ExternalAnchorTarget   string          `json:"external_anchor_target"`
+	ExternalReceiptHash    string          `json:"external_receipt_hash"`
+	AnchoredAt             time.Time       `json:"anchored_at"`
 }
 
 // GlobalScoreboard aggregates the persistent Global Command Bar KPIs.
 type GlobalScoreboard struct {
-	FreezeState                FreezeState `json:"freeze_state"`
-	WitnessMode                string      `json:"witness_mode,omitempty"`
-	ActiveWarrantsCount        int         `json:"active_warrants_count"`
-	FleetMedianTTVRSeconds     int64       `json:"fleet_median_ttvr_seconds"`
-	ActiveBridgesArmed         int         `json:"active_bridges_armed"`
-	MedianBridgeAgeSeconds     int64       `json:"median_bridge_age_seconds"`
-	AutonomousEligibilityPct   float64     `json:"autonomous_eligibility_pct"`
-	EligibleServicesCount      int         `json:"eligible_services_count"`
-	TotalServicesCount         int         `json:"total_services_count"`
-	AwaitingDualKeyInboxCount  int         `json:"awaiting_dual_key_inbox_count"`
-	ActiveDriftViolationsCount int         `json:"active_drift_violations_count"`
-	RollbackFailuresCount      int         `json:"rollback_failures_count"`
+	FreezeState                  FreezeState `json:"freeze_state"`
+	WitnessMode                  string      `json:"witness_mode,omitempty"`
+	ActiveWarrantsCount          int         `json:"active_warrants_count"`
+	ActiveAgentsCount            int         `json:"active_agents_count"`
+	QuarantinedAgentsCount       int         `json:"quarantined_agents_count"`
+	PendingSponsorTransfersCount int         `json:"pending_sponsor_transfers_count"`
+	FleetMedianTTVRSeconds       int64       `json:"fleet_median_ttvr_seconds"`
+	ActiveBridgesArmed           int         `json:"active_bridges_armed"`
+	MedianBridgeAgeSeconds       int64       `json:"median_bridge_age_seconds"`
+	AutonomousEligibilityPct     float64     `json:"autonomous_eligibility_pct"`
+	EligibleServicesCount        int         `json:"eligible_services_count"`
+	TotalServicesCount           int         `json:"total_services_count"`
+	AwaitingDualKeyInboxCount    int         `json:"awaiting_dual_key_inbox_count"`
+	ActiveDriftViolationsCount   int         `json:"active_drift_violations_count"`
+	RollbackFailuresCount        int         `json:"rollback_failures_count"`
 }
 
 // FeedMode constants for offline air-gapped enclaves vs. live public threat feeds.

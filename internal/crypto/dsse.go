@@ -24,6 +24,8 @@ const (
 	PayloadTypeException           = "application/vnd.g1163rt.exception-resolution.v1+json"
 	PayloadTypeAttestation         = "application/vnd.g1163rt.oscal-attestation.v1+json"
 	PayloadTypeTaskWarrant         = "application/vnd.g1163rt.task-warrant.v1+json"
+	PayloadTypeAgentTokenExchange  = "application/vnd.g1163rt.agent-token-exchange.v1+json"
+	PayloadTypeSystemAuthorityBoot = "application/vnd.g1163rt.system-authority-boot.v1+json"
 	PayloadTypePrincipalGovernance = "application/vnd.g1163rt.principal-governance.v1+json"
 	PayloadTypeGenesisSeal         = "application/vnd.g1163rt.genesis-seal.v1+json"
 	PayloadTypeKernelKeyRotation   = "application/vnd.g1163rt.kernel-key-rotation.v1+json"

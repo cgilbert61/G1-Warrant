@@ -1,13 +1,18 @@
 package fleetsim
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/cgilbert61/G1-Warrant/internal/crypto"
+	"github.com/cgilbert61/G1-Warrant/internal/extractor"
 	"github.com/google/uuid"
 )
 
@@ -777,7 +782,34 @@ func (cs *ClusterSimulator) Handler() http.Handler {
 		})
 	})
 
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && !strings.HasPrefix(r.URL.Path, "/v1/drift/") {
+			requirePoP := strings.EqualFold(strings.TrimSpace(os.Getenv("FLEET_SIM_REQUIRE_TASK_POP")), "true") &&
+				(strings.HasPrefix(r.URL.Path, "/v1/rollouts/") ||
+					strings.HasPrefix(r.URL.Path, "/v1/bridges") ||
+					strings.HasPrefix(r.URL.Path, "/v1/lockouts") ||
+					strings.HasPrefix(r.URL.Path, "/v1/twin/") ||
+					strings.HasPrefix(r.URL.Path, "/v1/secrets/"))
+			if requirePoP || strings.TrimSpace(r.Header.Get(crypto.HeaderTaskDSSE)) != "" {
+				var bodyBytes []byte
+				if r.Body != nil {
+					b, err := io.ReadAll(io.LimitReader(r.Body, 4<<20))
+					_ = r.Body.Close()
+					if err != nil {
+						writeSimJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+						return
+					}
+					bodyBytes = b
+					r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+				}
+				if code, err := extractor.VerifyWireTaskAndAgentPoP(r, bodyBytes, "", extractor.ResolveKernelPublicKeysFromEnv(), requirePoP); err != nil {
+					writeSimJSON(w, code, map[string]string{"error": err.Error()})
+					return
+				}
+			}
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 func appendUnique(list []string, item string) []string {

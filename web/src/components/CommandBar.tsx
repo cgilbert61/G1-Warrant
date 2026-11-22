@@ -163,6 +163,19 @@ export const CommandBar: React.FC<CommandBarProps> = ({
               </span>
             </div>
           </div>
+          <div className="px-3">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
+              Governed Agent Workloads
+            </div>
+            <div className="text-sm font-mono font-bold text-slate-900 tabular-nums">
+              {scoreboard.active_agents_count ?? 0} Active
+              {(scoreboard.quarantined_agents_count ?? 0) > 0 && (
+                <span className="text-[11px] font-bold text-red-700 ml-1.5">
+                  ({scoreboard.quarantined_agents_count} Quarantined)
+                </span>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* Right Tray: Witness Mode + Live Feeds + Smartcard Toggle + Action Inbox Badge + Hold-to-Freeze / Dual-Key Thaw */}
@@ -225,7 +238,12 @@ export const CommandBar: React.FC<CommandBarProps> = ({
             }`}
           >
             <Inbox className="w-3.5 h-3.5" />
-            <span>{scoreboard.awaiting_dual_key_inbox_count} Awaiting Dual-Key</span>
+            <span>
+              {scoreboard.awaiting_dual_key_inbox_count} Awaiting Dual-Key
+              {(scoreboard.pending_sponsor_transfers_count ?? 0) > 0
+                ? ` (${scoreboard.pending_sponsor_transfers_count} Sponsor)`
+                : ''}
+            </span>
           </button>
 
           {!isFrozen ? (

@@ -141,6 +141,7 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 	systemUUID := deterministicUUID("system:g1-warrant-enterprise-estate")
 	assetUUID := deterministicUUID("asset:" + svc.ServiceID)
 	obsWarrantUUID := deterministicUUID("obs:warrant:" + attID)
+	obsAgentUUID := deterministicUUID("obs:agent-lineage:" + attID)
 	obsTwinUUID := deterministicUUID("obs:twin:" + attID)
 	obsFleetUUID := deterministicUUID("obs:fleet:" + attID)
 	obsLockoutUUID := deterministicUUID("obs:lockout:" + attID)
@@ -148,6 +149,7 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 	poamItemUUID := deterministicUUID("poam-item:" + attID)
 
 	warrantEnvHash, _, _ := crypto.CanonicalSHA256Hex(w.DSSEEnvelope)
+	commFuncID, agentID, authMode, builderDigest, builderFP, sponsorState, actLineage := e.resolveAgentObservationLineage(ctx, item.RemediationID, w.WarrantID)
 
 	oscalDoc := map[string]any{
 		"plan-of-action-and-milestones": map[string]any{
@@ -230,6 +232,22 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 					},
 				},
 				{
+					"uuid":        obsAgentUUID,
+					"title":       "N4 Agent Workload Identity, Commissioning Function & RFC 8693 Delegation Lineage",
+					"description": fmt.Sprintf("Executed by governed workload %s under Commissioning Function %s (%s).", agentID, commFuncID, sponsorState),
+					"methods":     []string{"EXAMINE", "TEST"},
+					"collected":   now.Format(time.RFC3339),
+					"props": []map[string]string{
+						{"name": "commissioning-function-id", "value": commFuncID},
+						{"name": "agent-id", "value": agentID},
+						{"name": "authority-mode", "value": authMode},
+						{"name": "builder-artifact-digest", "value": builderDigest},
+						{"name": "builder-key-fingerprint", "value": builderFP},
+						{"name": "sponsorship-continuity-state", "value": sponsorState},
+						{"name": "act-delegation-lineage", "value": actLineage},
+					},
+				},
+				{
 					"uuid":        obsTwinUUID,
 					"title":       "N3 Isolated Ephemeral Twin Exploit Replay",
 					"description": "Deterministic exploit reproduction executed against isolated ephemeral twin; exit proof EXPLOIT_BLOCKED.",
@@ -282,6 +300,7 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 					"description": fmt.Sprintf("Closed under Standing Warrant %s with Admission Lockout %s.", w.WarrantID, bundle.Lockout.PolicyName),
 					"related-observations": []map[string]string{
 						{"observation-uuid": obsWarrantUUID},
+						{"observation-uuid": obsAgentUUID},
 						{"observation-uuid": obsTwinUUID},
 						{"observation-uuid": obsFleetUUID},
 						{"observation-uuid": obsLockoutUUID},
@@ -420,6 +439,65 @@ func (e *Engine) MintScopedAuditorToken(ctx context.Context, label, createdBy st
 
 func deterministicUUID(seed string) string {
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("g1163rt.g1-warrant:"+seed)).String()
+}
+
+func formatActChainSummary(act *models.ActorClaim) string {
+	if act == nil {
+		return ""
+	}
+	var hops []string
+	for cur := act; cur != nil; cur = cur.ParentActor {
+		hops = append(hops, fmt.Sprintf("%s[%s:%s]", cur.AgentID, cur.CommissioningFunctionID, cur.SponsorshipState))
+	}
+	return strings.Join(hops, " -> ")
+}
+
+func (e *Engine) resolveAgentObservationLineage(ctx context.Context, remediationID, warrantID string) (commFuncID, agentID, authMode, builderDigest, builderFP, sponsorState, actLineage string) {
+	commFuncID = models.SystemCommissioningFunctionID
+	agentID = "agt-k8s-rollout"
+	authMode = models.AuthorityModeWarrantComposite
+	builderDigest = "sha256:" + crypto.SHA256Hex([]byte("g1-internal-worker:agt-k8s-rollout"))
+	builderFP = "INTERNAL_RELEASE_ATTESTOR"
+	sponsorState = models.SponsorshipActive
+	actLineage = fmt.Sprintf("%s[%s:%s]", agentID, commFuncID, sponsorState)
+
+	if e.store == nil {
+		return
+	}
+	if actions, err := e.store.ListAgentActions(ctx); err == nil {
+		for _, act := range actions {
+			if act.Status != "EXECUTED" {
+				continue
+			}
+			if (remediationID != "" && act.RemediationID == remediationID) || (remediationID == "" && warrantID != "" && act.WarrantID == warrantID) {
+				if act.CommissioningFunctionID != "" {
+					commFuncID = act.CommissioningFunctionID
+				}
+				if act.AgentID != "" {
+					agentID = act.AgentID
+				} else if act.WorkerName != "" {
+					agentID = act.WorkerName
+				}
+				if act.AuthorityMode != "" {
+					authMode = act.AuthorityMode
+				}
+				if summary := formatActChainSummary(act.ActChain); summary != "" {
+					actLineage = summary
+				}
+				break
+			}
+		}
+	}
+	if ag, err := e.store.GetAgentIdentity(ctx, agentID); err == nil && ag != nil {
+		commFuncID = ag.CommissioningFunctionID
+		builderDigest = ag.ArtifactDigest
+		builderFP = ag.BuilderKeyFingerprint
+		sponsorState = ag.SponsorshipState
+		if actLineage == "" {
+			actLineage = fmt.Sprintf("%s[%s:%s]", ag.AgentID, ag.CommissioningFunctionID, ag.SponsorshipState)
+		}
+	}
+	return
 }
 
 func buildPodEvidenceList(pods []models.PodDigestEntry) []map[string]any {

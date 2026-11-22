@@ -178,8 +178,8 @@ func TestSplitKeygenHygieneAndPrivateKeyClientRejection(t *testing.T) {
 }
 
 func TestRequestScopedGovernanceHeadersAndEpochThawDrafts(t *testing.T) {
-	if warrantsdk.Version != "1.0.4" {
-		t.Fatalf("expected warrantsdk.Version == 1.0.4, got %s", warrantsdk.Version)
+	if warrantsdk.Version != "1.1.0" {
+		t.Fatalf("expected warrantsdk.Version == 1.1.0, got %s", warrantsdk.Version)
 	}
 	so, err := warrantsdk.GenerateEd25519SignerBundle("usr-so-scope", "so-scope@agency.gov", "Scope SO", warrantsdk.RoleServiceOwner)
 	if err != nil {
@@ -242,5 +242,38 @@ func TestRequestScopedGovernanceHeadersAndEpochThawDrafts(t *testing.T) {
 	_ = json.Unmarshal(thawBytes, &tp)
 	if tp.FreezeEpoch != 7 || tp.EnvelopeID == "" || tp.ExpiresAt == "" {
 		t.Fatalf("unexpected ThawPayload: %+v", tp)
+	}
+}
+
+func TestAgentProvenanceTokenExchangeAndWirePoPHeaders(t *testing.T) {
+	if warrantsdk.Version != "1.1.0" {
+		t.Fatalf("expected Go SDK Version 1.1.0, got %s", warrantsdk.Version)
+	}
+	builder, err := warrantsdk.GenerateAgentKeyBundle("bld-test", "Builder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := warrantsdk.GenerateAgentKeyBundle("agt-test", "Agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	sig, err := warrantsdk.SignBuilderProvenance(agent.AgentID, digest, agent.PublicKeyB64, builder.PrivateKeyB64)
+	if err != nil || sig == "" {
+		t.Fatalf("SignBuilderProvenance failed: %v", err)
+	}
+	bPubBytes, _ := crypto.DecodeBase64Any(builder.PublicKeyB64)
+	if err := crypto.VerifyAgentBuilderProvenance(agent.AgentID, digest, agent.PublicKeyB64, sig, ed25519.PublicKey(bPubBytes)); err != nil {
+		t.Fatalf("VerifyAgentBuilderProvenance failed: %v", err)
+	}
+
+	xchEnv, err := warrantsdk.SignTokenExchangeRequest(agent, warrantsdk.AgentTokenExchangePayload{
+		AuthorityMode:       warrantsdk.AuthorityModeAutonomousSponsored,
+		TargetAsset:         "payments-ledger-api",
+		RequestedAction:     "EXTRACT_SARIF_2_1_0",
+		RequestedTTLSeconds: 60,
+	}, nil)
+	if err != nil || len(xchEnv.Signatures) != 1 {
+		t.Fatalf("SignTokenExchangeRequest failed: %v", err)
 	}
 }

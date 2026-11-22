@@ -77,7 +77,7 @@ class WarrantClient:
         full_path = f"{self._base_path}{path}"
         conn_cls = http.client.HTTPSConnection if self._scheme == "https" else http.client.HTTPConnection
         conn = conn_cls(self._host, self._port, timeout=self.timeout)
-        headers: dict[str, str] = {"User-Agent": "g1-warrant-python-sdk/1.0.2"}
+        headers: dict[str, str] = {"User-Agent": "g1-warrant-python-sdk/1.1.0"}
         if content_type:
             headers["Content-Type"] = content_type
         tok = (bearer_override if bearer_override is not None else self.auditor_token).strip()
@@ -577,3 +577,75 @@ class WarrantClient:
             payload={"osv_id": osv_id, "service_id": service_id},
             signer_bundle=signer_bundle,
         )
+
+    # ------------------------------------------------------------------
+    # v1.1.0 Commissioning Functions, Agent Identities & IGA Lifecycle
+    # ------------------------------------------------------------------
+    def list_commissioning_functions(self) -> list[dict[str, Any]]:
+        return self._request_json("GET", "/api/v1/commissioning-functions")
+
+    def list_pending_sponsor_transfers(self) -> list[dict[str, Any]]:
+        return self._request_json("GET", "/api/v1/commissioning-functions/pending-transfers")
+
+    def submit_commissioning_function(self, dsse_envelope: dict[str, Any]) -> dict[str, Any]:
+        return self._request_json("POST", "/api/v1/commissioning-functions", dsse_envelope)
+
+    def transfer_commissioning_sponsor(self, function_id: str, dsse_envelope: dict[str, Any]) -> dict[str, Any]:
+        safe_id = urllib.parse.quote(function_id, safe="")
+        return self._request_json("POST", f"/api/v1/commissioning-functions/{safe_id}/transfer", dsse_envelope)
+
+    def list_agents(self) -> list[dict[str, Any]]:
+        return self._request_json("GET", "/api/v1/agents")
+
+    def enroll_agent(self, dsse_envelope: dict[str, Any]) -> dict[str, Any]:
+        return self._request_json("POST", "/api/v1/agents/enroll", dsse_envelope)
+
+    def recertify_agent(self, dsse_envelope: dict[str, Any]) -> dict[str, Any]:
+        return self._request_json("POST", "/api/v1/agents/recertify", dsse_envelope)
+
+    def revoke_agent(self, dsse_envelope: dict[str, Any]) -> dict[str, Any]:
+        return self._request_json("POST", "/api/v1/agents/revoke", dsse_envelope)
+
+    def exchange_agent_token(self, dsse_envelope: dict[str, Any]) -> dict[str, Any]:
+        return self._request_json("POST", "/api/v1/agents/token-exchange", dsse_envelope)
+
+    def list_iga_events(self) -> list[dict[str, Any]]:
+        return self._request_json("GET", "/api/v1/iga/events")
+
+    def emit_iga_event(
+        self,
+        event_type: str,
+        principal_id: str,
+        reason_code: str = "",
+        iga_token: str = "",
+        hmac_secret: str = "",
+        signer_bundle: SignerKeyBundle | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "event_type": event_type,
+            "principal_id": principal_id,
+        }
+        if reason_code:
+            payload["reason_code"] = reason_code
+        active_signer = signer_bundle or self.signer_bundle
+        if active_signer is not None and not iga_token and not hmac_secret:
+            return self._request_action_json(
+                "POST",
+                "/api/v1/iga/events",
+                "EMIT_IGA_EVENT",
+                {"target_principal_id": principal_id, "iga_event_type": event_type, "reason_code": reason_code},
+                payload=payload,
+                signer_bundle=active_signer,
+            )
+        extra: dict[str, str] = {}
+        raw_body = json.dumps(payload).encode("utf-8")
+        if hmac_secret:
+            import hashlib
+            import hmac as _hmac
+
+            mac = _hmac.new(hmac_secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+            extra["X-Warrant-IGA-Signature-256"] = f"sha256={mac}"
+        if iga_token:
+            extra["X-Warrant-IGA-Token"] = iga_token
+        raw = self._request_raw("POST", "/api/v1/iga/events", body=raw_body, content_type="application/json", extra_headers=extra or None)
+        return json.loads(raw.decode("utf-8"))

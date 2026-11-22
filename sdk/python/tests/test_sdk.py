@@ -15,14 +15,20 @@ from g1_warrant import (
     WarrantAPIError,
     WarrantClient,
     __version__,
+    build_agent_pop_headers,
     canonicalize_jcs,
+    draft_agent_enroll_envelope,
+    draft_commissioning_function_envelope,
     draft_principal_enroll_envelope,
     draft_principal_revoke_envelope,
     draft_principal_rotate_and_revoke_envelope,
     draft_thaw_envelope,
     draft_warrant_envelope,
+    generate_agent_key_bundle,
     generate_ed25519_signer_bundle,
     load_public_identity_file,
+    sign_builder_provenance,
+    sign_token_exchange_request,
     verify_oscal_bundle_offline,
     verify_oscal_bundle_with_keyring,
     write_split_keypair_files,
@@ -40,7 +46,7 @@ class TestG1WarrantCryptoAndSDK(unittest.TestCase):
         )
 
     def test_split_keygen_hygiene_and_governance_envelopes(self) -> None:
-        self.assertEqual(__version__, "1.0.4")
+        self.assertEqual(__version__, "1.1.0")
         so = generate_ed25519_signer_bundle("usr-so", "so@agency.gov", "Alice SO", ROLE_SERVICE_OWNER)
         ao = generate_ed25519_signer_bundle("usr-ao", "ao@agency.gov", "Bob AO", ROLE_AUTHORIZING_OFFICIAL)
         so2 = generate_ed25519_signer_bundle("usr-so2", "so2@agency.gov", "Carol SO2", ROLE_SERVICE_OWNER)
@@ -127,6 +133,58 @@ class TestG1WarrantCryptoAndSDK(unittest.TestCase):
         decoded = json.loads(base64.b64decode(env["payload"]).decode("utf-8"))
         self.assertTrue(decoded["allow_secret_rotation"])
         self.assertEqual(decoded["auto_remediate_cwes"], ["CWE-209", "CWE-918", "CWE-434"])
+
+    def test_v1_1_0_agent_provenance_token_exchange_and_wire_pop(self) -> None:
+        so = generate_ed25519_signer_bundle("usr-so", "so@agency.gov", "Alice SO", ROLE_SERVICE_OWNER)
+        ao = generate_ed25519_signer_bundle("usr-ao", "ao@agency.gov", "Bob AO", ROLE_AUTHORIZING_OFFICIAL)
+        builder = generate_agent_key_bundle("bld-ci", "CI Builder")
+        agent = generate_agent_key_bundle("agt-worker", "Autonomous Worker")
+
+        cf_env = draft_commissioning_function_envelope(
+            function_id="fn-fin-core",
+            display_name="Fin Core",
+            owning_org_unit="FIN_SEC",
+            primary_so_principal_id=so.principal_id,
+            primary_ao_principal_id=ao.principal_id,
+            escalation_contact="oncall@agency.gov",
+        )
+        so.sign_envelope(1, cf_env)
+        ao.sign_envelope(2, cf_env)
+        self.assertEqual(len(cf_env["signatures"]), 2)
+
+        digest = "sha256:" + ("a" * 64)
+        prov_sig = sign_builder_provenance(agent.agent_id, digest, agent.public_key_b64, builder.private_key_b64)
+        ag_env = draft_agent_enroll_envelope(
+            agent_id=agent.agent_id,
+            commissioning_function_id="fn-fin-core",
+            public_key_b64=agent.public_key_b64,
+            artifact_digest=digest,
+            builder_principal_id=builder.agent_id,
+            builder_public_key_b64=builder.public_key_b64,
+            builder_key_fingerprint=builder.key_fingerprint,
+            builder_provenance_sig_b64=prov_sig,
+            allowed_actions=["EXTRACT_SARIF_2_1_0"],
+            allowed_services=["*"],
+        )
+        so.sign_envelope(1, ag_env)
+        ao.sign_envelope(2, ag_env)
+        self.assertEqual(len(ag_env["signatures"]), 2)
+
+        xch = sign_token_exchange_request(
+            agent,
+            target_asset="payments-ledger-api",
+            requested_action="EXTRACT_SARIF_2_1_0",
+            authority_mode="AUTONOMOUS_WORKLOAD_SPONSORED",
+        )
+        self.assertEqual(len(xch["signatures"]), 1)
+
+        fake_task_dsse = draft_unsigned_envelope(
+            "application/vnd.g1163rt.task-warrant.v1+json",
+            {"task_token_id": "tsk-py-001", "allowed_action": "EXTRACT_SARIF_2_1_0"},
+        )
+        hdrs = build_agent_pop_headers("POST", "/extract/sarif", b'{"version":"2.1.0"}', fake_task_dsse, agent, unix_ts=1795000000)
+        self.assertIn("X-Warrant-Task-DSSE", hdrs)
+        self.assertTrue(hdrs["X-Warrant-Agent-PoP"].startswith("1795000000."))
 
     def test_live_server_integration_if_running(self) -> None:
         cli = WarrantClient("http://localhost:8080", timeout=2.0)

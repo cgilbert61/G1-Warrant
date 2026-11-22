@@ -47,6 +47,9 @@ export interface GlobalScoreboard {
   freeze_state: FreezeState;
   witness_mode?: 'EXTERNAL_NOTARY' | 'IN_PROCESS_LOCAL';
   active_warrants_count: number;
+  active_agents_count?: number;
+  quarantined_agents_count?: number;
+  pending_sponsor_transfers_count?: number;
   fleet_median_ttvr_seconds: number;
   active_bridges_armed: number;
   median_bridge_age_seconds: number;
@@ -364,11 +367,90 @@ export interface AttestationRecord {
   minted_at: string;
 }
 
+export interface ActorClaim {
+  agent_id: string;
+  key_id: string;
+  key_fingerprint: string;
+  commissioning_function_id: string;
+  sponsorship_state: string;
+  act?: ActorClaim;
+}
+
+export interface CommissioningFunction {
+  function_id: string;
+  display_name: string;
+  owning_org_unit: string;
+  cost_center: string;
+  primary_so_principal_id: string;
+  secondary_so_principal_id?: string;
+  primary_ao_principal_id: string;
+  secondary_ao_principal_id?: string;
+  escalation_contact: string;
+  orphan_grace_hours: number;
+  active_so_count: number;
+  active_ao_count: number;
+  continuity_status: string;
+  pending_sponsor_succession: boolean;
+  departed_sponsors?: string[];
+  prev_hash?: string;
+  entry_hash?: string;
+  created_at: string;
+}
+
+export interface AgentIdentity {
+  agent_id: string;
+  display_name: string;
+  agent_kind: 'INTERNAL_WORKER' | 'EXTERNAL_AUTONOMOUS_AGENT';
+  commissioning_function_id: string;
+  key_id: string;
+  alg: string;
+  public_key_b64: string;
+  key_fingerprint: string;
+  spiffe_id?: string;
+  artifact_digest: string;
+  builder_principal_id: string;
+  builder_key_fingerprint: string;
+  allowed_actions: string[];
+  allowed_services: string[];
+  allowed_egress_profile: string;
+  max_ttl_seconds: number;
+  max_delegation_depth: number;
+  allow_autonomous_intake: boolean;
+  recertify_expires_at: string;
+  commissioner_so_principal_id: string;
+  commissioner_ao_principal_id: string;
+  sponsorship_state: string;
+  sponsor_compromised: boolean;
+  grace_active: boolean;
+  grace_expires_at?: string;
+  revoked: boolean;
+  revoke_reason?: string;
+  prev_hash?: string;
+  entry_hash?: string;
+  enrolled_at: string;
+}
+
+export interface PendingSponsorTransfer {
+  function_id: string;
+  display_name: string;
+  owning_org_unit: string;
+  escalation_contact: string;
+  continuity_status: string;
+  departed_principals?: string[];
+  affected_agents_count: number;
+  earliest_grace_expiry_at?: string;
+}
+
 export interface AgentLedgerEntry {
   action_id: string;
   task_token_id: string;
   warrant_id: string;
   remediation_id: string;
+  authority_mode?: string;
+  commissioning_function_id?: string;
+  agent_id?: string;
+  delegation_depth?: number;
+  act_chain?: ActorClaim;
   worker_name: string;
   target_asset: string;
   action_type: string;
@@ -386,6 +468,15 @@ export interface AgentLedgerEntry {
   executed_at: string;
 }
 
+export interface ChainStatusItem {
+  table_name: string;
+  row_count: number;
+  valid: boolean;
+  terminal_hash: string;
+  broken_at_row_index: number;
+  failure_detail?: string;
+}
+
 export interface LedgerVerificationReport {
   all_valid: boolean;
   witness_mode?: 'EXTERNAL_NOTARY' | 'IN_PROCESS_LOCAL';
@@ -394,14 +485,8 @@ export interface LedgerVerificationReport {
   latest_combined_merkle_root?: string;
   superuser_tamper_detail?: string;
   verified_at: string;
-  tables: Array<{
-    table_name: string;
-    row_count: number;
-    valid: boolean;
-    terminal_hash: string;
-    broken_at_row_index: number;
-    failure_detail?: string;
-  }>;
+  tables: ChainStatusItem[];
+  agent_authority_tables?: ChainStatusItem[];
 }
 
 export interface FeedRuntimeConfig {
@@ -464,6 +549,9 @@ export interface BootstrapSnapshot {
   shadow_runs: ShadowComparisonReport[];
   attestations: AttestationRecord[];
   agent_actions: AgentLedgerEntry[];
+  commissioning_functions?: CommissioningFunction[];
+  agents?: AgentIdentity[];
+  pending_sponsor_transfers?: PendingSponsorTransfer[];
   feed_status?: LiveFeedStatus;
   kernel_public_key: {
     key_id: string;

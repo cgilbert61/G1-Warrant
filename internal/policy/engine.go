@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"sort"
@@ -12,11 +13,13 @@ import (
 )
 
 // Engine wraps precompiled in-process Open Policy Agent (OPA) Rego queries
-// for N1 (AC-5 Warrant Verification), N2 (Gate & Shadow Safety), and N3/N5 (Verify & Closure).
+// for N1 (AC-5 Warrant Verification), N2 (Gate & Shadow Safety), N3/N5 (Verify & Closure),
+// and N4 (Agent Commissioning Health & Permission Intersection).
 type Engine struct {
 	ac5Query    rego.PreparedEvalQuery
 	gateQuery   rego.PreparedEvalQuery
 	verifyQuery rego.PreparedEvalQuery
+	agentQuery  rego.PreparedEvalQuery
 }
 
 // AC5Input represents structured input to data.warrant.ac5.
@@ -137,6 +140,71 @@ type VerifyDecision struct {
 	Blockers              []string `json:"blockers"`
 }
 
+// AgentProfileInput represents the enrolled AgentIdentity & live sponsorship health passed to data.warrant.agent.
+type AgentProfileInput struct {
+	AgentID                      string   `json:"agent_id"`
+	CommissioningFunctionID      string   `json:"commissioning_function_id"`
+	Revoked                      bool     `json:"revoked"`
+	SponsorshipState             string   `json:"sponsorship_state"`
+	SponsorCompromised           bool     `json:"sponsor_compromised"`
+	GraceActive                  bool     `json:"grace_active"`
+	GraceExpiresUnix             int64    `json:"grace_expires_unix"`
+	RecertifyExpiresUnix         int64    `json:"recertify_expires_unix"`
+	AllowedActions               []string `json:"allowed_actions"`
+	AllowedServices              []string `json:"allowed_services"`
+	AllowedEgressProfile         string   `json:"allowed_egress_profile"`
+	MaxTTLSeconds                int      `json:"max_ttl_seconds"`
+	MaxDelegationDepth           int      `json:"max_delegation_depth"`
+	AllowAutonomousIntake        bool     `json:"allow_autonomous_intake"`
+	BuilderPrincipalID           string   `json:"builder_principal_id,omitempty"`
+	BuilderKeyFingerprint        string   `json:"builder_key_fingerprint,omitempty"`
+	CommissionerSOPrincipalID    string   `json:"commissioner_so_principal_id,omitempty"`
+	CommissionerSOKeyFingerprint string   `json:"commissioner_so_key_fingerprint,omitempty"`
+	CommissionerAOPrincipalID    string   `json:"commissioner_ao_principal_id,omitempty"`
+	CommissionerAOKeyFingerprint string   `json:"commissioner_ao_key_fingerprint,omitempty"`
+}
+
+// AgentWarrantScopeInput represents the governing Standing Warrant scope in WARRANT_DELEGATED_COMPOSITE mode.
+type AgentWarrantScopeInput struct {
+	Present        bool     `json:"present"`
+	Active         bool     `json:"active"`
+	ScopeServices  []string `json:"scope_services,omitempty"`
+	AllowedActions []string `json:"allowed_actions,omitempty"`
+	ExpiresUnix    int64    `json:"expires_unix,omitempty"`
+}
+
+// AgentParentTaskInput represents the parent EphemeralTaskWarrant scope during sub-agent attenuation (depth > 0).
+type AgentParentTaskInput struct {
+	Present            bool   `json:"present"`
+	TargetAsset        string `json:"target_asset,omitempty"`
+	AllowedAction      string `json:"allowed_action,omitempty"`
+	EgressProfile      string `json:"egress_profile,omitempty"`
+	ExpiresUnix        int64  `json:"expires_unix,omitempty"`
+	MaxDelegationDepth int    `json:"max_delegation_depth,omitempty"`
+	SponsorshipState   string `json:"sponsorship_state,omitempty"`
+}
+
+// AgentInput represents structured input to data.warrant.agent.
+type AgentInput struct {
+	NowUnix                int64                  `json:"now_unix"`
+	AuthorityMode          string                 `json:"authority_mode"`
+	RequestedAction        string                 `json:"requested_action"`
+	TargetAsset            string                 `json:"target_asset"`
+	RequestedEgressProfile string                 `json:"requested_egress_profile"`
+	RequestedTTLSeconds    int                    `json:"requested_ttl_seconds"`
+	DelegationDepth        int                    `json:"delegation_depth"`
+	Agent                  AgentProfileInput      `json:"agent"`
+	StandingWarrant        AgentWarrantScopeInput `json:"standing_warrant"`
+	ParentTask             AgentParentTaskInput   `json:"parent_task"`
+}
+
+// AgentDecision is the deterministic decision from data.warrant.agent.
+type AgentDecision struct {
+	Allow               bool     `json:"allow"`
+	EffectiveTTLSeconds int      `json:"effective_ttl_seconds"`
+	Violations          []string `json:"violations"`
+}
+
 // NewEngine loads and precompiles all embedded OPA Rego policies.
 func NewEngine(ctx context.Context) (*Engine, error) {
 	entries, err := fs.ReadDir(policies.FS, ".")
@@ -173,11 +241,16 @@ func NewEngine(ctx context.Context) (*Engine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("compile data.warrant.verify: %w", err)
 	}
+	agentQ, err := compile("data.warrant.agent")
+	if err != nil {
+		return nil, fmt.Errorf("compile data.warrant.agent: %w", err)
+	}
 
 	return &Engine{
 		ac5Query:    ac5Q,
 		gateQuery:   gateQ,
 		verifyQuery: verifyQ,
+		agentQuery:  agentQ,
 	}, nil
 }
 
@@ -250,6 +323,45 @@ func (e *Engine) EvalVerify(ctx context.Context, in VerifyInput) (*VerifyDecisio
 		AssuranceTier:         tier,
 		Blockers:              extractSortedStrings(m["blockers"]),
 	}, nil
+}
+
+// EvalAgent evaluates N4 agent commissioning health, 3-Way Builder != Commissioner SoD,
+// RFC 8693 sub-agent act attenuation, and formal permission intersection.
+func (e *Engine) EvalAgent(ctx context.Context, in AgentInput) (*AgentDecision, error) {
+	rs, err := e.agentQuery.Eval(ctx, rego.EvalInput(in))
+	if err != nil || len(rs) == 0 || len(rs[0].Expressions) == 0 {
+		return nil, fmt.Errorf("eval agent intersection failed: %w", err)
+	}
+	m, ok := rs[0].Expressions[0].Value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("unexpected agent intersection result type %T", rs[0].Expressions[0].Value)
+	}
+	allow, _ := m["allow"].(bool)
+	effTTL := extractInt(m["effective_ttl_seconds"])
+	return &AgentDecision{
+		Allow:               allow,
+		EffectiveTTLSeconds: effTTL,
+		Violations:          extractSortedStrings(m["violations"]),
+	}, nil
+}
+
+func extractInt(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			return int(i)
+		}
+		if f, err := n.Float64(); err == nil {
+			return int(f)
+		}
+	}
+	return 0
 }
 
 func extractSortedStrings(v any) []string {

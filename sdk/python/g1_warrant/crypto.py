@@ -20,6 +20,8 @@ PAYLOAD_TYPE_WARRANT = "application/vnd.g1163rt.warrant.v1+json"
 PAYLOAD_TYPE_THAW = "application/vnd.g1163rt.freeze-thaw.v1+json"
 PAYLOAD_TYPE_EXCEPTION = "application/vnd.g1163rt.exception-resolution.v1+json"
 PAYLOAD_TYPE_ATTESTATION = "application/vnd.g1163rt.oscal-attestation.v1+json"
+PAYLOAD_TYPE_TASK_WARRANT = "application/vnd.g1163rt.task-warrant.v1+json"
+PAYLOAD_TYPE_AGENT_TOKEN_EXCHANGE = "application/vnd.g1163rt.agent-token-exchange.v1+json"
 PAYLOAD_TYPE_PRINCIPAL_GOVERNANCE = "application/vnd.g1163rt.principal-governance.v1+json"
 
 
@@ -517,3 +519,271 @@ def verify_oscal_bundle_with_keyring(
         if entry.get("key_id") == target_kid:
             return verify_oscal_bundle_offline(doc, str(entry["public_key_b64"]))
     raise ValueError(f"Kernel signing key {target_kid!r} not found in verification public-key ring ({len(candidates)} keys)")
+
+
+@dataclasses.dataclass
+class AgentKeyBundle:
+    """Portable Ed25519 workload/agent or builder keypair compatible with Go warrantsdk.AgentKeyBundle."""
+
+    agent_id: str
+    display_name: str
+    key_id: str
+    alg: str
+    public_key_b64: str
+    private_key_b64: str
+    key_fingerprint: str
+    created_at: str
+
+    def to_dict(self) -> dict[str, str]:
+        return dataclasses.asdict(self)
+
+    def sign_envelope(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        seed = _decode_b64_any(self.private_key_b64)[:32]
+        priv = Ed25519PrivateKey.from_private_bytes(seed)
+        raw_payload = _decode_b64_any(envelope["payload"])
+        pae = dsse_pae(envelope["payloadType"], raw_payload)
+        sig_bytes = priv.sign(pae)
+        sigs = list(envelope.get("signatures") or [])
+        sigs.append(
+            {
+                "slot": 1,
+                "keyid": self.key_id,
+                "alg": "Ed25519",
+                "principal_id": self.agent_id,
+                "key_fingerprint": self.key_fingerprint,
+                "sig": base64.b64encode(sig_bytes).decode("ascii"),
+                "signed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+        )
+        envelope["signatures"] = sigs
+        return envelope
+
+
+def generate_agent_key_bundle(agent_id: str, display_name: str = "") -> AgentKeyBundle:
+    """Generate a new Ed25519 workload/agent or builder key bundle."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    priv = Ed25519PrivateKey.generate()
+    seed = priv.private_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PrivateFormat.Raw,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    pub = priv.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    fp = sha256_hex(pub)
+    aid = agent_id.strip()
+    return AgentKeyBundle(
+        agent_id=aid,
+        display_name=(display_name.strip() or aid),
+        key_id=f"ed25519-{aid}-{fp[:10]}",
+        alg="Ed25519",
+        public_key_b64=base64.b64encode(pub).decode("ascii"),
+        private_key_b64=base64.b64encode(seed + pub).decode("ascii"),
+        key_fingerprint=fp,
+        created_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    )
+
+
+def sign_builder_provenance(
+    agent_id: str,
+    artifact_digest: str,
+    agent_public_key_b64: str,
+    builder_private_key_b64: str,
+) -> str:
+    """Sign canonical G1_AGENT_PROVENANCE_V1|{agent_id}|{artifact_digest}|{public_key_b64} with an Ed25519 builder key."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    seed = _decode_b64_any(builder_private_key_b64)[:32]
+    priv = Ed25519PrivateKey.from_private_bytes(seed)
+    preimage = f"G1_AGENT_PROVENANCE_V1|{agent_id.strip()}|{artifact_digest.strip()}|{agent_public_key_b64.strip()}".encode(
+        "utf-8"
+    )
+    return base64.b64encode(priv.sign(preimage)).decode("ascii")
+
+
+def draft_commissioning_function_envelope(
+    function_id: str,
+    display_name: str,
+    owning_org_unit: str,
+    primary_so_principal_id: str,
+    primary_ao_principal_id: str,
+    escalation_contact: str,
+    cost_center: str = "",
+    secondary_so_principal_id: str = "",
+    secondary_ao_principal_id: str = "",
+    orphan_grace_hours: int = 168,
+    is_transfer: bool = False,
+    reason_code: str = "",
+) -> dict[str, Any]:
+    """Create an unsigned 2-of-2 DSSE envelope for UPSERT_COMMISSIONING_FUNCTION or TRANSFER_COMMISSIONING_SPONSOR."""
+    action = "TRANSFER_COMMISSIONING_SPONSOR" if is_transfer else "UPSERT_COMMISSIONING_FUNCTION"
+    fields: dict[str, Any] = {
+        "function_id": function_id,
+        "display_name": display_name,
+        "owning_org_unit": owning_org_unit,
+        "cost_center": cost_center,
+        "primary_so_principal_id": primary_so_principal_id,
+        "secondary_so_principal_id": secondary_so_principal_id,
+        "primary_ao_principal_id": primary_ao_principal_id,
+        "secondary_ao_principal_id": secondary_ao_principal_id,
+        "escalation_contact": escalation_contact,
+        "orphan_grace_hours": int(orphan_grace_hours),
+    }
+    if reason_code:
+        fields["reason_code"] = reason_code
+    return draft_governance_envelope(action, fields, ttl_seconds=300)
+
+
+def draft_agent_enroll_envelope(
+    agent_id: str,
+    commissioning_function_id: str,
+    public_key_b64: str,
+    artifact_digest: str,
+    builder_principal_id: str,
+    builder_public_key_b64: str,
+    builder_key_fingerprint: str,
+    builder_provenance_sig_b64: str,
+    allowed_actions: list[str],
+    allowed_services: list[str],
+    display_name: str = "",
+    agent_kind: str = "EXTERNAL_AUTONOMOUS_AGENT",
+    allowed_egress_profile: str = "ZERO_EGRESS_ISOLATED",
+    max_ttl_seconds: int = 120,
+    max_delegation_depth: int = 1,
+    allow_autonomous_intake: bool = False,
+    recertify_days: int = 30,
+    spiffe_id: str = "",
+) -> dict[str, Any]:
+    """Create an unsigned 2-of-2 ENROLL_AGENT_IDENTITY DSSE envelope."""
+    return draft_governance_envelope(
+        "ENROLL_AGENT_IDENTITY",
+        {
+            "agent_id": agent_id,
+            "display_name": display_name or agent_id,
+            "agent_kind": agent_kind,
+            "commissioning_function_id": commissioning_function_id,
+            "alg": "Ed25519",
+            "public_key_b64": public_key_b64,
+            "spiffe_id": spiffe_id,
+            "artifact_digest": artifact_digest,
+            "builder_principal_id": builder_principal_id,
+            "builder_public_key_b64": builder_public_key_b64,
+            "builder_key_fingerprint": builder_key_fingerprint,
+            "builder_provenance_sig_b64": builder_provenance_sig_b64,
+            "allowed_actions": allowed_actions,
+            "allowed_services": allowed_services,
+            "allowed_egress_profile": allowed_egress_profile,
+            "max_ttl_seconds": int(max_ttl_seconds),
+            "max_delegation_depth": int(max_delegation_depth),
+            "allow_autonomous_intake": bool(allow_autonomous_intake),
+            "recertify_days": int(recertify_days),
+        },
+        ttl_seconds=300,
+    )
+
+
+def draft_agent_recertify_envelope(
+    agent_id: str,
+    recertify_days: int = 90,
+    reason_code: str = "DUAL_KEY_RECERTIFICATION_RENEWAL",
+) -> dict[str, Any]:
+    """Create an unsigned 2-of-2 RECERTIFY_AGENT_IDENTITY DSSE envelope."""
+    return draft_governance_envelope(
+        "RECERTIFY_AGENT_IDENTITY",
+        {
+            "agent_id": agent_id,
+            "recertify_days": int(recertify_days),
+            "reason_code": reason_code,
+        },
+        ttl_seconds=300,
+    )
+
+
+def draft_agent_revoke_envelope(
+    agent_id: str,
+    reason_code: str = "SDK_AGENT_KILL_SWITCH",
+) -> dict[str, Any]:
+    """Create an unsigned 1-of-2 or self-signed REVOKE_AGENT_IDENTITY DSSE envelope."""
+    return draft_governance_envelope(
+        "REVOKE_AGENT_IDENTITY",
+        {
+            "agent_id": agent_id,
+            "reason_code": reason_code,
+        },
+        ttl_seconds=300,
+    )
+
+
+def sign_token_exchange_request(
+    caller: AgentKeyBundle,
+    target_asset: str,
+    requested_action: str,
+    authority_mode: str = "WARRANT_DELEGATED_COMPOSITE",
+    warrant_id: str = "",
+    remediation_id: str = "",
+    requested_egress_profile: str = "",
+    requested_ttl_seconds: int = 60,
+    parent_task_warrant: dict[str, Any] | None = None,
+    parent_holder: AgentKeyBundle | None = None,
+) -> dict[str, Any]:
+    """Draft and sign an RFC 8693 AgentTokenExchangePayload DSSE PoP request (<= 60s TTL)."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    now = datetime.now(timezone.utc)
+    env_id = f"xch-{uuid.uuid4()}"
+    payload: dict[str, Any] = {
+        "envelope_id": env_id,
+        "agent_id": caller.agent_id,
+        "authority_mode": authority_mode,
+        "target_asset": target_asset,
+        "requested_action": requested_action,
+        "requested_ttl_seconds": int(requested_ttl_seconds),
+        "issued_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "expires_at": (now + timedelta(seconds=45)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    if warrant_id:
+        payload["warrant_id"] = warrant_id
+    if remediation_id:
+        payload["remediation_id"] = remediation_id
+    if requested_egress_profile:
+        payload["requested_egress_profile"] = requested_egress_profile
+    if parent_task_warrant is not None:
+        payload["parent_task_warrant"] = parent_task_warrant
+        if parent_holder is not None:
+            parent_doc = json.loads(_decode_b64_any(parent_task_warrant["payload"]).decode("utf-8"))
+            preimage = f"G1_DELEGATE_ACT_V1|{parent_doc['task_token_id']}|{caller.agent_id}|{env_id}".encode("utf-8")
+            p_priv = Ed25519PrivateKey.from_private_bytes(_decode_b64_any(parent_holder.private_key_b64)[:32])
+            payload["parent_holder_pop_sig_b64"] = base64.b64encode(p_priv.sign(preimage)).decode("ascii")
+
+    env = draft_unsigned_envelope(PAYLOAD_TYPE_AGENT_TOKEN_EXCHANGE, payload)
+    return caller.sign_envelope(env)
+
+
+def build_agent_pop_headers(
+    method: str,
+    canonical_path: str,
+    body: bytes,
+    task_warrant_dsse: dict[str, Any],
+    holder: AgentKeyBundle,
+    unix_ts: int | None = None,
+) -> dict[str, str]:
+    """Construct wire-level X-Warrant-Task-DSSE and X-Warrant-Agent-PoP headers for an outbound HTTP request."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    ts = int(unix_ts if unix_ts is not None else datetime.now(timezone.utc).timestamp())
+    task_payload = json.loads(_decode_b64_any(task_warrant_dsse["payload"]).decode("utf-8"))
+    tok_id = str(task_payload["task_token_id"]).strip()
+    path_clean = canonical_path.strip() or "/"
+    preimage = f"G1_AGENT_POP_V1|{method.strip().upper()}|{path_clean}|{sha256_hex(body)}|{tok_id}|{ts}".encode("utf-8")
+    priv = Ed25519PrivateKey.from_private_bytes(_decode_b64_any(holder.private_key_b64)[:32])
+    sig_b64 = base64.b64encode(priv.sign(preimage)).decode("ascii")
+    return {
+        "X-Warrant-Task-DSSE": base64.b64encode(json.dumps(task_warrant_dsse).encode("utf-8")).decode("ascii"),
+        "X-Warrant-Agent-PoP": f"{ts}.{sig_b64}",
+    }

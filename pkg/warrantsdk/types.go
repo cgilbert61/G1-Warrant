@@ -10,7 +10,7 @@ import (
 )
 
 // Version is the semantic version of the G1-Warrant Go SDK.
-const Version = "1.0.4"
+const Version = "1.1.0"
 
 // Re-exported protocol constants for callers outside internal/.
 const (
@@ -28,6 +28,8 @@ const (
 	PayloadTypeThaw                = crypto.PayloadTypeThaw
 	PayloadTypeException           = crypto.PayloadTypeException
 	PayloadTypeAttestation         = crypto.PayloadTypeAttestation
+	PayloadTypeTaskWarrant         = crypto.PayloadTypeTaskWarrant
+	PayloadTypeAgentTokenExchange  = crypto.PayloadTypeAgentTokenExchange
 	PayloadTypePrincipalGovernance = crypto.PayloadTypePrincipalGovernance
 	PayloadTypeGenesisSeal         = crypto.PayloadTypeGenesisSeal
 	PayloadTypeKernelKeyRotation   = crypto.PayloadTypeKernelKeyRotation
@@ -35,54 +37,93 @@ const (
 	WarrantClassSecretRotation = models.WarrantClassSecretRotation
 	AssuranceTierSecretRotated = models.AssuranceTierSecretRotated
 
-	GovActionEnrollPrincipal          = models.GovActionEnrollPrincipal
-	GovActionRevokePrincipal          = models.GovActionRevokePrincipal
-	GovActionRotateAndRevokePrincipal = models.GovActionRotateAndRevokePrincipal
-	GovActionRotateKernelKey          = models.GovActionRotateKernelKey
-	GovActionSealBootstrap            = models.GovActionSealBootstrap
-	GovActionEmergencyFreeze          = models.GovActionEmergencyFreeze
-	GovActionEmergencyRollback        = models.GovActionEmergencyRollback
-	GovActionMintAuditorToken         = models.GovActionMintAuditorToken
-	GovActionFeedMutation             = models.GovActionFeedMutation
-	GovActionCreateCheckpoint         = models.GovActionCreateCheckpoint
-	GovActionSimulationDrill          = models.GovActionSimulationDrill
+	AgentKindInternalWorker     = models.AgentKindInternalWorker
+	AgentKindExternalAutonomous = models.AgentKindExternalAutonomous
+
+	AuthorityModeWarrantComposite    = models.AuthorityModeWarrantComposite
+	AuthorityModeAutonomousSponsored = models.AuthorityModeAutonomousSponsored
+
+	EgressProfileZeroIsolated    = models.EgressProfileZeroIsolated
+	EgressProfileInternalCluster = models.EgressProfileInternalCluster
+
+	SponsorshipActive              = models.SponsorshipActive
+	SponsorshipSecondaryContinuity = models.SponsorshipSecondaryContinuity
+	SponsorshipGraceEscalated      = models.SponsorshipGraceEscalated
+	SponsorshipOrphanQuarantined   = models.SponsorshipOrphanQuarantined
+	SponsorshipLeaseExpired        = models.SponsorshipLeaseExpired
+	SponsorshipRevokedCompromise   = models.SponsorshipRevokedCompromise
+	SponsorshipRevokedKillSwitch   = models.SponsorshipRevokedKillSwitch
+
+	IGAEventRoleTransfer   = models.IGAEventRoleTransfer
+	IGAEventOrgReorg       = models.IGAEventOrgReorg
+	IGAEventLeaveOfAbsence = models.IGAEventLeaveOfAbsence
+	IGAEventTermination    = models.IGAEventTermination
+	IGAEventKeyCompromise  = models.IGAEventKeyCompromise
+
+	GovActionEnrollPrincipal              = models.GovActionEnrollPrincipal
+	GovActionRevokePrincipal              = models.GovActionRevokePrincipal
+	GovActionRotateAndRevokePrincipal     = models.GovActionRotateAndRevokePrincipal
+	GovActionRotateKernelKey              = models.GovActionRotateKernelKey
+	GovActionSealBootstrap                = models.GovActionSealBootstrap
+	GovActionEmergencyFreeze              = models.GovActionEmergencyFreeze
+	GovActionEmergencyRollback            = models.GovActionEmergencyRollback
+	GovActionMintAuditorToken             = models.GovActionMintAuditorToken
+	GovActionFeedMutation                 = models.GovActionFeedMutation
+	GovActionCreateCheckpoint             = models.GovActionCreateCheckpoint
+	GovActionSimulationDrill              = models.GovActionSimulationDrill
+	GovActionUpsertCommissioningFunction  = models.GovActionUpsertCommissioningFunction
+	GovActionTransferCommissioningSponsor = models.GovActionTransferCommissioningSponsor
+	GovActionEnrollAgentIdentity          = models.GovActionEnrollAgentIdentity
+	GovActionRecertifyAgentIdentity       = models.GovActionRecertifyAgentIdentity
+	GovActionRevokeAgentIdentity          = models.GovActionRevokeAgentIdentity
+	GovActionEmitIGAEvent                 = models.GovActionEmitIGAEvent
 )
 
 // Public type aliases re-exported cleanly for external Go SDK consumers.
 type (
-	Envelope                   = crypto.Envelope
-	Signature                  = crypto.Signature
-	PrincipalKey               = crypto.PrincipalKey
-	GlobalScoreboard           = models.GlobalScoreboard
-	BootstrapState             = models.BootstrapState
-	Principal                  = models.Principal
-	PrincipalRevocation        = models.PrincipalRevocation
-	PrincipalGovernancePayload = models.PrincipalGovernancePayload
-	ThawPayload                = models.ThawPayload
-	ExceptionResolutionPayload = models.ExceptionResolutionPayload
-	KernelKeyRotationPayload   = models.KernelKeyRotationPayload
-	WarrantPayload           = models.WarrantPayload
-	WarrantRecord            = models.WarrantRecord
-	FreezeState              = models.FreezeState
-	EstateService            = models.EstateService
-	ShadowComparisonReport   = models.ShadowComparisonReport
-	RemediationItem          = models.RemediationItem
-	TraceEvent               = models.TraceEvent
-	CeilingException         = models.CeilingException
-	ContainmentBridge        = models.ContainmentBridge
-	AdmissionLockout         = models.AdmissionLockout
-	DriftIncident            = models.DriftIncident
-	TetragonDriftEvent       = models.TetragonDriftEvent
-	KernelPublicKeyRecord    = models.KernelPublicKeyRecord
-	AgentLedgerEntry         = models.AgentLedgerEntry
-	AttestationRecord        = models.AttestationRecord
-	AuditorShareToken        = models.AuditorShareToken
-	LedgerVerificationReport = models.LedgerVerificationReport
-	LedgerCheckpoint         = models.LedgerCheckpoint
-	FeedRuntimeConfig        = models.FeedRuntimeConfig
-	FeedSyncRun              = models.FeedSyncRun
-	LiveFeedStatus           = models.LiveFeedStatus
-	ExtractedOSVEntry        = models.ExtractedOSVEntry
+	Envelope                    = crypto.Envelope
+	Signature                   = crypto.Signature
+	PrincipalKey                = crypto.PrincipalKey
+	GlobalScoreboard            = models.GlobalScoreboard
+	BootstrapState              = models.BootstrapState
+	Principal                   = models.Principal
+	PrincipalRevocation         = models.PrincipalRevocation
+	PrincipalGovernancePayload  = models.PrincipalGovernancePayload
+	CommissioningFunction       = models.CommissioningFunction
+	AgentIdentity               = models.AgentIdentity
+	AgentLifecycleEvent         = models.AgentLifecycleEvent
+	IGAEventRequest             = models.IGAEventRequest
+	PendingSponsorTransfer      = models.PendingSponsorTransfer
+	ActorClaim                  = models.ActorClaim
+	ConfirmationClaim           = models.ConfirmationClaim
+	AgentTokenExchangePayload   = models.AgentTokenExchangePayload
+	AgentTokenExchangeResponse  = models.AgentTokenExchangeResponse
+	EphemeralTaskWarrantPayload = models.EphemeralTaskWarrantPayload
+	ThawPayload                 = models.ThawPayload
+	ExceptionResolutionPayload  = models.ExceptionResolutionPayload
+	KernelKeyRotationPayload    = models.KernelKeyRotationPayload
+	WarrantPayload              = models.WarrantPayload
+	WarrantRecord               = models.WarrantRecord
+	FreezeState                 = models.FreezeState
+	EstateService               = models.EstateService
+	ShadowComparisonReport      = models.ShadowComparisonReport
+	RemediationItem             = models.RemediationItem
+	TraceEvent                  = models.TraceEvent
+	CeilingException            = models.CeilingException
+	ContainmentBridge           = models.ContainmentBridge
+	AdmissionLockout            = models.AdmissionLockout
+	DriftIncident               = models.DriftIncident
+	TetragonDriftEvent          = models.TetragonDriftEvent
+	KernelPublicKeyRecord       = models.KernelPublicKeyRecord
+	AgentLedgerEntry            = models.AgentLedgerEntry
+	AttestationRecord           = models.AttestationRecord
+	AuditorShareToken           = models.AuditorShareToken
+	LedgerVerificationReport    = models.LedgerVerificationReport
+	LedgerCheckpoint            = models.LedgerCheckpoint
+	FeedRuntimeConfig           = models.FeedRuntimeConfig
+	FeedSyncRun                 = models.FeedSyncRun
+	LiveFeedStatus              = models.LiveFeedStatus
+	ExtractedOSVEntry           = models.ExtractedOSVEntry
 )
 
 // APIError represents a structured non-2xx HTTP response from warrantd.

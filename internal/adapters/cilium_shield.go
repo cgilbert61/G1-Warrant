@@ -50,6 +50,13 @@ func (c *CiliumShieldAdapter) Rulepacks() *RulepackRegistry {
 	return c.rulepacks
 }
 
+// SetHTTPTransport configures a governed RoundTripper attaching X-Warrant-Task-DSSE + X-Warrant-Agent-PoP.
+func (c *CiliumShieldAdapter) SetHTTPTransport(rt http.RoundTripper) {
+	if c != nil && c.httpClient != nil && rt != nil {
+		c.httpClient.Transport = rt
+	}
+}
+
 func (c *CiliumShieldAdapter) CompileAndApplyBridge(ctx context.Context, req BridgeApplyRequest) (*models.ContainmentBridge, error) {
 	if req.Namespace == "" {
 		req.Namespace = "default"

@@ -1,6 +1,7 @@
 package extractor
 
 import (
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/cgilbert61/G1-Warrant/internal/crypto"
 	"github.com/cgilbert61/G1-Warrant/internal/models"
@@ -686,8 +688,169 @@ func ParseUntrustedAdvisory(raw []byte, extractorDigest string) (*models.Extract
 	return out, nil
 }
 
-// NewHTTPHandler constructs the stateless HTTP mux for /cmd/warrant-extractor.
+// ResolveKernelPublicKeysFromEnv loads trusted kernel Ed25519 verification public keys from
+// WARRANT_KERNEL_PUBLIC_KEY_B64 and/or WARRANT_KERNEL_PUBLIC_KEY_FILE.
+func ResolveKernelPublicKeysFromEnv() []ed25519.PublicKey {
+	var rawEntries []string
+	if envVal := strings.TrimSpace(os.Getenv("WARRANT_KERNEL_PUBLIC_KEY_B64")); envVal != "" {
+		rawEntries = append(rawEntries, strings.Split(envVal, ",")...)
+	}
+	if keyFile := strings.TrimSpace(os.Getenv("WARRANT_KERNEL_PUBLIC_KEY_FILE")); keyFile != "" {
+		if b, err := os.ReadFile(keyFile); err == nil && strings.TrimSpace(string(b)) != "" {
+			for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+				rawEntries = append(rawEntries, strings.Split(strings.TrimSpace(line), ",")...)
+			}
+		}
+	}
+	var keys []ed25519.PublicKey
+	for _, item := range rawEntries {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if pubBytes, err := crypto.DecodeBase64Any(item); err == nil && len(pubBytes) == ed25519.PublicKeySize {
+			keys = append(keys, ed25519.PublicKey(pubBytes))
+		}
+	}
+	return keys
+}
+
+// ShouldRequireExtractorWireAuthFromEnv returns true when mandatory wire-level X-Warrant-Task-DSSE + X-Warrant-Agent-PoP
+// verification is configured via env or live/Kubernetes posture.
+func ShouldRequireExtractorWireAuthFromEnv() bool {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("WARRANT_EXTRACTOR_REQUIRE_TASK_POP")), "true") {
+		return true
+	}
+	if strings.TrimSpace(os.Getenv("WARRANT_KERNEL_PUBLIC_KEY_B64")) != "" ||
+		strings.TrimSpace(os.Getenv("WARRANT_KERNEL_PUBLIC_KEY_FILE")) != "" {
+		return true
+	}
+	return crypto.IsLiveOrKubernetesPosture(os.Getenv)
+}
+
+// VerifyWireTaskAndAgentPoP validates X-Warrant-Task-DSSE (kernel DSSE signature, TTL <= 300s, route action match,
+// non-quarantined sponsorship state) AND X-Warrant-Agent-PoP (Ed25519 cnf holder-of-key signature over method + path + SHA256(body) + token_id + ts).
+func VerifyWireTaskAndAgentPoP(
+	r *http.Request,
+	body []byte,
+	expectedAction string,
+	kernelPubKeys []ed25519.PublicKey,
+	requireHeaders bool,
+) (int, error) {
+	rawHdr := strings.TrimSpace(r.Header.Get(crypto.HeaderTaskDSSE))
+	if rawHdr == "" {
+		if requireHeaders || len(kernelPubKeys) > 0 {
+			return http.StatusUnauthorized, errors.New("MISSING_TASK_WARRANT_DSSE: X-Warrant-Task-DSSE header required")
+		}
+		return http.StatusOK, nil
+	}
+
+	var envBytes []byte
+	if strings.HasPrefix(rawHdr, "{") {
+		envBytes = []byte(rawHdr)
+	} else {
+		decoded, err := crypto.DecodeBase64Any(rawHdr)
+		if err != nil {
+			return http.StatusUnauthorized, fmt.Errorf("INVALID_TASK_WARRANT_B64: %w", err)
+		}
+		envBytes = decoded
+	}
+
+	var env crypto.Envelope
+	if err := json.Unmarshal(envBytes, &env); err != nil {
+		return http.StatusUnauthorized, fmt.Errorf("INVALID_TASK_WARRANT_JSON: %w", err)
+	}
+	if env.PayloadType != crypto.PayloadTypeTaskWarrant || len(env.Signatures) == 0 {
+		return http.StatusForbidden, errors.New("INVALID_TASK_WARRANT_ENVELOPE: expected signed task-warrant DSSE envelope")
+	}
+	rawPayload, err := env.DecodePayload()
+	if err != nil {
+		return http.StatusForbidden, fmt.Errorf("DECODE_TASK_WARRANT_PAYLOAD: %w", err)
+	}
+	canon, err := crypto.CanonicalizeJSON(rawPayload)
+	if err != nil || string(canon) != string(rawPayload) {
+		return http.StatusForbidden, errors.New("TASK_WARRANT_NOT_CANONICAL_JCS")
+	}
+
+	if len(kernelPubKeys) > 0 {
+		verified := false
+		for _, kPub := range kernelPubKeys {
+			kpk := &crypto.PrincipalKey{
+				PrincipalID:    env.Signatures[0].PrincipalID,
+				KeyID:          env.Signatures[0].KeyID,
+				Alg:            crypto.AlgEd25519,
+				PublicKeyBytes: kPub,
+				KeyFingerprint: crypto.SHA256Hex(kPub),
+			}
+			if crypto.VerifySingleSignature(env.PayloadType, rawPayload, env.Signatures[0], kpk, crypto.DefaultWebAuthnConfig()) == nil {
+				verified = true
+				break
+			}
+		}
+		if !verified {
+			return http.StatusForbidden, errors.New("FORGED_TASK_WARRANT_KERNEL_SIG: kernel signature failed verification")
+		}
+	}
+
+	var p models.EphemeralTaskWarrantPayload
+	if err := json.Unmarshal(rawPayload, &p); err != nil {
+		return http.StatusForbidden, fmt.Errorf("PARSE_TASK_WARRANT_PAYLOAD: %w", err)
+	}
+	now := time.Now().UTC()
+	if now.Unix() >= p.ExpiresUnix || p.TTLSeconds <= 0 || p.TTLSeconds > 300 {
+		return http.StatusForbidden, errors.New("EXPIRED_OR_INVALID_TTL_TASK_WARRANT")
+	}
+	if expectedAction != "" && p.AllowedAction != expectedAction && p.AllowedAction != "*" {
+		return http.StatusForbidden, fmt.Errorf("TASK_ACTION_SCOPE_MISMATCH: token allows %q, route requires %q", p.AllowedAction, expectedAction)
+	}
+	if p.Act != nil {
+		switch p.Act.SponsorshipState {
+		case models.SponsorshipOrphanQuarantined, models.SponsorshipLeaseExpired, models.SponsorshipRevokedCompromise, models.SponsorshipRevokedKillSwitch:
+			return http.StatusForbidden, fmt.Errorf("GHOST_OR_REVOKED_AGENT_BLOCKED: sponsorship_state=%s", p.Act.SponsorshipState)
+		}
+	}
+
+	if p.Cnf == nil || strings.TrimSpace(p.Cnf.PublicKeyB64) == "" {
+		if requireHeaders {
+			return http.StatusForbidden, errors.New("MISSING_CNF_HOLDER_KEY: EphemeralTaskWarrant lacks cnf holder-of-key binding")
+		}
+		return http.StatusOK, nil
+	}
+	if err := crypto.VerifyAgentPoPHeader(
+		r.Header.Get(crypto.HeaderAgentPoP),
+		r.Method,
+		r.URL.Path,
+		body,
+		p.TaskTokenID,
+		p.Cnf.PublicKeyB64,
+		now,
+		5*time.Minute,
+	); err != nil {
+		return http.StatusForbidden, fmt.Errorf("AGENT_POP_VERIFICATION_FAILED: %w", err)
+	}
+	return http.StatusOK, nil
+}
+
+// NewHTTPHandler constructs the stateless HTTP mux for /cmd/warrant-extractor,
+// enforcing wire-level X-Warrant-Task-DSSE + X-Warrant-Agent-PoP verification.
 func NewHTTPHandler(extractorDigest string) http.Handler {
+	return NewGovernedHTTPHandler(extractorDigest, ResolveKernelPublicKeysFromEnv, ShouldRequireExtractorWireAuthFromEnv())
+}
+
+// NewGovernedHTTPHandler constructs the stateless warrant-extractor HTTP mux with explicit kernel key resolver and PoP enforcement posture.
+func NewGovernedHTTPHandler(extractorDigest string, kernelPubKeysFn func() []ed25519.PublicKey, requireWireAuth bool) http.Handler {
+	checkAuth := func(w http.ResponseWriter, r *http.Request, body []byte, expectedAction string) bool {
+		var keys []ed25519.PublicKey
+		if kernelPubKeysFn != nil {
+			keys = kernelPubKeysFn()
+		}
+		if code, err := VerifyWireTaskAndAgentPoP(r, body, expectedAction, keys, requireWireAuth); err != nil {
+			writeJSON(w, code, map[string]string{"error": err.Error()})
+			return false
+		}
+		return true
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -701,6 +864,9 @@ func NewHTTPHandler(extractorDigest string) http.Handler {
 		body, err := readBounded(w, r, 8<<20)
 		if err != nil {
 			writeJSON(w, statusForExtractorReadErr(err), map[string]string{"error": err.Error()})
+			return
+		}
+		if !checkAuth(w, r, body, "EXTRACT_SARIF_2_1_0") {
 			return
 		}
 		maxFindings := 0
@@ -727,6 +893,9 @@ func NewHTTPHandler(extractorDigest string) http.Handler {
 			writeJSON(w, statusForExtractorReadErr(err), map[string]string{"error": err.Error()})
 			return
 		}
+		if !checkAuth(w, r, body, "EXTRACT_CISA_KEV_CATALOG") {
+			return
+		}
 		res, err := ParseUntrustedCISAKEV(body, extractorDigest)
 		if err != nil {
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
@@ -738,6 +907,9 @@ func NewHTTPHandler(extractorDigest string) http.Handler {
 		body, err := readBounded(w, r, 8<<20)
 		if err != nil {
 			writeJSON(w, statusForExtractorReadErr(err), map[string]string{"error": err.Error()})
+			return
+		}
+		if !checkAuth(w, r, body, "EXTRACT_OSV_BATCH") {
 			return
 		}
 		res, err := ParseUntrustedOSVBundle(body, extractorDigest)
@@ -753,6 +925,9 @@ func NewHTTPHandler(extractorDigest string) http.Handler {
 			writeJSON(w, statusForExtractorReadErr(err), map[string]string{"error": err.Error()})
 			return
 		}
+		if !checkAuth(w, r, body, "EXTRACT_PATCH_DIFF") {
+			return
+		}
 		res, err := ParseUntrustedDiff(body, extractorDigest)
 		if err != nil {
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
@@ -766,6 +941,9 @@ func NewHTTPHandler(extractorDigest string) http.Handler {
 			writeJSON(w, statusForExtractorReadErr(err), map[string]string{"error": err.Error()})
 			return
 		}
+		if !checkAuth(w, r, body, "EXTRACT_ADVISORY") {
+			return
+		}
 		res, err := ParseUntrustedAdvisory(body, extractorDigest)
 		if err != nil {
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
@@ -777,6 +955,9 @@ func NewHTTPHandler(extractorDigest string) http.Handler {
 		body, err := readBounded(w, r, 4<<20)
 		if err != nil {
 			writeJSON(w, statusForExtractorReadErr(err), map[string]string{"error": err.Error()})
+			return
+		}
+		if !checkAuth(w, r, body, "EXTRACT_SECRET_EXPOSURE") {
 			return
 		}
 		defaultSvc := r.URL.Query().Get("target_service")

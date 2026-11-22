@@ -1,11 +1,14 @@
 import React, { useState } from 'react';
 import { FileCheck2, Gauge, UserX, Usb, CheckCircle2, AlertTriangle } from 'lucide-react';
 import type {
+  AgentIdentity,
   ApprovalPressureStat,
   BootstrapState,
   CeilingException,
+  CommissioningFunction,
   DSSEEnvelope,
   EstateService,
+  PendingSponsorTransfer,
   Principal,
   TestSmartcardPersona,
   WarrantRecord,
@@ -13,6 +16,7 @@ import type {
 import { formatExceptionImpactTemplate, shortHash } from '../lib/templates';
 import { enrollWebAuthnAuthenticator } from '../lib/crypto';
 import { DualKeyCeremonyPanel } from './DualKeyCeremonyPanel';
+import { AgentGovernancePanel } from './AgentGovernancePanel';
 
 interface WebAuthnEnrollPayload {
   display_name: string;
@@ -31,6 +35,10 @@ interface View2WarrantDeskProps {
   estate: EstateService[];
   principals: Principal[];
   bootstrapState?: BootstrapState;
+  commissioningFunctions?: CommissioningFunction[];
+  agents?: AgentIdentity[];
+  pendingSponsorTransfers?: PendingSponsorTransfer[];
+  nowMs?: number;
   testPersonas: TestSmartcardPersona[];
   rpId: string;
   smartcardBarEnabled: boolean;
@@ -43,6 +51,9 @@ interface View2WarrantDeskProps {
     adminToken?: string,
     dualEnv?: DSSEEnvelope
   ) => Promise<void>;
+  onRevokeAgent?: (agentId: string, reasonCode: string) => Promise<void>;
+  onEmitIGAEvent?: (eventType: string, principalId: string) => Promise<void>;
+  onTransferSponsors?: (fn: CommissioningFunction, newPrimarySO: string, newPrimaryAO: string) => Promise<void>;
 }
 
 export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
@@ -52,6 +63,10 @@ export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
   estate,
   principals,
   bootstrapState,
+  commissioningFunctions = [],
+  agents = [],
+  pendingSponsorTransfers = [],
+  nowMs = Date.now(),
   testPersonas,
   rpId,
   smartcardBarEnabled,
@@ -60,6 +75,9 @@ export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
   onRevokeSigner,
   onResolveException,
   onEnrollWebAuthn,
+  onRevokeAgent,
+  onEmitIGAEvent,
+  onTransferSponsors,
 }) => {
   const [warrantClass, setWarrantClass] = useState('KEV-TIER1-STATELESS');
   const [selectedServices, setSelectedServices] = useState<string[]>(['payments-ledger-api', 'identity-sso-gateway']);
@@ -623,6 +641,23 @@ export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
           ))}
         </div>
       </section>
+
+      <AgentGovernancePanel
+        commissioningFunctions={commissioningFunctions}
+        agents={agents}
+        pendingTransfers={pendingSponsorTransfers}
+        principals={principals}
+        nowMs={nowMs}
+        onRevokeAgent={async (agentId, reasonCode) => {
+          if (onRevokeAgent) await onRevokeAgent(agentId, reasonCode);
+        }}
+        onEmitIGAEvent={async (evType, principalId) => {
+          if (onEmitIGAEvent) await onEmitIGAEvent(evType, principalId);
+        }}
+        onTransferSponsors={async (fn, newSO, newAO) => {
+          if (onTransferSponsors) await onTransferSponsors(fn, newSO, newAO);
+        }}
+      />
     </div>
   );
 };

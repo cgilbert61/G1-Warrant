@@ -91,34 +91,56 @@ func (a *TransparencyAnchor) AnchorCheckpoint(ctx context.Context, store *db.Sto
 		}
 	}
 
-	merkleRoot := db.ComputeCombinedMerkleRootV2(
+	cfHead, aiHead, aleHead := db.GenesisHash, db.GenesisHash, db.GenesisHash
+	var cfRows, aiRows, aleRows int
+	for _, t := range rep.AgentAuthorityTables {
+		switch t.TableName {
+		case "commissioning_functions":
+			cfHead, cfRows = t.TerminalHash, t.RowCount
+		case "agent_identities":
+			aiHead, aiRows = t.TerminalHash, t.RowCount
+		case "agent_lifecycle_events":
+			aleHead, aleRows = t.TerminalHash, t.RowCount
+		}
+	}
+
+	merkleRoot := db.ComputeCombinedMerkleRootV3(
 		wHead, wRows,
 		agHead, agRows,
 		attHead, attRows,
 		pHead, pRows,
 		revHead, revRows,
 		kHead, kRows,
+		cfHead, cfRows,
+		aiHead, aiRows,
+		aleHead, aleRows,
 	)
 	now := time.Now().UTC()
 	cpID := "chk-" + uuid.NewString()[:8]
 
 	payload := map[string]any{
-		"checkpoint_id":         cpID,
-		"merkle_version":        2,
-		"warrant_head_hash":     wHead,
-		"warrant_row_count":     wRows,
-		"agent_head_hash":       agHead,
-		"agent_row_count":       agRows,
-		"attestation_head_hash": attHead,
-		"attestation_row_count": attRows,
-		"principal_head_hash":   pHead,
-		"principal_row_count":   pRows,
-		"revocation_head_hash":  revHead,
-		"revocation_row_count":  revRows,
-		"kernel_key_head_hash":  kHead,
-		"kernel_key_row_count":  kRows,
-		"combined_merkle_root":  merkleRoot,
-		"anchored_at":           now.Format(time.RFC3339),
+		"checkpoint_id":             cpID,
+		"merkle_version":            3,
+		"warrant_head_hash":         wHead,
+		"warrant_row_count":         wRows,
+		"agent_head_hash":           agHead,
+		"agent_row_count":           agRows,
+		"attestation_head_hash":     attHead,
+		"attestation_row_count":     attRows,
+		"principal_head_hash":       pHead,
+		"principal_row_count":       pRows,
+		"revocation_head_hash":      revHead,
+		"revocation_row_count":      revRows,
+		"kernel_key_head_hash":      kHead,
+		"kernel_key_row_count":      kRows,
+		"commissioning_head_hash":   cfHead,
+		"commissioning_row_count":   cfRows,
+		"agent_identity_head_hash":  aiHead,
+		"agent_identity_row_count":  aiRows,
+		"agent_lifecycle_head_hash": aleHead,
+		"agent_lifecycle_row_count": aleRows,
+		"combined_merkle_root":      merkleRoot,
+		"anchored_at":               now.Format(time.RFC3339),
 	}
 	env, canonBytes, err := crypto.NewUnsignedEnvelope(PayloadTypeCheckpoint, payload)
 	if err != nil {
@@ -135,26 +157,32 @@ func (a *TransparencyAnchor) AnchorCheckpoint(ctx context.Context, store *db.Sto
 	defer a.mu.Unlock()
 
 	cp := models.LedgerCheckpoint{
-		CheckpointID:         cpID,
-		MerkleVersion:        2,
-		WarrantHeadHash:      wHead,
-		WarrantRowCount:      wRows,
-		AgentHeadHash:        agHead,
-		AgentRowCount:        agRows,
-		AttestationHeadHash:  attHead,
-		AttestationRowCount:  attRows,
-		PrincipalHeadHash:    pHead,
-		PrincipalRowCount:    pRows,
-		RevocationHeadHash:   revHead,
-		RevocationRowCount:   revRows,
-		KernelKeyHeadHash:    kHead,
-		KernelKeyRowCount:    kRows,
-		CombinedMerkleRoot:   merkleRoot,
-		DSSEEnvelope:         *env,
-		WitnessMode:          a.WitnessMode(),
-		ExternalAnchorTarget: target,
-		ExternalReceiptHash:  receiptHash,
-		AnchoredAt:           now,
+		CheckpointID:           cpID,
+		MerkleVersion:          3,
+		WarrantHeadHash:        wHead,
+		WarrantRowCount:        wRows,
+		AgentHeadHash:          agHead,
+		AgentRowCount:          agRows,
+		AttestationHeadHash:    attHead,
+		AttestationRowCount:    attRows,
+		PrincipalHeadHash:      pHead,
+		PrincipalRowCount:      pRows,
+		RevocationHeadHash:     revHead,
+		RevocationRowCount:     revRows,
+		KernelKeyHeadHash:      kHead,
+		KernelKeyRowCount:      kRows,
+		CommissioningHeadHash:  cfHead,
+		CommissioningRowCount:  cfRows,
+		AgentIdentityHeadHash:  aiHead,
+		AgentIdentityRowCount:  aiRows,
+		AgentLifecycleHeadHash: aleHead,
+		AgentLifecycleRowCount: aleRows,
+		CombinedMerkleRoot:     merkleRoot,
+		DSSEEnvelope:           *env,
+		WitnessMode:            a.WitnessMode(),
+		ExternalAnchorTarget:   target,
+		ExternalReceiptHash:    receiptHash,
+		AnchoredAt:             now,
 	}
 
 	// 1. Optional external append-only file / mounted WORM volume sink
@@ -177,7 +205,7 @@ func (a *TransparencyAnchor) AnchorCheckpoint(ctx context.Context, store *db.Sto
 		cp.ExternalAnchorTarget = "EXTERNAL_WEBHOOK:" + a.webhookURL
 		reqBytes, _ := json.Marshal(map[string]any{
 			"checkpoint_id":        cpID,
-			"merkle_version":       2,
+			"merkle_version":       3,
 			"combined_merkle_root": merkleRoot,
 			"dsse_envelope":        env,
 		})

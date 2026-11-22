@@ -63,6 +63,10 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		shadowRuns, _ := o.Store.ListShadowRuns(ctx)
 		attestations, _ := o.Store.ListAttestations(ctx)
 		agentActions, _ := o.Store.ListAgentActions(ctx)
+		commissioningFns, _ := o.Store.ListCommissioningFunctions(ctx)
+		agents, _ := o.Store.ListAgentIdentities(ctx)
+		agentLifecycleEvents, _ := o.Store.ListAgentLifecycleEvents(ctx)
+		pendingSponsorTransfers, _ := o.Store.ListPendingSponsorTransfers(ctx)
 		auditorTokens, _ := o.Store.ListAuditorTokens(ctx)
 		checkpoints, _ := o.Store.ListLedgerCheckpoints(ctx)
 		feedStatus, _ := o.Store.GetLiveFeedStatus(ctx)
@@ -93,9 +97,13 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			"lockouts":        lockouts,
 			"drifts":          drifts,
 			"shadow_runs":     shadowRuns,
-			"attestations":    attestations,
-			"agent_actions":   agentActions,
-			"auditor_tokens":  auditorTokens,
+			"attestations":              attestations,
+			"agent_actions":             agentActions,
+			"commissioning_functions":   commissioningFns,
+			"agents":                    agents,
+			"agent_lifecycle_events":    agentLifecycleEvents,
+			"pending_sponsor_transfers": pendingSponsorTransfers,
+			"auditor_tokens":            auditorTokens,
 			"checkpoints":     checkpoints,
 			"feed_status":     feedStatus,
 			"signer_backend":  o.N5Ledger.SignerBackend(),
@@ -133,6 +141,7 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 	})
 
 	// Principals, Genesis Seal, 2-of-2 DSSE Ed25519/WebAuthn Enrollment, and 1-of-2 DSSE Live Revocation
+	o.registerAgentGovernanceRoutes(mux)
 	mux.HandleFunc("GET /api/v1/principals", func(w http.ResponseWriter, r *http.Request) {
 		list, err := o.Store.ListPrincipals(r.Context())
 		if err != nil {
