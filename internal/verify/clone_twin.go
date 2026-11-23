@@ -3,6 +3,7 @@ package verify
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -99,6 +100,8 @@ func (e *Engine) RunCloneTwinProving(
 		CWEID:            item.CWEID,
 		VulnerableDigest: item.VulnerableDigest,
 		CandidateDigest:  item.PatchedDigest,
+		KBArticleID:      kbID,
+		PackageNEVRA:     pkgNEVRA,
 		PatchTargetLayer: layer,
 		CloneCount:       cloneCount,
 		MaxP99LatencyMs:  maxP99,
@@ -108,7 +111,13 @@ func (e *Engine) RunCloneTwinProving(
 	vmBackend := e.vmTwin
 	e.mu.Unlock()
 
-	if layer == models.PatchTargetLayerKernel || layer == models.PatchTargetLayerBoot {
+	assetKey := ""
+	if item.AssetIdentity != nil {
+		assetKey = item.AssetIdentity.AssetKey
+	}
+	preferVMTwin := vmBackend != nil && isVMTwinPreferredService(svc.ServiceID, assetKey)
+
+	if layer == models.PatchTargetLayerKernel || layer == models.PatchTargetLayerBoot || preferVMTwin {
 		if vmBackend == nil {
 			failManifest := &models.CloneTwinProvingManifest{
 				ProvingRunID:         "prv-blocked-" + crypto.SHA256Hex([]byte(item.RemediationID+"|"+layer))[:8],
@@ -142,6 +151,19 @@ func (e *Engine) RunCloneTwinProving(
 
 		vmManifest, vErr := vmBackend.RunVMTwinProving(ctx, req)
 		if vErr != nil {
+			if vmManifest != nil {
+				vmManifest.PatchTargetLayer = layer
+				vmManifest.TwinRuntime = models.TwinRuntimeVM
+				item.CloneTwinProving = vmManifest
+			}
+			item.BlockerCode = vErr.Error()
+			_ = e.store.UpsertRemediation(ctx, item)
+			_ = e.recordTrace(ctx, item.RemediationID, "N3", "CLONE_TWIN_PROVING_BLOCKED", "BLOCK", "vm-twin-prover", crypto.SHA256Hex([]byte(vErr.Error())), map[string]string{
+				"patch_target_layer": layer,
+				"twin_runtime":       models.TwinRuntimeVM,
+				"error":              vErr.Error(),
+			})
+			e.emit("REMEDIATION_UPDATED", item)
 			return nil, vErr
 		}
 		vmManifest.PatchTargetLayer = layer
@@ -239,4 +261,18 @@ func firstNonEmptyLayer(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+func isVMTwinPreferredService(serviceID, assetKey string) bool {
+	raw := strings.TrimSpace(os.Getenv("WARRANT_VM_TWIN_SERVICES"))
+	if raw == "" {
+		return false
+	}
+	for _, tok := range strings.Split(raw, ",") {
+		t := strings.TrimSpace(tok)
+		if t == "*" || strings.EqualFold(t, serviceID) || (assetKey != "" && strings.EqualFold(t, assetKey)) {
+			return true
+		}
+	}
+	return false
 }

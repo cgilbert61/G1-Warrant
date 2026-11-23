@@ -86,6 +86,8 @@ type CloneTwinProvingRequest struct {
 	VulnerableDigest  string
 	CandidateDigest   string
 	CandidateImageRef string
+	KBArticleID       string
+	PackageNEVRA      string
 	PatchTargetLayer  string // "USERSPACE_SOFTWARE" | "KERNEL" | "BOOT_LAYER"
 	CloneCount        int
 	MaxP99LatencyMs   float64

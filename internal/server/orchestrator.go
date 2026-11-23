@@ -21,6 +21,7 @@ import (
 
 	"github.com/cgilbert61/G1-Warrant/internal/adapters"
 	"github.com/cgilbert61/G1-Warrant/internal/adapters/distributors"
+	"github.com/cgilbert61/G1-Warrant/internal/adapters/vmtwins"
 	"github.com/cgilbert61/G1-Warrant/internal/agentcp"
 	"github.com/cgilbert61/G1-Warrant/internal/crypto"
 	"github.com/cgilbert61/G1-Warrant/internal/db"
@@ -761,6 +762,11 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 
 	n2 := gate.NewEngine(store, pol, n1, n4, deploy, broker.Broadcast)
 	n3 := verify.NewEngine(store, pol, n1, n4, shield, deploy, twin, broker.Broadcast, rulepacks)
+	if vmTwinProv, vmErr := vmtwins.NewVMTwinProviderFromEnv(n4.NewGovernedRoundTripper("distributor-gateway", nil), os.Getenv); vmErr != nil {
+		return nil, fmt.Errorf("initialize VMTwinProvider: %w", vmErr)
+	} else if vmTwinProv != nil {
+		n3.SetVMTwinProvider(vmTwinProv)
+	}
 	n5 := ledger.NewEngine(store, pol, n1, signer, broker.Broadcast)
 	distReg := adapters.NewDistributorRegistry()
 	distributors.RegisterAllBuiltinDistributors(distReg, deploy, n4.NewGovernedRoundTripper("distributor-gateway", nil), os.Getenv)

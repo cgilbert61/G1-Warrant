@@ -121,3 +121,21 @@ Every `WN-8` translator implements `DistributorTranslator` (`internal/adapters/d
 # Trigger symmetric 1-of-2 DSSE-authenticated native rollback on an active order
 ./warrant distributors rollback <order-id> --key so-key.priv.json --reason OPERATOR_CHANGE_FREEZE
 ```
+
+---
+
+## 3. Non-Docker `VM_TWIN` QA Clone Proving Ground (`Hyper-V`, `AWS EC2`, `Azure`, `GCP`)
+
+When patching non-container estates (Windows `.msu` KBs, RHEL/Ubuntu `.rpm`/`.deb` packages on services listed in `WARRANT_VM_TWIN_SERVICES`) or **`KERNEL` / `BOOT_LAYER`** packages (`kernel-core-*`, `linux-image-*`, `grub2`, `shim-*`), container twins are insufficient because containers share the host kernel and cannot execute real OS reboots.
+
+Configure `WARRANT_VM_TWIN_DRIVER` (`hyperv` | `aws-ec2` | `azure-vm` | `gcp-gce`) to spin up **3 isolated QA VM clones** (`zero_production_egress = true`), apply the candidate patch, reboot, verify **(a)** services-up, **(b)** QA smoke tests, and **(c)** Standing Warrant class acceptance checks, and guarantee clone deletion in `defer`:
+
+| Driver (`WARRANT_VM_TWIN_DRIVER`) | Clone Mechanism | Zero-Egress Isolation Boundary | Out-of-Band Patch, Reboot & Prove Channel |
+| :--- | :--- | :--- | :--- |
+| **`hyperv`** (`scripts/hyperv_vm_twin_agent.ps1`) | 3 Copy-on-Write Differencing `.vhdx` Gen-2 VMs (`New-VHD -Differencing`) from `WARRANT_HYPERV_QA_PARENT_VHDX` | Hyper-V `Private` Virtual Switch (`g1-twin-proving-private` — zero physical NIC/LAN/internet routing) | PowerShell Direct over VMBus (`Invoke-Command -VMName` + `Restart-VM -Wait -For Heartbeat`) |
+| **`aws-ec2`** | 3 ephemeral EC2 instances (`POST /ec2/RunInstances`) from `WARRANT_AWS_TWIN_AMI_ID` (`AssociatePublicIpAddress=false`) | Dedicated subnet + zero-egress Security Group (`WARRANT_AWS_TWIN_ISOLATED_SG_ID`, VPC SSM endpoints only) | `POST /ssm/SendCommand` (`G1Warrant-ProveAndRebootQAClone`) + `POST /ec2/TerminateInstances` |
+| **`azure-vm`** | 3 ephemeral Azure VMs from `WARRANT_AZURE_TWIN_IMAGE_ID` (`publicIPAddress=null`) | Deny-all outbound `NSG` (`WARRANT_AZURE_TWIN_NSG_ID`) | `POST .../virtualMachines/{vm}/runCommand` + `DELETE .../virtualMachines/{vm}?forceDeletion=true` |
+| **`gcp-gce`** | 3 ephemeral GCE VMs from `WARRANT_GCP_TWIN_MACHINE_IMAGE` (`accessConfigs=[]`) | Zero external IP + deny-egress VPC firewall tag (`WARRANT_GCP_TWIN_ISOLATED_TAG`) | `POST /osconfig/v1/projects/{project}/patchJobs:execute` (`rebootConfig=ALWAYS`) + `DELETE .../instances/{vm}` |
+
+> **Proof Fence (`VM_TWIN` Drivers):** All 4 `VM_TWIN` drivers (`hyperv`, `aws-ec2`, `azure-vm`, `gcp-gce`) are verified end-to-end against wire-level HTTP harnesses, `N4` bearer/PoP headers, OPA `verify_closure.rego`, OSCAL `1.1.2` attestation minting, and fail-closed teardown in `TestInvariant19_NonDockerVMTwinProvidersHyperVAWSGCPAzure`; live execution against an elevated Hyper-V `vmms` administrator session with a golden QA `.vhdx` or live AWS/Azure/GCP cloud credentials has not yet been run in this environment. When `WARRANT_VM_TWIN_DRIVER` is unset, `KERNEL` and `BOOT_LAYER` patches fail closed with `KERNEL_PATCH_REQUIRES_VM_TWIN_RUNTIME`.
+
