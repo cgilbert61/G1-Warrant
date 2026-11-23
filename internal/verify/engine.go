@@ -46,10 +46,13 @@ type VerificationBundle struct {
 	DistributorReportSHA256 string
 	LandedAssetKeys         []string
 	NonLandedAssetKeys      []string
+
+	// v1.3.0 Clone-Twin Proving Ground Manifest
+	CloneTwinProving *models.CloneTwinProvingManifest
 }
 
 // Engine implements N3: Differential Twin Replay (with Positive-Control Verification),
-// Passive Fleet Attestation, Permanent Admission Lockout before Bridge Retirement,
+// 3-Clone Proving Ground, Passive Fleet Attestation, Permanent Admission Lockout before Bridge Retirement,
 // Atomic Quarantined Rollback (Contain-Before-Unban), and Runtime Drift Re-Arming.
 type Engine struct {
 	store         *db.Store
@@ -59,6 +62,7 @@ type Engine struct {
 	shield        adapters.ShieldEnforcer
 	deploy        adapters.DeploymentTarget
 	twin          adapters.TwinRunner
+	vmTwin        adapters.VMTwinProvider
 	rulepacks     *adapters.RulepackRegistry
 	onBroadcast   func(eventType string, payload any)
 	mu            sync.Mutex
@@ -206,7 +210,7 @@ func (e *Engine) VerifyLockAndRetireBridge(ctx context.Context, item *models.Rem
 
 	// Step 4: Evaluate OPA Verify Policy before retiring the active Shield containment bridge
 	provVerified, provEvidenceHash := e.DeriveVerifiedArtifactProvenance(ctx, item)
-	verDec, err := e.policy.EvalVerify(ctx, policy.VerifyInput{
+	vIn := policy.VerifyInput{
 		HasSignedProbe:            hasSignedProbe,
 		UnpatchedTwinStatus:       twinResp.UnpatchedStatus,
 		TwinReplayStatus:          twinResp.Status,
@@ -216,7 +220,9 @@ func (e *Engine) VerifyLockAndRetireBridge(ctx context.Context, item *models.Rem
 		TotalPods:                 len(wl.Pods),
 		AdmissionLockoutEnforced:  lockout.PolicyName != "",
 		WarrantReverified:         warrantOK,
-	})
+	}
+	populateVerifyCloneTwinFields(&vIn, item, item.CloneTwinProving)
+	verDec, err := e.policy.EvalVerify(ctx, vIn)
 	if err != nil {
 		return nil, err
 	}
@@ -259,6 +265,7 @@ func (e *Engine) VerifyLockAndRetireBridge(ctx context.Context, item *models.Rem
 		VulnerablePkgAbsentInSBOM: vulnPkgAbsentInSBOM,
 		PodManifest:               podManifest,
 		Lockout:                   *lockout,
+		CloneTwinProving:          item.CloneTwinProving,
 	}, nil
 }
 

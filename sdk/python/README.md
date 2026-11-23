@@ -41,7 +41,8 @@ g1-warrant status
 g1-warrant warrants
 g1-warrant pipeline
 g1-warrant estate
-g1-warrant intake-sarif ./reports/trivy-fs.sarif --service payments-ledger-api
+g1-warrant finder-intake qualys ./reports/qualys-vmdr.xml --intake-token "$WARRANT_INTAKE_TOKEN" --service payments-ledger-api
+g1-warrant intake-sarif ./reports/trivy-fs.sarif --intake-token "$WARRANT_INTAKE_TOKEN" --service payments-ledger-api
 g1-warrant feeds status
 g1-warrant ledger-verify
 g1-warrant oscal-export <attestation-id> --out poam-bundle.json

@@ -1,18 +1,18 @@
 {
   "framework": "G1-Warrant Federal DevSecOps Pipeline",
   "fisma_id": "G1-WARRANT-001",
-  "timestamp": "2026-11-23T05:50:51.680584+00:00",
+  "timestamp": "2026-11-23T07:42:27.794684+00:00",
   "total_gates": 1,
   "passed_gates": 1,
   "failed_gates": 0,
-  "duration_seconds": 32.34,
+  "duration_seconds": 56.49,
   "gates": [
     {
-      "gate": "Secrets Detection",
-      "tool": "Gitleaks",
-      "standard": "NIST SP 800-53 IA-5 / DISA STIG",
+      "gate": "SAST & Code Quality",
+      "tool": "Semgrep + SonarQube",
+      "standard": "NIST SP 800-53 SA-11 / OWASP Top 10",
       "status": "PASS",
-      "report": "D:\\G1-Warrant\\reports\\gitleaks.sarif",
+      "report": "D:\\G1-Warrant\\reports\\semgrep.sarif",
       "findings": 0
     }
   ]

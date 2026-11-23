@@ -105,7 +105,7 @@ func (e *Engine) EvaluateDistributorClosureAndBridge(
 
 	provVerified, provEvidenceHash := e.DeriveVerifiedArtifactProvenance(ctx, item)
 
-	verDec, err := e.policy.EvalVerify(ctx, policy.VerifyInput{
+	vIn := policy.VerifyInput{
 		RemediationKind:           item.RemediationKind,
 		HasSignedProbe:            hasSignedProbe,
 		UnpatchedTwinStatus:       twinResp.UnpatchedStatus,
@@ -122,7 +122,9 @@ func (e *Engine) EvaluateDistributorClosureAndBridge(
 		RebootWaitingAssets:       distRes.RebootWaitingCount,
 		AdmissionLockoutEnforced:  lockout.PolicyName != "",
 		WarrantReverified:         warrantOK,
-	})
+	}
+	populateVerifyCloneTwinFields(&vIn, item, item.CloneTwinProving)
+	verDec, err := e.policy.EvalVerify(ctx, vIn)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -208,6 +210,7 @@ func (e *Engine) EvaluateDistributorClosureAndBridge(
 		DistributorReportSHA256:   distRes.RawDistributorReportSHA256,
 		LandedAssetKeys:           landedKeys,
 		NonLandedAssetKeys:        nonLandedKeys,
+		CloneTwinProving:          item.CloneTwinProving,
 	}
 	return bundle, verDec, nil
 }

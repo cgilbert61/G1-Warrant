@@ -1,7 +1,27 @@
 # Changelog
 
 All notable changes to **G1-Warrant** are documented in this file.
-Published Git tags (`v1.0.0`, `v1.0.1`, `v1.0.2`, `v1.0.3`, `v1.0.4`, `v1.1.0`, `v1.2.0`, ...) are immutable to preserve Go Checksum Database (`sum.golang.org`) reproducibility for `github.com/cgilbert61/G1-Warrant/pkg/warrantsdk`.
+Published Git tags (`v1.0.0`, `v1.0.1`, `v1.0.2`, `v1.0.3`, `v1.0.4`, `v1.1.0`, `v1.2.0`, `v1.2.1`, ...) are immutable to preserve Go Checksum Database (`sum.golang.org`) reproducibility for `github.com/cgilbert61/G1-Warrant/pkg/warrantsdk`.
+
+---
+
+## [v1.3.0] - 2026-11-23
+
+### Zero-Signature Intake Doctrine Lock (Item 1) & Executed Clone-Twin Proving Ground on Disposable Kubernetes Cluster (Item 2 / `F3` Closure)
+
+1. **Item 1 — Zero-Signature Intake Doctrine Across Server, SDKs, CLIs & Console (`TestInvariant18`):**
+   - **Doctrine Enforced:** Findings arrive on `X-Warrant-Intake-Token` alone. Dual-key (`Slot 1` + `Slot 2`) belongs strictly at signing a Standing Warrant authorization class and releasing patches / resolving patch-release ceiling exceptions — **never** at ingest.
+   - Removed all `Store.UpsertException(..., Status: "PENDING_DUAL_KEY")` and `StatusHealth = "EXCEPTION_ROUTED"` assignments from finding ingestion (`ExecuteFinderIntakeRemediation` in `internal/server/api_distributors.go`, `ExecuteSARIFRemediationWithOptions` and `ExecuteSecretRotationRemediation` in `internal/server/orchestrator.go`). Unmapped (`UNMAPPED_VENDOR_ADVISORY` / `ABSENT`) and unbound findings enter cleanly at `StatusHealth = "BRIDGED"`, `ClassBindingStatus = "UNBOUND"`, with **`0` rows** created in `ceiling_exceptions` / Four-Eyes Queue while containment arms autonomously.
+   - Added decoupled class-binding endpoint `POST /api/v1/remediations/{id}/bind-class` (`BindRemediationToWarrantClass` in Go SDK, `bind_remediation_class` in Python SDK) governed under a `2-of-2` Standing Warrant.
+   - Added `--intake-token` / `WARRANT_INTAKE_TOKEN` support to both `warrant intake [qualys|tenable|rapid7|sarif|secrets]` and `g1-warrant [finder-intake|intake-sarif|intake-secrets]` with zero `.priv.json` / Slot 1 / Slot 2 prerequisites.
+   - Added a first-class **Token-Only Scanner Intake** panel in the React 19 Console (`web/src/components/View1RacePipeline.tsx` + `web/src/App.tsx`) posting directly to `POST /api/v1/intake/{qualys,tenable,rapid7,sarif}` with `X-Warrant-Intake-Token` only (zero DSSE headers, zero WebAuthn prompts, zero Smartcard Bar persona selection), cleanly separated from `Simulator Fault Drills`.
+2. **Item 2 — 3-Clone Proving Ground, Runtime-Follows-Patch Enforcement & Executed Disposable `k3s` Cluster Proof (`F3` Closed):**
+   - Added schema migration `010_v1_3_0_intake_and_clone_twin.sql` (`class_binding_status`, `patch_target_layer`, `clone_twin_proving_json` on `remediation_items`; `clone_twin_count` default `3` on `warrant_envelopes`).
+   - Implemented `RunCloneTwinProving` (`internal/verify/clone_twin.go` + `internal/adapters/k8s_clone_twin.go`): clones `3` isolated ephemeral workload replicas (`g1-twin-proving` namespace with `g1-twin-proving-zero-egress` `NetworkPolicy`), applies the candidate patched image, verifies **(a)** services-up kubelet readiness (`/healthz`), **(b)** workload smoke tests (`/smoke`), and **(c)** Standing Warrant class acceptance checks (`/acceptance`), and binds `CloneTwinProvingManifest` into `VerificationBundle`, OPA `policies/verify_closure.rego`, and the DSSE-signed NIST OSCAL `1.1.2` POA&M observation (`N3 Isolated Clone-Twin Proving Ground Verification`) before promoting through `N2` canary waves or `WN-8` distributors.
+   - **Runtime-Follows-Patch (`ClassifyPatchTargetLayer`):** Routes `USERSPACE_SOFTWARE -> CONTAINER_TWIN` and `KERNEL` / `BOOT_LAYER -> VM_TWIN`. Because containers share the host kernel, routing a `KERNEL` or `BOOT_LAYER` patch without a registered `VMTwinProvider` fails closed (`KERNEL_PATCH_REQUIRES_VM_TWIN_RUNTIME`, `0` `DeploymentOrder`s created). *(Note on proof fence: `CONTAINER_TWIN` is executed end-to-end on real `k3s` Kubernetes; a concrete hypervisor `VMTwinProvider` backend is not shipped in `v1.3.0`, so `KERNEL` / `BOOT_LAYER` patches fail closed as verified in `TestInvariant18` and the live `k3s` proof.)*
+   - **Closes `F3` (`scripts/run_disposable_cluster_f3_proof.py`):** Executed end-to-end against a real disposable `rancher/k3s` Kubernetes cluster (`WARRANT_CLUSTER_DRIVER=kubernetes`, `WARRANT_POSTURE=live`) — real `NetworkPolicy` containment, real differential `batch/v1` exploit replay in `g1-twin-isolated`, real 3-pod clone proving ground in `g1-twin-proving`, real 3-replica `Deployment` image rollout in `fin-core`, real `ValidatingAdmissionPolicy` admission denial of the banned digest by `kube-apiserver`, and air-gapped offline OSCAL `1.1.2` verification.
+3. **Go SDK (`pkg/warrantsdk` `1.3.0`) & Python SDK (`g1-warrant-sdk` `1.3.0`):**
+   - Bumped both SDKs to `1.3.0` with 100% backwards-compatible exported Go signatures (`38/38` OPA Rego tests, `TestInvariant1`–`TestInvariant18`, and `9/9` Python SDK tests passing).
 
 ---
 

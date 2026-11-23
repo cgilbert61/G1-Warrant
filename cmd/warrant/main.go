@@ -52,6 +52,11 @@ func main() {
 			i++
 		case strings.HasPrefix(a, "--automation-token="):
 			autoToken = strings.TrimSpace(strings.TrimPrefix(a, "--automation-token="))
+		case a == "--intake-token" && i+1 < len(rawArgs):
+			inToken = strings.TrimSpace(rawArgs[i+1])
+			i++
+		case strings.HasPrefix(a, "--intake-token="):
+			inToken = strings.TrimSpace(strings.TrimPrefix(a, "--intake-token="))
 		case a == "--signer-key" && i+1 < len(rawArgs):
 			globalSignerPath = strings.TrimSpace(rawArgs[i+1])
 			i++
@@ -706,19 +711,21 @@ func main() {
 		svc := fs.String("service", "", "Optional target service override")
 		distID := fs.String("distributor", "", "Optional WN-8 distributor translator ID (e.g. ms-intune, ansible-awx, aws-ssm)")
 		profile := fs.String("profile", "", "Optional patch profile (STATELESS_CLEAN, STATEFUL_DDL, BAD_SYSCALL_EXECVE, POISONED_BUILD_CONFIG)")
+		intakeTokFlag := fs.String("intake-token", inToken, "X-Warrant-Intake-Token (zero human signer keys required)")
 		maxFindings := fs.Int("max-findings", 0, "Optional maximum findings to ingest")
 		if len(args) > 3 {
 			_ = fs.Parse(args[3:])
 		}
+		intakeCli := warrantsdk.NewClient(baseURL, warrantsdk.WithIntakeToken(strings.TrimSpace(*intakeTokFlag)))
 		raw, err := os.ReadFile(reportPath)
 		must(err)
 		switch subIntake {
 		case "secrets":
-			items, sErr := cli.IngestSecretScan(ctx, raw, *svc)
+			items, sErr := intakeCli.IngestSecretScan(ctx, raw, *svc)
 			must(sErr)
 			printJSON(items)
 		case "sarif":
-			items, sErr := cli.IngestSARIF(ctx, raw, warrantsdk.SARIFIntakeOptions{
+			items, sErr := intakeCli.IngestSARIF(ctx, raw, warrantsdk.SARIFIntakeOptions{
 				Profile:       *profile,
 				TargetService: *svc,
 				MaxFindings:   *maxFindings,
@@ -726,7 +733,7 @@ func main() {
 			must(sErr)
 			printJSON(items)
 		case "qualys", "tenable", "rapid7":
-			items, fErr := cli.SubmitFinderIntake(ctx, subIntake, raw, warrantsdk.FinderIntakeOptions{
+			items, fErr := intakeCli.SubmitFinderIntake(ctx, subIntake, raw, warrantsdk.FinderIntakeOptions{
 				PatchProfile:  *profile,
 				TargetService: *svc,
 				DistributorID: *distID,

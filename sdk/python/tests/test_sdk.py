@@ -74,7 +74,7 @@ class TestG1WarrantCryptoAndSDK(unittest.TestCase):
         self.assertEqual(verified["trust_basis"], TRUST_BASIS_EXTERNAL_PINNED_PUBKEY)
 
     def test_split_keygen_hygiene_and_governance_envelopes(self) -> None:
-        self.assertEqual(__version__, "1.2.1")
+        self.assertEqual(__version__, "1.3.0")
         so = generate_ed25519_signer_bundle("usr-so", "so@agency.gov", "Alice SO", ROLE_SERVICE_OWNER)
         ao = generate_ed25519_signer_bundle("usr-ao", "ao@agency.gov", "Bob AO", ROLE_AUTHORIZING_OFFICIAL)
         so2 = generate_ed25519_signer_bundle("usr-so2", "so2@agency.gov", "Carol SO2", ROLE_SERVICE_OWNER)
@@ -267,6 +267,69 @@ class TestG1WarrantCryptoAndSDK(unittest.TestCase):
         pyproject_text = (sdk_root / "pyproject.toml").read_text(encoding="utf-8")
         self.assertIn("LICENSE", pyproject_text)
         self.assertIn("NOTICE", pyproject_text)
+
+    def test_v1_3_0_cli_finder_intake_token_only_zero_signer_keys(self) -> None:
+        import http.server
+        import threading
+        from g1_warrant.cli import main as cli_main
+
+        captured: dict[str, str] = {}
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                captured["path"] = self.path
+                captured["intake_token"] = self.headers.get("X-Warrant-Intake-Token", "")
+                captured["gov_dsse"] = self.headers.get("X-Warrant-Governance-DSSE", "")
+                length = int(self.headers.get("Content-Length", "0"))
+                _ = self.rfile.read(length)
+                body = json.dumps(
+                    [
+                        {
+                            "remediation_id": "rem-py-intake-1",
+                            "cve_id": "UNMAPPED-QID-99881",
+                            "cve_mapping_status": "UNMAPPED_VENDOR_ADVISORY",
+                            "class_binding_status": "UNBOUND",
+                            "status_health": "BRIDGED",
+                        }
+                    ]
+                ).encode("utf-8")
+                self.send_response(201)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, fmt: str, *args: object) -> None:
+                return
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        port = srv.server_address[1]
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                qfile = Path(tmp) / "qualys.json"
+                qfile.write_text('{"hosts":[]}', encoding="utf-8")
+                rc = cli_main(
+                    [
+                        "--url",
+                        f"http://127.0.0.1:{port}",
+                        "finder-intake",
+                        "qualys",
+                        str(qfile),
+                        "--service",
+                        "payments-ledger-api",
+                        "--intake-token",
+                        "g1int_pycli_token_only",
+                    ]
+                )
+                self.assertEqual(rc, 0)
+                self.assertEqual(captured["intake_token"], "g1int_pycli_token_only")
+                self.assertEqual(captured["gov_dsse"], "")
+                self.assertIn("/api/v1/intake/qualys", captured["path"])
+        finally:
+            srv.shutdown()
+            srv.server_close()
 
     def test_live_server_integration_if_running(self) -> None:
         cli = WarrantClient("http://localhost:8080", timeout=2.0)

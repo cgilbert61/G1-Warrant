@@ -1,0 +1,70 @@
+[2026-11-23T07:45:57Z] === G1-WARRANT v1.3.0 DISPOSABLE KUBERNETES CLUSTER PROOF (CLOSES F3) ===
+[2026-11-23T07:45:57Z] Step 1: Building local workload (v1-vuln, v2-patched), twin-probe, warrant-extractor, and warrantd images...
+[2026-11-23T07:47:14Z] Step 2: Booting disposable Kubernetes cluster (rancher/k3s:v1.31.2-k3s1) in container g1-f3-k3s...
+[2026-11-23T07:47:20Z]   -> Live k3s node READY: kubeletVersion=v1.31.2+k3s1
+[2026-11-23T07:47:20Z] Step 3: Importing OCI workload & twin-probe images into k3s containerd...
+[2026-11-23T07:47:32Z]   -> ctr import: unpacking docker.io/library/payments-ledger-api:v1-vuln (sha256:da2569e4c57dab4b566498f50d7ccf1548cd67d1652835c3995060f7b6b2d320)...done
+[2026-11-23T07:47:32Z]   -> ctr import: unpacking docker.io/library/payments-ledger-api:v2-patched (sha256:87be122c400ab000fb3ab64ab3a5249c9395663e113be4d403ff28bab9002168)...done
+[2026-11-23T07:47:32Z]   -> ctr import: unpacking docker.io/library/g1-twin-probe:v1.3.0 (sha256:164686a3a7a30bf727978108722a17d5fc222a6eb13a1f6db6b8601976306f4d)...done
+[2026-11-23T07:47:32Z]   -> Authoritative kubelet imageID digests:
+     v1-vuln    = sha256:5734279891ecc6bd4aba86108fb2bc2ee9cd3831088a431cb342692f70b6b1e6
+     v2-patched = sha256:8ce22c75158a80139d8c79689750c97d3d96562e548ed624646cf0eeee70bc37
+[2026-11-23T07:47:32Z] Step 4: Deploying 3-replica production workload `Deployment/payments-ledger-api` in namespace `fin-core`...
+[2026-11-23T07:47:35Z]   -> Initial 3-replica production pods in `fin-core`:
+     NAME                                   READY   STATUS    RESTARTS   AGE   IP          NODE        NOMINATED NODE   READINESS GATES
+     payments-ledger-api-85dbfcff9d-9mljb   1/1     Running   0          2s    10.42.0.6   g1-f3-k3s   <none>           <none>
+     payments-ledger-api-85dbfcff9d-m7crs   1/1     Running   0          2s    10.42.0.5   g1-f3-k3s   <none>           <none>
+     payments-ledger-api-85dbfcff9d-vsmr6   1/1     Running   0          2s    10.42.0.4   g1-f3-k3s   <none>           <none>
+[2026-11-23T07:47:36Z]   -> Kubelet-reported initial Pod imageID digest(s): ['sha256:5734279891ecc6bd4aba86108fb2bc2ee9cd3831088a431cb342692f70b6b1e6']
+[2026-11-23T07:47:38Z] Step 5: Starting PostgreSQL 16, zero-egress `warrant-extractor`, and live `warrantd` (`WARRANT_CLUSTER_DRIVER=kubernetes`)...
+[2026-11-23T07:47:45Z]   -> Live warrantd healthy at http://127.0.0.1:32770 (WARRANT_CLUSTER_DRIVER=kubernetes, WARRANT_POSTURE=live)
+[2026-11-23T07:47:45Z] Step 6: Enrolling 2 SERVICE_OWNER + 2 AUTHORIZING_OFFICIAL principals and signing 1 Standing Warrant class (`clone_twin_count=3`)...
+[2026-11-23T07:47:45Z]   -> Standing Warrant ACTIVE: warrant_id=wrt-f3-k3s-live-001 class=KEV-TIER1-STATELESS clone_twin_count=3 live_status=ACTIVE
+[2026-11-23T07:47:45Z] Step 7: Submitting scanner finding via `POST /api/v1/intake/sarif` with `X-Warrant-Intake-Token` ONLY (ZERO human signatures)...
+[2026-11-23T07:48:04Z]   -> Autonomous Remediation Result: HTTP 201
+[2026-11-23T07:48:04Z]      remediation_id       = rem-7b1bf60c
+[2026-11-23T07:48:04Z]      stage                = ATTESTED_CLOSED
+[2026-11-23T07:48:04Z]      status_health        = ATTESTED
+[2026-11-23T07:48:04Z]      assurance_tier       = ASSURANCE_TIER_2_DIFFERENTIAL_TWIN
+[2026-11-23T07:48:04Z]      class_binding_status = BOUND
+[2026-11-23T07:48:04Z]      patch_target_layer   = USERSPACE_SOFTWARE
+[2026-11-23T07:48:04Z]      attestation_id       = att-140614ca
+[2026-11-23T07:48:04Z]   -> Executed 3-Clone Proving Manifest (`g1-twin-proving` on live k3s):
+[2026-11-23T07:48:04Z]      proving_run_id       = prv-de25fc82
+[2026-11-23T07:48:04Z]      twin_runtime         = CONTAINER_TWIN
+[2026-11-23T07:48:04Z]      proving_namespace    = g1-twin-proving
+[2026-11-23T07:48:04Z]      clone_count          = 3
+[2026-11-23T07:48:04Z]      services_up_count    = 3
+[2026-11-23T07:48:04Z]      smoke_passed_count   = 3
+[2026-11-23T07:48:04Z]      accept_passed_count  = 3
+[2026-11-23T07:48:04Z]      all_passed           = True
+[2026-11-23T07:48:04Z]      transcript_sha256    = 674987c540704138f95fed5cbbdaadffa01462f7bf67dc1c914b695cbb1e0211
+[2026-11-23T07:48:04Z]        * clone[0] pod=g1-clone-payments-ledger-api-de25fc82-0 ip=10.42.0.7 node=g1-f3-k3s ready=True smoke=True accept=True lat_ms=35.32 evidence_sha256=5df3021d9c5423ed...
+[2026-11-23T07:48:04Z]        * clone[1] pod=g1-clone-payments-ledger-api-de25fc82-1 ip=10.42.0.9 node=g1-f3-k3s ready=True smoke=True accept=True lat_ms=1.76 evidence_sha256=90e474dd50b3dfa9...
+[2026-11-23T07:48:04Z]        * clone[2] pod=g1-clone-payments-ledger-api-de25fc82-2 ip=10.42.0.8 node=g1-f3-k3s ready=True smoke=True accept=True lat_ms=1.33 evidence_sha256=ccc4065c51f002a1...
+[2026-11-23T07:48:04Z]   -> Four-Eyes Queue rows (`ceiling_exceptions`): 0 (expected 0)
+[2026-11-23T07:48:04Z] Step 8: Verifying live k3s cluster state AFTER autonomous promotion & AdmissionLockout...
+[2026-11-23T07:48:04Z]   -> Post-rollout 3-replica production pods in `fin-core`:
+     NAME                                   READY   STATUS        RESTARTS   AGE   IP           NODE        NOMINATED NODE   READINESS GATES
+     payments-ledger-api-58bbfdb54c-2gvg4   1/1     Running       0          11s   10.42.0.12   g1-f3-k3s   <none>           <none>
+     payments-ledger-api-58bbfdb54c-b69z7   1/1     Running       0          9s    10.42.0.13   g1-f3-k3s   <none>           <none>
+     payments-ledger-api-58bbfdb54c-mkrhd   1/1     Running       0          13s   10.42.0.11   g1-f3-k3s   <none>           <none>
+     payments-ledger-api-85dbfcff9d-9mljb   1/1     Terminating   0          31s   10.42.0.6    g1-f3-k3s   <none>           <none>
+     payments-ledger-api-85dbfcff9d-m7crs   1/1     Terminating   0          31s   10.42.0.5    g1-f3-k3s   <none>           <none>
+     payments-ledger-api-85dbfcff9d-vsmr6   1/1     Terminating   0          31s   10.42.0.4    g1-f3-k3s   <none>           <none>
+[2026-11-23T07:48:05Z]   -> Converged live pods running v2-patched (sha256:8ce22c75158a80139...): 3/3
+[2026-11-23T07:48:05Z]   -> Live Kubernetes ValidatingAdmissionPolicy objects on k3s:
+     NAME                                                                                    VALIDATIONS   PARAMKIND   AGE
+     validatingadmissionpolicy.admissionregistration.k8s.io/vap-deny-cve-2026-41001-a90fca   1             <unset>     1s
+     
+     NAME                                                                                                   POLICYNAME                       PARAMREF   AGE
+     validatingadmissionpolicybinding.admissionregistration.k8s.io/vap-deny-cve-2026-41001-a90fca-binding   vap-deny-cve-2026-41001-a90fca   <unset>    1s
+[2026-11-23T07:48:06Z]   -> Live kube-apiserver Admission Lockout Enforcement Check: DENIED as expected:
+     The pods "rogue-regression-pod" is invalid: : ValidatingAdmissionPolicy 'vap-deny-cve-2026-41001-a90fca' with binding 'vap-deny-cve-2026-41001-a90fca-binding' denied request: Banned vulnerable digest sha256:5734279891ecc6bd4aba86108fb2bc2ee9cd3831088a431cb342692f70b6b1e6 (CVE-2026-41001)
+[2026-11-23T07:48:06Z] Step 9: Verifying Runtime-Follows-Patch fail-closed (`KERNEL` patch against `CONTAINER_TWIN` on k3s)...
+[2026-11-23T07:48:06Z]   -> Kernel patch rejected fail-closed before order creation:
+     WarrantAPIError (POST /api/v1/distributors/dispatch -> HTTP 403): NO_PROOF_NO_DEPLOYMENT_ORDER: KERNEL_PATCH_REQUIRES_VM_TWIN_RUNTIME: patch targets KERNEL layer; container twins share the host kernel and cannot prove a kernel or boot layer they never boot
+[2026-11-23T07:48:06Z] Step 10: Air-gapped offline verification of exported DSSE NIST OSCAL 1.1.2 POA&M bundle against pinned `kernel.pub`...
+[2026-11-23T07:48:06Z]   -> Offline OSCAL Verification PASSED: valid=True trust_basis=EXTERNAL_PINNED_PUBKEY cve_id=CVE-2026-41001 service_id=payments-ledger-api warrant_id=wrt-f3-k3s-live-001
+[2026-11-23T07:48:06Z]   -> Minted OSCAL 1.1.2 Observation Titles (6): ['N1 Dual-Key Standing Warrant Proof (NIST SP 800-53 AC-5)', 'N4 Agent Workload Identity, Commissioning Function & RFC 8693 Delegation Lineage', 'N3 Isolated Ephemeral Twin Exploit Replay', 'N3 Isolated Clone-Twin Proving Ground Verification', 'N3 Passive Fleet & WN-8 Distributor Per-Asset Landing Manifest', 'N3 Permanent Admission Lockout Policy']
+[2026-11-23T07:48:06Z] === ALL F3 DISPOSABLE KUBERNETES CLUSTER CHECKS PASSED — TEARING DOWN EPHEMERAL CLUSTER ===

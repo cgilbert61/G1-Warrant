@@ -903,9 +903,12 @@ func (o *ControlPlaneOrchestrator) ExecuteSARIFRemediationWithOptions(
 		s1ID, s2ID := "UNBOUND", "UNBOUND"
 		if wErr == nil {
 			item.WarrantID = matchedWarrant.WarrantID
+			item.ClassBindingStatus = models.ClassBindingStatusBound
 			item.BridgeSLAMIN = matchedWarrant.SLABridgeMinutes
 			s1ID = matchedWarrant.Slot1PrincipalID
 			s2ID = matchedWarrant.Slot2PrincipalID
+		} else {
+			item.ClassBindingStatus = models.ClassBindingStatusUnbound
 		}
 
 		if err := o.Store.UpsertRemediation(ctx, &item); err != nil {
@@ -987,9 +990,11 @@ func (o *ControlPlaneOrchestrator) ExecuteSARIFRemediationWithOptions(
 		o.Broker.Broadcast("BRIDGE_ARMED", bridge)
 		o.Broker.Broadcast("REMEDIATION_UPDATED", item)
 
-		// Fail closed if no active warrant covers this service/CVSS
+		// Item 1 Doctrine: Never set EXCEPTION_ROUTED or create Four-Eyes PENDING_DUAL_KEY rows on ingest!
+		// Containment bridge is armed autonomously; unbound findings wait passively until a separate 2-of-2 class act.
 		if wErr != nil {
-			item.StatusHealth = models.HealthExceptionRouted
+			item.StatusHealth = models.HealthBridged
+			item.ClassBindingStatus = models.ClassBindingStatusUnbound
 			item.BlockerCode = "NO_ACTIVE_WARRANT_FAIL_CLOSED"
 			_ = o.Store.UpsertRemediation(ctx, &item)
 			_ = o.Store.AppendTrace(ctx, models.TraceEvent{
@@ -1000,8 +1005,9 @@ func (o *ControlPlaneOrchestrator) ExecuteSARIFRemediationWithOptions(
 				Outcome:       "BLOCK",
 				ActorOrToken:  "n1-kernel",
 				EvidenceHash:  crypto.SHA256Hex([]byte(wErr.Error())),
-				Fields:        map[string]string{"reason": wErr.Error()},
+				Fields:        map[string]string{"reason": wErr.Error(), "class_binding_status": models.ClassBindingStatusUnbound},
 			})
+			o.Broker.Broadcast("REMEDIATION_UPDATED", item)
 			results = append(results, item)
 			continue
 		}
@@ -1066,6 +1072,12 @@ func (o *ControlPlaneOrchestrator) ExecuteSARIFRemediationWithOptions(
 				continue
 			}
 			return nil, err
+		}
+
+		// Stage 2.5 (v1.3.0 Item 2): Run 3-Clone Isolated Proving Ground BEFORE N2 Canary Promotion
+		if _, pErr := o.N3Verify.RunCloneTwinProving(ctx, &item, svc, nil, patchMeta); pErr != nil {
+			results = append(results, item)
+			continue
 		}
 
 		// Stage 3: N2 Gate + Differential Shadow Canary
@@ -1164,6 +1176,9 @@ func (o *ControlPlaneOrchestrator) ApproveOrRejectException(ctx context.Context,
 		EvidenceHash:  crypto.SHA256Hex([]byte(exceptionID)),
 		Fields:        map[string]string{"decision": "APPROVED"},
 	})
+	if _, pErr := o.N3Verify.RunCloneTwinProving(ctx, rem, svc, nil, patchMeta); pErr != nil {
+		return ex, rem, pErr
+	}
 	if err := o.N2Gate.EvaluateAndRollout(ctx, rem, svc, patchMeta, true); err != nil {
 		return ex, rem, err
 	}
@@ -1254,9 +1269,12 @@ func (o *ControlPlaneOrchestrator) ExecuteSecretRotationRemediation(ctx context.
 		s1ID, s2ID := "UNBOUND", "UNBOUND"
 		if wErr == nil {
 			item.WarrantID = matchedWarrant.WarrantID
+			item.ClassBindingStatus = models.ClassBindingStatusBound
 			item.BridgeSLAMIN = matchedWarrant.SLABridgeMinutes
 			s1ID = matchedWarrant.Slot1PrincipalID
 			s2ID = matchedWarrant.Slot2PrincipalID
+		} else {
+			item.ClassBindingStatus = models.ClassBindingStatusUnbound
 		}
 
 		if err := o.Store.UpsertRemediation(ctx, &item); err != nil {
@@ -1307,16 +1325,18 @@ func (o *ControlPlaneOrchestrator) ExecuteSecretRotationRemediation(ctx context.
 		item.BridgedAt = &bridgedTime
 		_ = o.Store.UpsertRemediation(ctx, &item)
 
-		// Fail closed if no active SECRET-ROTATION-STATELESS warrant covers this service
+		// Hold passively at BRIDGED (never EXCEPTION_ROUTED or Four-Eyes queue on ingest!) if no active SECRET-ROTATION-STATELESS warrant covers this service
 		if wErr != nil {
-			item.StatusHealth = models.HealthExceptionRouted
+			item.StatusHealth = models.HealthBridged
+			item.ClassBindingStatus = models.ClassBindingStatusUnbound
 			item.BlockerCode = "NO_ACTIVE_SECRET_ROTATION_WARRANT_FAIL_CLOSED"
 			_ = o.Store.UpsertRemediation(ctx, &item)
 			results = append(results, item)
 			continue
 		}
 		if _, revErr := o.N1Warrant.ReverifyWarrantForExecution(ctx, item.WarrantID, svc.ServiceID, 0, svc.Replicas, models.RemediationKindSecretRotation); revErr != nil {
-			item.StatusHealth = models.HealthExceptionRouted
+			item.StatusHealth = models.HealthBridged
+			item.ClassBindingStatus = models.ClassBindingStatusUnbound
 			item.BlockerCode = revErr.Error()
 			_ = o.Store.UpsertRemediation(ctx, &item)
 			results = append(results, item)

@@ -653,6 +653,24 @@ func (c *Client) IngestOSVAdvisory(ctx context.Context, osvID, serviceID string)
 	return out, nil
 }
 
+// ClassBindingRequest specifies parameters for POST /api/v1/remediations/{id}/bind-class.
+type ClassBindingRequest struct {
+	WarrantID       string    `json:"warrant_id,omitempty"`
+	WarrantEnvelope *Envelope `json:"warrant_envelope,omitempty"`
+	DistributorID   string    `json:"distributor_id,omitempty"`
+	AutoExecute     bool      `json:"auto_execute,omitempty"`
+}
+
+// BindRemediationToWarrantClass binds an ingested unbound/unmapped remediation item to a 2-of-2 Standing Warrant class.
+func (c *Client) BindRemediationToWarrantClass(ctx context.Context, remediationID string, req ClassBindingRequest) (*RemediationItem, error) {
+	var out RemediationItem
+	path := "/api/v1/remediations/" + url.PathEscape(strings.TrimSpace(remediationID)) + "/bind-class"
+	if err := c.doJSON(ctx, http.MethodPost, path, req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // StreamEvents subscribes to the real-time Server-Sent Events stream (GET /api/v1/events/stream)
 // until ctx is cancelled or handler returns a non-nil error.
 func (c *Client) StreamEvents(ctx context.Context, handler func(SSEEvent) error) error {

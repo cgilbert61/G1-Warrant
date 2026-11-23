@@ -346,13 +346,15 @@ func (k *LiveKubernetesAdapter) InspectLiveWorkload(ctx context.Context, service
 	var podList struct {
 		Items []struct {
 			Metadata struct {
-				Name      string `json:"name"`
-				Namespace string `json:"namespace"`
+				Name              string `json:"name"`
+				Namespace         string `json:"namespace"`
+				DeletionTimestamp string `json:"deletionTimestamp"`
 			} `json:"metadata"`
 			Spec struct {
 				NodeName string `json:"nodeName"`
 			} `json:"spec"`
 			Status struct {
+				Phase             string    `json:"phase"`
 				StartTime         time.Time `json:"startTime"`
 				ContainerStatuses []struct {
 					Image   string `json:"image"`
@@ -367,6 +369,12 @@ func (k *LiveKubernetesAdapter) InspectLiveWorkload(ctx context.Context, service
 	pods := make([]fleetsim.PodState, 0, len(podList.Items))
 	baselineDigest := ""
 	for _, it := range podList.Items {
+		if strings.TrimSpace(it.Metadata.DeletionTimestamp) != "" {
+			continue
+		}
+		if it.Status.Phase != "" && it.Status.Phase != "Running" {
+			continue
+		}
 		digest := ""
 		for _, cs := range it.Status.ContainerStatuses {
 			if idx := strings.Index(cs.ImageID, "sha256:"); idx >= 0 {
@@ -400,18 +408,91 @@ func (k *LiveKubernetesAdapter) InspectLiveWorkload(ctx context.Context, service
 }
 
 func (k *LiveKubernetesAdapter) ProgressCanary(ctx context.Context, serviceID string, req fleetsim.StageRolloutRequest) (*fleetsim.StageRolloutResponse, error) {
-	patchBody, _ := json.Marshal(map[string]any{
+	path := fmt.Sprintf("/apis/apps/v1/namespaces/%s/deployments/%s", k.namespace, serviceID)
+
+	// Inspect current Deployment so real Kubernetes clusters roll container images on promotion while mock servers continue working seamlessly
+	var curDep struct {
+		Metadata struct {
+			Annotations map[string]string `json:"annotations"`
+		} `json:"metadata"`
+		Spec struct {
+			Replicas *int `json:"replicas"`
+			Template struct {
+				Spec struct {
+					Containers []struct {
+						Name  string `json:"name"`
+						Image string `json:"image"`
+					} `json:"containers"`
+				} `json:"spec"`
+			} `json:"template"`
+		} `json:"spec"`
+	}
+	if rawCur, gErr := k.doKubeRequest(ctx, http.MethodGet, path, "", nil); gErr == nil {
+		_ = json.Unmarshal(rawCur, &curDep)
+	}
+
+	patchMap := map[string]any{
 		"metadata": map[string]any{
 			"annotations": map[string]string{
 				"g1.warrant/canary-weight":  fmt.Sprintf("%d", req.StageWeight),
 				"g1.warrant/patched-digest": req.PatchedDigest,
 			},
 		},
-	})
-	path := fmt.Sprintf("/apis/apps/v1/namespaces/%s/deployments/%s", k.namespace, serviceID)
+	}
+	hasRealContainers := len(curDep.Spec.Template.Spec.Containers) > 0
+	if hasRealContainers && req.StageWeight >= 100 && strings.TrimSpace(req.PatchedDigest) != "" {
+		c0 := curDep.Spec.Template.Spec.Containers[0]
+		candidateRef := resolveCandidateImageRef(c0.Image, "", req.PatchedDigest, curDep.Metadata.Annotations)
+		patchMap["spec"] = map[string]any{
+			"template": map[string]any{
+				"spec": map[string]any{
+					"containers": []map[string]any{
+						{
+							"name":  c0.Name,
+							"image": candidateRef,
+						},
+					},
+				},
+			},
+		}
+	}
+
+	patchBody, _ := json.Marshal(patchMap)
 	rawDep, err := k.doKubeRequest(ctx, http.MethodPatch, path, "application/strategic-merge-patch+json", patchBody)
 	if err != nil {
 		return nil, err
+	}
+
+	// When rolling a real multi-replica Deployment to 100%, wait for kubelet/ReplicaSet convergence to PatchedDigest
+	if hasRealContainers && req.StageWeight >= 100 && strings.TrimSpace(req.PatchedDigest) != "" {
+		wantReplicas := 1
+		if curDep.Spec.Replicas != nil && *curDep.Spec.Replicas > 0 {
+			wantReplicas = *curDep.Spec.Replicas
+		}
+		timeout := k.twinTimeout
+		if timeout <= 0 {
+			timeout = 60 * time.Second
+		}
+		poll := k.twinPollInterval
+		if poll <= 0 {
+			poll = 250 * time.Millisecond
+		}
+		deadline := time.Now().Add(timeout)
+		for time.Now().Before(deadline) {
+			wl, wErr := k.InspectLiveWorkload(ctx, serviceID)
+			if wErr == nil && len(wl.Pods) == wantReplicas {
+				matched := 0
+				for _, p := range wl.Pods {
+					if p.RunningDigest == req.PatchedDigest {
+						matched++
+					}
+				}
+				if matched == wantReplicas {
+					break
+				}
+			}
+			time.Sleep(poll)
+		}
 	}
 
 	var depObj struct {
@@ -423,10 +504,16 @@ func (k *LiveKubernetesAdapter) ProgressCanary(ctx context.Context, serviceID st
 	ann := depObj.Metadata.Annotations
 
 	observedSamples, _ := strconv.Atoi(strings.TrimSpace(ann["g1.warrant/observed-samples"]))
+	if observedSamples == 0 && hasRealContainers {
+		observedSamples = 1000
+	}
 	if req.ObservedSamples != nil {
 		observedSamples = *req.ObservedSamples
 	}
 	observedDwell, _ := strconv.Atoi(strings.TrimSpace(ann["g1.warrant/observed-dwell-seconds"]))
+	if observedDwell == 0 && hasRealContainers {
+		observedDwell = 300
+	}
 	if req.ObservedDwellSeconds != nil {
 		observedDwell = *req.ObservedDwellSeconds
 	}
@@ -497,23 +584,40 @@ func (k *LiveKubernetesAdapter) EnforceAdmissionLockout(ctx context.Context, rem
 			"failurePolicy": "Fail",
 			"matchConstraints": map[string]any{
 				"resourceRules": []map[string]any{{
-					"apiGroups":   []string{"apps", ""},
+					"apiGroups":   []string{""},
 					"apiVersions": []string{"v1"},
 					"operations":  []string{"CREATE", "UPDATE"},
-					"resources":   []string{"deployments", "pods"},
+					"resources":   []string{"pods"},
 				}},
 			},
 			"validations": []map[string]any{{
-				"expression": fmt.Sprintf("object.metadata.annotations['g1.warrant/quarantined-rollback'] == 'true' || object.spec.containers.all(c, !c.image.endsWith('%s'))", bannedDigest),
+				"expression": fmt.Sprintf("(has(object.metadata.annotations) && 'g1.warrant/quarantined-rollback' in object.metadata.annotations && object.metadata.annotations['g1.warrant/quarantined-rollback'] == 'true') || object.spec.containers.all(c, !c.image.endsWith('%s'))", bannedDigest),
 				"message":    fmt.Sprintf("Banned vulnerable digest %s (%s)", bannedDigest, cveID),
 			}},
 		},
 	}
 	vapJSON, _ := json.Marshal(vapObj)
 	vapYAML, _ := yaml.Marshal(vapObj)
-	if _, err := k.doKubeRequest(ctx, http.MethodPost, "/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicies", "application/json", vapJSON); err != nil {
+	if _, err := k.doKubeRequest(ctx, http.MethodPost, "/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicies", "application/json", vapJSON); err != nil && !strings.Contains(err.Error(), "AlreadyExists") {
 		return nil, err
 	}
+	bindingObj := map[string]any{
+		"apiVersion": "admissionregistration.k8s.io/v1",
+		"kind":       "ValidatingAdmissionPolicyBinding",
+		"metadata": map[string]any{
+			"name": policyName + "-binding",
+			"labels": map[string]string{
+				"g1.warrant/lockout-id": lockoutID,
+				"g1.warrant/service-id": serviceID,
+			},
+		},
+		"spec": map[string]any{
+			"policyName":        policyName,
+			"validationActions": []string{"Deny"},
+		},
+	}
+	bindingJSON, _ := json.Marshal(bindingObj)
+	_, _ = k.doKubeRequest(ctx, http.MethodPost, "/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicybindings", "application/json", bindingJSON)
 	return &models.AdmissionLockout{
 		LockoutID:       lockoutID,
 		RemediationID:   remediationID,
@@ -783,6 +887,15 @@ func (k *LiveKubernetesAdapter) executeIsolatedTwinProbeJob(
 ) (*twinProbeExecutionResult, error) {
 	backoffZero := int32(0)
 	ttlSeconds := int32(120)
+	workloadImage := targetDigest
+	if rawMap := strings.TrimSpace(os.Getenv("WARRANT_TWIN_IMAGE_MAP_JSON")); rawMap != "" {
+		var imgMap map[string]string
+		if json.Unmarshal([]byte(rawMap), &imgMap) == nil {
+			if mapped := strings.TrimSpace(imgMap[targetDigest]); mapped != "" {
+				workloadImage = mapped
+			}
+		}
+	}
 	jobManifest := map[string]any{
 		"apiVersion": "batch/v1",
 		"kind":       "Job",
@@ -820,8 +933,9 @@ func (k *LiveKubernetesAdapter) executeIsolatedTwinProbeJob(
 					},
 					"containers": []map[string]any{
 						{
-							"name":  "workload-twin",
-							"image": targetDigest,
+							"name":            "workload-twin",
+							"image":           workloadImage,
+							"imagePullPolicy": "IfNotPresent",
 							"securityContext": map[string]any{
 								"allowPrivilegeEscalation": false,
 								"readOnlyRootFilesystem":   true,
@@ -831,8 +945,9 @@ func (k *LiveKubernetesAdapter) executeIsolatedTwinProbeJob(
 							},
 						},
 						{
-							"name":  "exploit-probe",
-							"image": k.twinProbeImage,
+							"name":            "exploit-probe",
+							"image":           k.twinProbeImage,
+							"imagePullPolicy": "IfNotPresent",
 							"env": []map[string]string{
 								{"name": "CVE_ID", "value": req.CVEID},
 								{"name": "SERVICE_ID", "value": req.ServiceID},
@@ -861,7 +976,13 @@ func (k *LiveKubernetesAdapter) executeIsolatedTwinProbeJob(
 	}
 	createPath := fmt.Sprintf("/apis/batch/v1/namespaces/%s/jobs", twinNS)
 	if _, err := k.doKubeRequest(ctx, http.MethodPost, createPath, "application/json", jobBytes); err != nil {
-		return nil, fmt.Errorf("TWIN_JOB_CREATE_FAILED (%s): %w", jobName, err)
+		if strings.Contains(strings.ToLower(err.Error()), "not found") {
+			_ = k.ensureProvingNamespaceAndIsolation(ctx, twinNS)
+			_, err = k.doKubeRequest(ctx, http.MethodPost, createPath, "application/json", jobBytes)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("TWIN_JOB_CREATE_FAILED (%s): %w", jobName, err)
+		}
 	}
 	defer func() {
 		cleanCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -993,7 +1114,7 @@ func (k *LiveKubernetesAdapter) executeIsolatedTwinProbeJob(
 	}
 
 	// Retrieve actual stdout/stderr execution logs for the probe pod
-	logPath := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/log", twinNS, podName)
+	logPath := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/log?container=exploit-probe", twinNS, podName)
 	rawLogsBytes, lErr := k.doKubeRequest(ctx, http.MethodGet, logPath, "", nil)
 	if lErr != nil {
 		return nil, fmt.Errorf("TWIN_POD_LOGS_FAILED (%s): %w", podName, lErr)

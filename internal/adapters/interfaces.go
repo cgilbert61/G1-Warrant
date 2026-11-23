@@ -72,3 +72,31 @@ type DeploymentTarget interface {
 type TwinRunner interface {
 	RunExploitReplay(ctx context.Context, req fleetsim.TwinReplayRequest) (*fleetsim.TwinReplayResponse, error)
 }
+
+// CloneTwinProvingRequest specifies parameters to clone a representative subset (default 3) of a production
+// workload into an isolated proving ground (g1-twin-proving) and execute readiness, smoke, and class acceptance checks.
+type CloneTwinProvingRequest struct {
+	RemediationID     string
+	ServiceID         string
+	Namespace         string
+	WarrantID         string
+	WarrantClass      string
+	CVEID             string
+	CWEID             string
+	VulnerableDigest  string
+	CandidateDigest   string
+	CandidateImageRef string
+	PatchTargetLayer  string // "USERSPACE_SOFTWARE" | "KERNEL" | "BOOT_LAYER"
+	CloneCount        int
+	MaxP99LatencyMs   float64
+}
+
+// CloneTwinProver executes multi-clone proving ground verification forCONTAINER_TWIN workloads.
+type CloneTwinProver interface {
+	RunCloneTwinProving(ctx context.Context, req CloneTwinProvingRequest) (*models.CloneTwinProvingManifest, error)
+}
+
+// VMTwinProvider executes isolated full-VM / microVM proving ground verification for KERNEL and BOOT_LAYER patches.
+type VMTwinProvider interface {
+	RunVMTwinProving(ctx context.Context, req CloneTwinProvingRequest) (*models.CloneTwinProvingManifest, error)
+}

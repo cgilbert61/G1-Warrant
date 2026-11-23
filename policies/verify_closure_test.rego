@@ -141,3 +141,50 @@ test_wn8_dispatch_ack_only_assigns_tier0_and_blocks_bridge_retirement if {
 	verify.assurance_tier == "ASSURANCE_TIER_0_DISTRIBUTOR_DISPATCH_ONLY" with input as dispatch_only
 	"DISTRIBUTOR_LACKS_PER_ASSET_EVIDENCE" in verify.blockers with input as dispatch_only
 }
+
+test_v130_clone_twin_proving_3_clones_userspace_allows_closure if {
+	proved := object.union(verified_input, {
+		"clone_twin_proving_present": true,
+		"patch_target_layer": "USERSPACE_SOFTWARE",
+		"twin_runtime": "CONTAINER_TWIN",
+		"clone_twin_count": 3,
+		"clone_twin_all_passed": true,
+	})
+	verify.allow_bridge_retirement with input as proved
+	verify.allow_attestation_mint with input as proved
+}
+
+test_v130_kernel_patch_on_container_twin_fails_closed_requires_vm_twin if {
+	kernel_on_container := object.union(verified_input, {
+		"clone_twin_proving_present": true,
+		"patch_target_layer": "KERNEL",
+		"twin_runtime": "CONTAINER_TWIN",
+		"clone_twin_count": 3,
+		"clone_twin_all_passed": true,
+	})
+	not verify.allow_bridge_retirement with input as kernel_on_container
+	not verify.allow_attestation_mint with input as kernel_on_container
+	"KERNEL_PATCH_REQUIRES_VM_TWIN_RUNTIME" in verify.blockers with input as kernel_on_container
+}
+
+test_v130_kernel_patch_on_vm_twin_succeeds_and_failed_clone_blocks if {
+	kernel_on_vm := object.union(verified_input, {
+		"clone_twin_proving_present": true,
+		"patch_target_layer": "KERNEL",
+		"twin_runtime": "VM_TWIN",
+		"clone_twin_count": 3,
+		"clone_twin_all_passed": true,
+	})
+	verify.allow_bridge_retirement with input as kernel_on_vm
+	verify.allow_attestation_mint with input as kernel_on_vm
+
+	failed_clone := object.union(verified_input, {
+		"clone_twin_proving_present": true,
+		"patch_target_layer": "USERSPACE_SOFTWARE",
+		"twin_runtime": "CONTAINER_TWIN",
+		"clone_twin_count": 3,
+		"clone_twin_all_passed": false,
+	})
+	not verify.allow_bridge_retirement with input as failed_clone
+	"CLONE_TWIN_PROVING_FAILED" in verify.blockers with input as failed_clone
+}

@@ -29,6 +29,9 @@ type ImageBehaviorProfile struct {
 	ObservedORMMutations    int      `json:"observed_orm_mutations,omitempty"`
 	SensitiveFilesAccessed  []string `json:"sensitive_files_accessed,omitempty"`
 	UnexpectedEgressTargets []string `json:"unexpected_egress_endpoints,omitempty"`
+	CloneServiceBootFailed  bool     `json:"clone_service_boot_failed,omitempty"`
+	CloneSmokeFailed        bool     `json:"clone_smoke_failed,omitempty"`
+	CloneAcceptanceFailed   bool     `json:"clone_acceptance_failed,omitempty"`
 }
 
 // PodState represents a simulated Kubernetes Pod in fleet-sim.
@@ -160,6 +163,51 @@ type TwinReplayResponse struct {
 	ExitCode            int    `json:"exit_code"`
 	TranscriptSHA256    string `json:"transcript_sha256"`
 	ProductionUntouched bool   `json:"production_untouched"`
+}
+
+// CloneTwinSimRequest drives a 3-clone proving ground run in isolated namespace g1-twin-proving.
+type CloneTwinSimRequest struct {
+	RemediationID    string  `json:"remediation_id"`
+	ServiceID        string  `json:"service_id"`
+	WarrantID        string  `json:"warrant_id"`
+	WarrantClass     string  `json:"warrant_class"`
+	CVEID            string  `json:"cve_id"`
+	CandidateDigest  string  `json:"candidate_digest"`
+	PatchTargetLayer string  `json:"patch_target_layer"`
+	CloneCount       int     `json:"clone_count"`
+	MaxP99LatencyMs  float64 `json:"max_p99_latency_ms"`
+}
+
+// CloneTwinSimInstance captures readiness, smoke, and acceptance telemetry for a single clone.
+type CloneTwinSimInstance struct {
+	CloneIndex            int     `json:"clone_index"`
+	CloneName             string  `json:"clone_name"`
+	NodeOrHost            string  `json:"node_or_host"`
+	PodIP                 string  `json:"pod_ip"`
+	RunningDigest         string  `json:"running_digest"`
+	ServiceUpPassed       bool    `json:"service_up_passed"`
+	SmokeTestPassed       bool    `json:"smoke_test_passed"`
+	ClassAcceptancePassed bool    `json:"class_acceptance_passed"`
+	ObservedLatencyMs     float64 `json:"observed_latency_ms"`
+	ExitCode              int     `json:"exit_code"`
+	EvidenceSHA256        string  `json:"evidence_sha256"`
+	LogSummary            string  `json:"log_summary"`
+}
+
+// CloneTwinSimResponse returns the 3-clone proving manifest from fleet-sim.
+type CloneTwinSimResponse struct {
+	ProvingRunID          string                 `json:"proving_run_id"`
+	ProvingNamespace      string                 `json:"proving_namespace"`
+	TwinRuntime           string                 `json:"twin_runtime"`
+	ZeroProductionEgress  bool                   `json:"zero_production_egress"`
+	CloneCount            int                    `json:"clone_count"`
+	ServicesUpCount       int                    `json:"services_up_count"`
+	SmokePassedCount      int                    `json:"smoke_passed_count"`
+	AcceptancePassedCount int                    `json:"acceptance_passed_count"`
+	AllPassed             bool                   `json:"all_passed"`
+	FailureReasonCode     string                 `json:"failure_reason_code,omitempty"`
+	Clones                []CloneTwinSimInstance `json:"clones"`
+	TranscriptSHA256      string                 `json:"transcript_sha256"`
 }
 
 // ClusterSimulator maintains the in-memory state of the simulated 6-service Kubernetes/Cilium cluster.
@@ -596,6 +644,98 @@ func (cs *ClusterSimulator) Handler() http.Handler {
 			ExitCode:            exitCode,
 			TranscriptSHA256:    crypto.SHA256Hex([]byte(transcriptMaterial)),
 			ProductionUntouched: true,
+		})
+	})
+
+	mux.HandleFunc("POST /v1/twins/clone-proving", func(w http.ResponseWriter, r *http.Request) {
+		var req CloneTwinSimRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeSimJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		cloneCount := req.CloneCount
+		if cloneCount <= 0 {
+			cloneCount = 3
+		}
+		cs.mu.RLock()
+		prof := cs.profiles[req.CandidateDigest]
+		cs.mu.RUnlock()
+
+		runID := "prv-" + crypto.SHA256Hex([]byte(fmt.Sprintf("%s|%s|%s|%d", req.ServiceID, req.CVEID, req.CandidateDigest, time.Now().UnixNano())))[:10]
+		clones := make([]CloneTwinSimInstance, 0, cloneCount)
+		upCount, smokeCount, accCount := 0, 0, 0
+		var transcriptBuilder strings.Builder
+		failureReason := ""
+
+		for i := 0; i < cloneCount; i++ {
+			cName := fmt.Sprintf("clone-%s-%d", req.ServiceID, i)
+			podIP := fmt.Sprintf("10.244.99.%d", 10+i)
+			node := fmt.Sprintf("k8s-proving-node-%02d", (i%3)+1)
+			lat := 14.2 + float64(i)*1.3
+			if prof.P99LatencyMs > 0 {
+				lat = prof.P99LatencyMs
+			}
+			svcUp := !prof.CloneServiceBootFailed
+			smokeOK := svcUp && !prof.CloneSmokeFailed
+			accOK := smokeOK && !prof.CloneAcceptanceFailed && !prof.ExploitStillWorks
+			exitCode := 0
+			if !svcUp {
+				exitCode = 101
+				if failureReason == "" {
+					failureReason = "CLONE_SERVICE_READINESS_FAILED"
+				}
+			} else if !smokeOK {
+				exitCode = 102
+				if failureReason == "" {
+					failureReason = "CLONE_SMOKE_SUITE_FAILED"
+				}
+			} else if !accOK {
+				exitCode = 103
+				if failureReason == "" {
+					failureReason = "CLONE_CLASS_ACCEPTANCE_FAILED"
+				}
+			}
+			if svcUp {
+				upCount++
+			}
+			if smokeOK {
+				smokeCount++
+			}
+			if accOK {
+				accCount++
+			}
+			logLine := fmt.Sprintf("clone=%s ip=%s digest=%s ready=%t smoke=%t acceptance=%t latency_ms=%.1f exit=%d",
+				cName, podIP, req.CandidateDigest, svcUp, smokeOK, accOK, lat, exitCode)
+			transcriptBuilder.WriteString(logLine + "\n")
+			clones = append(clones, CloneTwinSimInstance{
+				CloneIndex:            i,
+				CloneName:             cName,
+				NodeOrHost:            node,
+				PodIP:                 podIP,
+				RunningDigest:         req.CandidateDigest,
+				ServiceUpPassed:       svcUp,
+				SmokeTestPassed:       smokeOK,
+				ClassAcceptancePassed: accOK,
+				ObservedLatencyMs:     lat,
+				ExitCode:              exitCode,
+				EvidenceSHA256:        crypto.SHA256Hex([]byte(logLine)),
+				LogSummary:            logLine,
+			})
+		}
+		allPassed := upCount == cloneCount && smokeCount == cloneCount && accCount == cloneCount
+		writeSimJSON(w, http.StatusOK, CloneTwinSimResponse{
+			ProvingRunID:          runID,
+			ProvingNamespace:      "g1-twin-proving",
+			TwinRuntime:           "CONTAINER_TWIN",
+			ZeroProductionEgress:  true,
+			CloneCount:            cloneCount,
+			ServicesUpCount:       upCount,
+			SmokePassedCount:      smokeCount,
+			AcceptancePassedCount: accCount,
+			AllPassed:             allPassed,
+			FailureReasonCode:     failureReason,
+			Clones:                clones,
+			TranscriptSHA256:      crypto.SHA256Hex([]byte(transcriptBuilder.String())),
 		})
 	})
 

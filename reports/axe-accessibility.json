@@ -13,7 +13,7 @@
     "compliance": "Section 508 Federal Accessibility",
     "liveEndpointVerified": true
   },
-  "timestamp": "2026-11-23T05:49:07.657174+00:00",
+  "timestamp": "2026-11-23T07:50:21.631526+00:00",
   "filesAudited": 13,
   "violations": [],
   "passes": [
@@ -555,6 +555,100 @@
       "file": "web/src/components/LiveFeedsModal.tsx"
     },
     {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <select id='intake-vendor-select'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View1RacePipeline.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='intake-token-input'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View1RacePipeline.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='intake-service-input'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View1RacePipeline.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='intake-file-upload'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View1RacePipeline.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <textarea id='intake-payload-textarea'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View1RacePipeline.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='intake-distributor-input'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View1RacePipeline.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View1RacePipeline.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View1RacePipeline.tsx"
+    },
+    {
       "id": "button-name",
       "impact": "critical",
       "description": "Interactive <button> provides discernible accessible text or aria-label",
@@ -1043,8 +1137,8 @@
     }
   ],
   "summary": {
-    "totalChecks": 91,
-    "passedChecks": 91,
+    "totalChecks": 99,
+    "passedChecks": 99,
     "violationsCount": 0,
     "status": "PASS"
   }

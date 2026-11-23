@@ -136,6 +136,11 @@ type VerifyInput struct {
 	RebootWaitingAssets       int    `json:"reboot_waiting_assets,omitempty"`
 	AdmissionLockoutEnforced  bool   `json:"admission_lockout_enforced"`
 	WarrantReverified         bool   `json:"warrant_reverified"`
+	PatchTargetLayer          string `json:"patch_target_layer,omitempty"`
+	TwinRuntime               string `json:"twin_runtime,omitempty"`
+	CloneTwinProvingPresent   bool   `json:"clone_twin_proving_present,omitempty"`
+	CloneTwinCount            int    `json:"clone_twin_count,omitempty"`
+	CloneTwinAllPassed        bool   `json:"clone_twin_all_passed,omitempty"`
 }
 
 // VerifyDecision is the deterministic decision from data.warrant.verify.

@@ -65,6 +65,15 @@ func (s *Store) ListWarrants(ctx context.Context) ([]models.WarrantRecord, error
 		_ = json.Unmarshal(authVendorRaw, &w.AuthorizedVendorDetections)
 		_ = json.Unmarshal(cwesRaw, &w.AutoRemediateCWEs)
 		_ = json.Unmarshal(envRaw, &w.DSSEEnvelope)
+		if pBytes, dErr := w.DSSEEnvelope.DecodePayload(); dErr == nil {
+			var wp models.WarrantPayload
+			if json.Unmarshal(pBytes, &wp) == nil && wp.CloneTwinCount > 0 {
+				w.CloneTwinCount = wp.CloneTwinCount
+			}
+		}
+		if w.CloneTwinCount <= 0 {
+			w.CloneTwinCount = models.DefaultCloneTwinCount
+		}
 		switch {
 		case w.RevocationReason != "":
 			w.LiveStatus = "REVOKED_SIGNER"
@@ -390,7 +399,7 @@ func (s *Store) GetEstateService(ctx context.Context, serviceID string) (*models
 
 // UpsertRemediation inserts or updates a RemediationItem in remediation_items.
 func (s *Store) UpsertRemediation(ctx context.Context, item *models.RemediationItem) error {
-	var patchRaw, shadowRaw, assetIdentRaw []byte
+	var patchRaw, shadowRaw, assetIdentRaw, cloneProvingRaw []byte
 	if item.PatchMetadata != nil {
 		patchRaw, _ = json.Marshal(item.PatchMetadata)
 	}
@@ -399,6 +408,9 @@ func (s *Store) UpsertRemediation(ctx context.Context, item *models.RemediationI
 	}
 	if item.AssetIdentity != nil {
 		assetIdentRaw, _ = json.Marshal(item.AssetIdentity)
+	}
+	if item.CloneTwinProving != nil {
+		cloneProvingRaw, _ = json.Marshal(item.CloneTwinProving)
 	}
 	if item.CreatedAt.IsZero() {
 		item.CreatedAt = time.Now().UTC()
@@ -413,6 +425,16 @@ func (s *Store) UpsertRemediation(ctx context.Context, item *models.RemediationI
 	if item.CVEMappingStatus == "" {
 		item.CVEMappingStatus = models.CVEMappingStatusMapped
 	}
+	if item.ClassBindingStatus == "" {
+		if item.WarrantID != "" {
+			item.ClassBindingStatus = models.ClassBindingStatusBound
+		} else {
+			item.ClassBindingStatus = models.ClassBindingStatusUnbound
+		}
+	}
+	if item.PatchTargetLayer == "" {
+		item.PatchTargetLayer = models.PatchTargetLayerUserspace
+	}
 	if item.NormalizedDetectionState == "" {
 		item.NormalizedDetectionState = models.DetectionStateActive
 	}
@@ -424,16 +446,16 @@ func (s *Store) UpsertRemediation(ctx context.Context, item *models.RemediationI
 			stateless_passed, schema_diff_passed, syscall_diff_passed,
 			twin_replay_status, assurance_tier, pod_sweep_matched, pod_sweep_total,
 			lockout_policy_id, bridge_id, bridge_sla_minutes, attestation_id,
-			finder_vendor, vendor_detection_id, cve_mapping_status, normalized_detection_state,
+			finder_vendor, vendor_detection_id, cve_mapping_status, class_binding_status, patch_target_layer, normalized_detection_state,
 			asset_identity_json, first_seen_at, last_seen_at,
 			distributor_id, latest_order_id, closure_completeness,
 			targeted_asset_count, landed_asset_count, failed_asset_count, pending_asset_count, reboot_waiting_count, rolled_back_asset_count,
-			patch_metadata, shadow_report, created_at, bridged_at, closed_at, updated_at
+			patch_metadata, shadow_report, clone_twin_proving_json, created_at, bridged_at, closed_at, updated_at
 		) VALUES (
 			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
 			$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,
 			$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,
-			$47,$48,$49,$50,$51,$52
+			$47,$48,$49,$50,$51,$52,$53,$54,$55
 		)
 		ON CONFLICT (remediation_id) DO UPDATE SET
 			remediation_kind = EXCLUDED.remediation_kind,
@@ -457,6 +479,8 @@ func (s *Store) UpsertRemediation(ctx context.Context, item *models.RemediationI
 			finder_vendor = EXCLUDED.finder_vendor,
 			vendor_detection_id = EXCLUDED.vendor_detection_id,
 			cve_mapping_status = EXCLUDED.cve_mapping_status,
+			class_binding_status = EXCLUDED.class_binding_status,
+			patch_target_layer = EXCLUDED.patch_target_layer,
 			normalized_detection_state = EXCLUDED.normalized_detection_state,
 			asset_identity_json = EXCLUDED.asset_identity_json,
 			first_seen_at = EXCLUDED.first_seen_at,
@@ -472,6 +496,7 @@ func (s *Store) UpsertRemediation(ctx context.Context, item *models.RemediationI
 			rolled_back_asset_count = EXCLUDED.rolled_back_asset_count,
 			patch_metadata = EXCLUDED.patch_metadata,
 			shadow_report = EXCLUDED.shadow_report,
+			clone_twin_proving_json = EXCLUDED.clone_twin_proving_json,
 			bridged_at = EXCLUDED.bridged_at,
 			closed_at = EXCLUDED.closed_at,
 			updated_at = EXCLUDED.updated_at
@@ -482,11 +507,11 @@ func (s *Store) UpsertRemediation(ctx context.Context, item *models.RemediationI
 		item.StatelessPassed, item.SchemaDiffPassed, item.SyscallPassed,
 		item.TwinReplayStatus, item.AssuranceTier, item.PodSweepMatched, item.PodSweepTotal,
 		item.LockoutPolicyID, item.BridgeID, item.BridgeSLAMIN, item.AttestationID,
-		item.FinderVendor, item.VendorDetectionID, item.CVEMappingStatus, item.NormalizedDetectionState,
+		item.FinderVendor, item.VendorDetectionID, item.CVEMappingStatus, item.ClassBindingStatus, item.PatchTargetLayer, item.NormalizedDetectionState,
 		assetIdentRaw, item.FirstSeenAt, item.LastSeenAt,
 		item.DistributorID, item.LatestOrderID, item.ClosureCompleteness,
 		item.TargetedAssetCount, item.LandedAssetCount, item.FailedAssetCount, item.PendingAssetCount, item.RebootWaitingCount, item.RolledBackAssetCount,
-		patchRaw, shadowRaw, item.CreatedAt, item.BridgedAt, item.ClosedAt, item.UpdatedAt,
+		patchRaw, shadowRaw, cloneProvingRaw, item.CreatedAt, item.BridgedAt, item.ClosedAt, item.UpdatedAt,
 	)
 	return err
 }
@@ -500,11 +525,11 @@ func (s *Store) ListRemediations(ctx context.Context) ([]models.RemediationItem,
 		       stateless_passed, schema_diff_passed, syscall_diff_passed,
 		       twin_replay_status, assurance_tier, pod_sweep_matched, pod_sweep_total,
 		       lockout_policy_id, bridge_id, bridge_sla_minutes, attestation_id,
-		       finder_vendor, vendor_detection_id, cve_mapping_status, normalized_detection_state,
+		       finder_vendor, vendor_detection_id, cve_mapping_status, class_binding_status, patch_target_layer, normalized_detection_state,
 		       asset_identity_json, first_seen_at, last_seen_at,
 		       distributor_id, latest_order_id, closure_completeness,
 		       targeted_asset_count, landed_asset_count, failed_asset_count, pending_asset_count, reboot_waiting_count, rolled_back_asset_count,
-		       patch_metadata, shadow_report, created_at, bridged_at, closed_at, updated_at
+		       patch_metadata, shadow_report, clone_twin_proving_json, created_at, bridged_at, closed_at, updated_at
 		FROM remediation_items ORDER BY updated_at DESC, created_at DESC
 	`)
 	if err != nil {
@@ -514,7 +539,7 @@ func (s *Store) ListRemediations(ctx context.Context) ([]models.RemediationItem,
 	out := []models.RemediationItem{}
 	for rows.Next() {
 		var r models.RemediationItem
-		var patchRaw, shadowRaw, assetIdentRaw []byte
+		var patchRaw, shadowRaw, assetIdentRaw, cloneProvingRaw []byte
 		if err := rows.Scan(
 			&r.RemediationID, &r.RemediationKind, &r.CVEID, &r.CWEID, &r.IsKEV, &r.ChainedExploitEnabler, &r.CVSSScore, &r.ServiceID, &r.WarrantID,
 			&r.SecretResourceName, &r.VulnerableDigest, &r.PatchedDigest, &r.PackagePURL, &r.VulnerableSymbol, &r.ExploitVector,
@@ -522,11 +547,11 @@ func (s *Store) ListRemediations(ctx context.Context) ([]models.RemediationItem,
 			&r.StatelessPassed, &r.SchemaDiffPassed, &r.SyscallPassed,
 			&r.TwinReplayStatus, &r.AssuranceTier, &r.PodSweepMatched, &r.PodSweepTotal,
 			&r.LockoutPolicyID, &r.BridgeID, &r.BridgeSLAMIN, &r.AttestationID,
-			&r.FinderVendor, &r.VendorDetectionID, &r.CVEMappingStatus, &r.NormalizedDetectionState,
+			&r.FinderVendor, &r.VendorDetectionID, &r.CVEMappingStatus, &r.ClassBindingStatus, &r.PatchTargetLayer, &r.NormalizedDetectionState,
 			&assetIdentRaw, &r.FirstSeenAt, &r.LastSeenAt,
 			&r.DistributorID, &r.LatestOrderID, &r.ClosureCompleteness,
 			&r.TargetedAssetCount, &r.LandedAssetCount, &r.FailedAssetCount, &r.PendingAssetCount, &r.RebootWaitingCount, &r.RolledBackAssetCount,
-			&patchRaw, &shadowRaw, &r.CreatedAt, &r.BridgedAt, &r.ClosedAt, &r.UpdatedAt,
+			&patchRaw, &shadowRaw, &cloneProvingRaw, &r.CreatedAt, &r.BridgedAt, &r.ClosedAt, &r.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -546,6 +571,12 @@ func (s *Store) ListRemediations(ctx context.Context) ([]models.RemediationItem,
 			var sr models.ShadowComparisonReport
 			if json.Unmarshal(shadowRaw, &sr) == nil {
 				r.ShadowReport = &sr
+			}
+		}
+		if len(cloneProvingRaw) > 0 {
+			var ctp models.CloneTwinProvingManifest
+			if json.Unmarshal(cloneProvingRaw, &ctp) == nil {
+				r.CloneTwinProving = &ctp
 			}
 		}
 		out = append(out, r)

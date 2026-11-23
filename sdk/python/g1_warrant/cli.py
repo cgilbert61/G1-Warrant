@@ -42,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--signer-key", type=Path, default=None, help="Active principal .priv.json for 1-of-2 DSSE emergency/governance actions")
     parser.add_argument("--operator-token", default=None, help="Optional WARRANT_OPERATOR_TOKEN (simulator dev mode)")
     parser.add_argument("--automation-token", default=None, help="Optional WARRANT_AUTOMATION_TOKEN for feeds/checkpoints")
+    parser.add_argument("--intake-token", default=None, help="Optional WARRANT_INTAKE_TOKEN for zero-signature scanner intake")
     parser.add_argument("--json", action="store_true", help="Emit JSON output")
     parser.add_argument("--version", action="version", version=f"g1-warrant-sdk v{__version__}")
 
@@ -98,14 +99,16 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("exceptions", help="List Four-Eyes Ceiling Exceptions")
     sub.add_parser("attestations", help="List signed NIST OSCAL 1.1.2 POA&M closure attestations")
 
-    p_sarif = sub.add_parser("intake-sarif", help="Submit an untrusted SARIF 2.1.0 report into G1-Warrant")
+    p_sarif = sub.add_parser("intake-sarif", help="Submit an untrusted SARIF 2.1.0 report into G1-Warrant (token-only, zero signer keys)")
     p_sarif.add_argument("sarif_file", type=Path)
     p_sarif.add_argument("--service", default=None)
     p_sarif.add_argument("--profile", default=None)
+    p_sarif.add_argument("--intake-token", dest="sub_intake_token", default=None)
 
-    p_secrets = sub.add_parser("intake-secrets", help="Submit Gitleaks/GitGuardian secret-exposure scan for SECRET-ROTATION-STATELESS")
+    p_secrets = sub.add_parser("intake-secrets", help="Submit Gitleaks/GitGuardian secret-exposure scan (token-only, zero signer keys)")
     p_secrets.add_argument("scan_file", type=Path)
     p_secrets.add_argument("--service", default=None)
+    p_secrets.add_argument("--intake-token", dest="sub_intake_token", default=None)
 
     p_sim = sub.add_parser("simulate", help="Trigger a deterministic control-plane scenario")
     p_sim.add_argument(
@@ -163,11 +166,12 @@ def main(argv: list[str] | None = None) -> int:
     p_aud_vault = sub.add_parser("auditor-vault", help="Inspect the read-only /auditor vault with a g1aud_* token")
     p_aud_vault.add_argument("--token", default=None)
 
-    p_fintake = sub.add_parser("finder-intake", help="Submit Qualys VMDR, Tenable.io/sc, or Rapid7 InsightVM findings (WN-7)")
+    p_fintake = sub.add_parser("finder-intake", help="Submit Qualys VMDR, Tenable.io/sc, or Rapid7 InsightVM findings (WN-7, token-only)")
     p_fintake.add_argument("vendor", choices=["qualys", "tenable", "rapid7"])
     p_fintake.add_argument("report_file", type=Path)
     p_fintake.add_argument("--service", default=None)
     p_fintake.add_argument("--distributor", default=None)
+    p_fintake.add_argument("--intake-token", dest="sub_intake_token", default=None)
 
     p_dist = sub.add_parser("distributors", help="List WN-8 patch distributors, orders, results, or trigger native rollback")
     p_dist.add_argument("action", choices=["list", "orders", "results", "aliases", "rollback"])
@@ -207,10 +211,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         global_signer = _load_priv_key(args.signer_key)
+        effective_intake_tok = getattr(args, "sub_intake_token", None) or args.intake_token
         cli = WarrantClient(
             base_url=args.url,
             operator_token=args.operator_token,
             automation_token=args.automation_token,
+            intake_token=effective_intake_tok,
             signer_bundle=global_signer,
         )
 

@@ -12,7 +12,7 @@ G1-Warrant ships with two first-class client SDKs and two command-line interface
 ### Installation
 
 ```bash
-go get github.com/cgilbert61/G1-Warrant/pkg/warrantsdk@v1.2.1
+go get github.com/cgilbert61/G1-Warrant/pkg/warrantsdk@v1.3.0
 ```
 
 ### Programmatic Go Example
@@ -138,7 +138,7 @@ Production SDKs and CLIs ship **zero built-in demo signers**. Operators generate
 | `warrant estate` / `warrant shadow` | Inspect 3-Tier Graduated Fleet Autonomy Scorecard (5 mandatory gates incl. `readOnlyRootFilesystem` + `noexec /tmp`) and Differential Shadow canary reports. |
 | `warrant bridges` / `warrant lockouts` / `warrant drift` | Inspect Zero-Prose vs. Signed-Rulepack shields (`169.254.169.254` metadata quarantine), `ValidatingAdmissionPolicy` lockouts, and Tetragon/image drift events. |
 | `warrant simulate <scenario>` | Run deterministic drills (`simulator` + `offline` mode only; disabled on `kubernetes` or `live` feeds). |
-| `warrant intake [sarif\|secrets\|qualys\|tenable\|rapid7] <file> [--service <id>] [--distributor <id>]` | Submit untrusted `SARIF 2.1.0`, Gitleaks secrets, Qualys VMDR (XML/JSON), Tenable.io/sc, or Rapid7 InsightVM scans (`WN-7` zero-egress prose stripping + fail-visible `UNMAPPED_VENDOR_ADVISORY` handling). |
+| `warrant intake [sarif\|secrets\|qualys\|tenable\|rapid7] <file> --intake-token <tok> [--service <id>] [--distributor <id>]` | Submit untrusted `SARIF 2.1.0`, Gitleaks secrets, Qualys VMDR (XML/JSON), Tenable.io/sc, or Rapid7 InsightVM scans using **only** `X-Warrant-Intake-Token` (`WARRANT_INTAKE_TOKEN`) — zero signer keys or Standing Warrant prerequisites (`v1.3.0`). |
 | `warrant distributors [list \| orders \| results \| aliases \| dispatch \| rollback <order-id>]` | Inspect all 15 `WN-8` patch distributors, WORM pre-recorded `DeploymentOrder` / `NativeRollbackSpec` records, per-asset `DeploymentResult` closure counts, or trigger symmetric native rollback (`v1.2.0`). |
 | `warrant feeds [status \| mode \| sync-kev \| sync-osv \| ingest-osv] [--automation-token <tok>]` | Toggle `offline` vs `live` feeds and sync real CISA KEV & Google OSV.dev advisories (`WARRANT_AUTOMATION_TOKEN` or `1-of-2` DSSE). |
 | `warrant freeze [hold \| rollback --key <k.priv.json> \| thaw --slot1-key <so> --slot2-key <ao>]` | Trigger request-scoped `1-of-2` emergency freeze/rollback or `freeze_epoch`-bound `2-of-2` DSSE fleet thaw. |

@@ -200,10 +200,11 @@ func TestInvariant15_WN7FinderTranslatorsAndFailVisibleUnmappedAdvisories(t *tes
 		t.Fatalf("unexpected unmapped Qualys fields: cve=%s status=%s", unmappedQualys.CVEID, unmappedQualys.CVEMappingStatus)
 	}
 	if unmappedQualys.Stage != models.StageBridgedContained ||
-		unmappedQualys.StatusHealth != models.HealthExceptionRouted ||
+		unmappedQualys.StatusHealth != models.HealthBridged ||
+		unmappedQualys.ClassBindingStatus != models.ClassBindingStatusUnbound ||
 		unmappedQualys.BlockerCode != "UNMAPPED_FINDING_REQUIRES_CLASS_BINDING" ||
 		unmappedQualys.BridgeID == "" {
-		t.Fatalf("expected unmapped QID-99101 to arm bridge and route fail-visibly with UNMAPPED_FINDING_REQUIRES_CLASS_BINDING, got %+v", unmappedQualys)
+		t.Fatalf("expected unmapped QID-99101 to arm bridge passively (StatusHealth=BRIDGED, ClassBindingStatus=UNBOUND) with UNMAPPED_FINDING_REQUIRES_CLASS_BINDING, got %+v", unmappedQualys)
 	}
 
 	// Also test Qualys JSON v2 format
@@ -336,19 +337,15 @@ func TestInvariant15_WN7FinderTranslatorsAndFailVisibleUnmappedAdvisories(t *tes
 		t.Fatalf("expected Rapid7 unmapped check to route fail-visibly with UNMAPPED_FINDING_REQUIRES_CLASS_BINDING, got %+v", r7Items[1])
 	}
 
-	// Verify Four-Eyes Action Inbox contains all 3 unmapped vendor advisories
+	// Verify v1.3.0 Zero-Signature Intake Doctrine: unmapped vendor advisories NEVER create PENDING_DUAL_KEY Four-Eyes exceptions at ingest!
 	exceptions, err := cli.ListExceptions(ctx)
 	if err != nil {
 		t.Fatalf("ListExceptions: %v", err)
 	}
-	unmappedExCount := 0
 	for _, ex := range exceptions {
-		if ex.TriggerCode == "UNMAPPED_FINDING_REQUIRES_CLASS_BINDING" && ex.Status == "PENDING_DUAL_KEY" {
-			unmappedExCount++
+		if ex.TriggerCode == "UNMAPPED_FINDING_REQUIRES_CLASS_BINDING" {
+			t.Fatalf("DOCTRINE VIOLATION: unmapped vendor advisory created Four-Eyes exception %+v at ingest", ex)
 		}
-	}
-	if unmappedExCount != 3 {
-		t.Fatalf("expected 3 PENDING_DUAL_KEY exceptions for unmapped Qualys/Tenable/Rapid7 detections, got %d", unmappedExCount)
 	}
 
 	// -------------------------------------------------------------------------

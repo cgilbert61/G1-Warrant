@@ -181,6 +181,7 @@ func (e *Engine) SubmitDualSignedWarrant(ctx context.Context, env crypto.Envelop
 		StageDwellSeconds:      wp.StageDwellSeconds,
 		SLABridgeMinutes:       wp.SLABridgeMinutes,
 		MaxP99LatencyMs:        wp.MaxP99LatencyMs,
+		CloneTwinCount:         max(wp.CloneTwinCount, models.DefaultCloneTwinCount),
 		IssuedAt:               issuedAt,
 		ExpiresAt:              expiresAt,
 		DSSEEnvelope:           env,

@@ -73,12 +73,43 @@ secret_rotation_valid if {
 	secret_hashes_distinct_and_nonempty
 }
 
+# v1.3.0 Runtime-Follows-Patch & 3-Clone Proving Ground Enforcement
+patch_layer := trim_space(object.get(input, "patch_target_layer", "USERSPACE_SOFTWARE"))
+twin_runtime := trim_space(object.get(input, "twin_runtime", "CONTAINER_TWIN"))
+
+kernel_or_boot_patch if {
+	patch_layer in {"KERNEL", "BOOT_LAYER"}
+}
+
+runtime_matches_patch_layer if {
+	not kernel_or_boot_patch
+}
+
+runtime_matches_patch_layer if {
+	kernel_or_boot_patch
+	twin_runtime == "VM_TWIN"
+}
+
+clone_twin_valid if {
+	object.get(input, "clone_twin_proving_present", false) != true
+	runtime_matches_patch_layer
+}
+
+clone_twin_valid if {
+	object.get(input, "clone_twin_proving_present", false) == true
+	runtime_matches_patch_layer
+	object.get(input, "clone_twin_count", 0) >= 1
+	object.get(input, "clone_twin_all_passed", false) == true
+}
+
 closure_evidence_valid if {
 	differential_twin_valid
+	clone_twin_valid
 }
 
 closure_evidence_valid if {
 	passive_sbom_valid
+	clone_twin_valid
 }
 
 # Honest Assurance Tiering: distributors lacking per-asset reporting are capped at ASSURANCE_TIER_0_DISTRIBUTOR_DISPATCH_ONLY
@@ -181,6 +212,17 @@ blockers contains "ADMISSION_LOCKOUT_NOT_ENFORCED" if {
 
 blockers contains "N1_WARRANT_REVERIFY_FAILED" if {
 	input.warrant_reverified != true
+}
+
+blockers contains "KERNEL_PATCH_REQUIRES_VM_TWIN_RUNTIME" if {
+	not is_secret_rotation
+	not runtime_matches_patch_layer
+}
+
+blockers contains "CLONE_TWIN_PROVING_FAILED" if {
+	not is_secret_rotation
+	object.get(input, "clone_twin_proving_present", false) == true
+	not clone_twin_valid
 }
 
 allow_bridge_retirement if {

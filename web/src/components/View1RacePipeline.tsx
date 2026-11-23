@@ -28,6 +28,13 @@ interface View1RacePipelineProps {
   isLiveFeedMode?: boolean;
   nowMs: number;
   onSimulate: (scenario: 'inject-kev' | 'bad-syscall' | 'stateful-ddl' | 'runtime-drift') => Promise<void>;
+  onSubmitIntake?: (
+    vendor: 'qualys' | 'tenable' | 'rapid7' | 'sarif',
+    rawPayload: string,
+    intakeToken: string,
+    targetService: string,
+    distributorId: string
+  ) => Promise<RemediationItem[]>;
   onEmergencyRollback: (remediationId: string, reason: string) => Promise<void>;
   onJumpToExceptions: () => void;
 }
@@ -53,6 +60,7 @@ export const View1RacePipeline: React.FC<View1RacePipelineProps> = ({
   isLiveFeedMode = false,
   nowMs,
   onSimulate,
+  onSubmitIntake,
   onEmergencyRollback,
   onJumpToExceptions,
 }) => {
@@ -64,6 +72,58 @@ export const View1RacePipeline: React.FC<View1RacePipelineProps> = ({
   const [rollbackBusy, setRollbackBusy] = useState(false);
   const [rollbackError, setRollbackError] = useState<string | null>(null);
   const [rollbackNotice, setRollbackNotice] = useState<string | null>(null);
+
+  const [showIntakePanel, setShowIntakePanel] = useState(false);
+  const [intakeVendor, setIntakeVendor] = useState<'qualys' | 'tenable' | 'rapid7' | 'sarif'>('qualys');
+  const [intakeToken, setIntakeToken] = useState<string>(() => sessionStorage.getItem('g1_intake_token') || '');
+  const [intakeService, setIntakeService] = useState('payments-ledger-api');
+  const [intakeDistributor, setIntakeDistributor] = useState('');
+  const [intakePayload, setIntakePayload] = useState(
+    '{"hosts":[{"service_id":"payments-ledger-api","asset_key":"win-pay-01","ip":"10.42.8.15","detections":[{"qid":379501,"severity":5,"cvss3_base":9.8,"status":"Active","cisa_kev":true,"cves":["CVE-2026-71001"]},{"qid":99401,"severity":5,"cvss3_base":9.1,"status":"New","cves":[]}]}]}'
+  );
+  const [intakeBusy, setIntakeBusy] = useState(false);
+  const [intakeError, setIntakeError] = useState<string | null>(null);
+  const [intakeSuccess, setIntakeSuccess] = useState<string | null>(null);
+
+  const loadSamplePayload = (vendor: 'qualys' | 'tenable' | 'rapid7' | 'sarif') => {
+    setIntakeVendor(vendor);
+    if (vendor === 'qualys') {
+      setIntakePayload(
+        '{"hosts":[{"service_id":"payments-ledger-api","asset_key":"win-pay-01","ip":"10.42.8.15","detections":[{"qid":379501,"severity":5,"cvss3_base":9.8,"status":"Active","cisa_kev":true,"cves":["CVE-2026-71001"]},{"qid":99401,"severity":5,"cvss3_base":9.1,"status":"New","cves":[]}]}]}'
+      );
+    } else if (vendor === 'tenable') {
+      setIntakePayload(
+        '{"findings":[{"state":"OPEN","severity":"critical","asset":{"ipv4":"10.42.8.22","hostname":"payments-ledger-api"},"plugin":{"id":195201,"cve":["CVE-2026-71002"],"cwe":["CWE-787"],"cvss3_base_score":9.6,"cisa_known_exploited":true}}]}'
+      );
+    } else if (vendor === 'rapid7') {
+      setIntakePayload(
+        '{"resources":[{"id":5001,"hostName":"identity-sso-gateway","ip":"10.42.9.10","vulnerabilities":[{"id":"r7-cve-2026-71003","status":"vulnerable","cves":["CVE-2026-71003"],"cwe":"CWE-287","cisaKev":true,"cvss":{"v3":{"score":9.3}}}]}]}'
+      );
+    } else {
+      setIntakePayload(
+        '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"Trivy"}},"results":[{"ruleId":"CVE-2026-71004","level":"error","properties":{"cve_id":"CVE-2026-71004","cwe_id":"CWE-787","cvss_score":9.8,"is_kev":true,"service_id":"payments-ledger-api","exploit_vector":"TLS_HEARTBEAT","affected_port":8443}}]}]}'
+      );
+    }
+  };
+
+  const handleTokenOnlyIntakeSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!onSubmitIntake) return;
+    setIntakeBusy(true);
+    setIntakeError(null);
+    setIntakeSuccess(null);
+    try {
+      sessionStorage.setItem('g1_intake_token', intakeToken);
+      const items = await onSubmitIntake(intakeVendor, intakePayload, intakeToken, intakeService, intakeDistributor);
+      setIntakeSuccess(
+        `Ingested ${items.length} typed finding(s) via token-only /api/v1/intake/${intakeVendor} (0 human signatures required).`
+      );
+    } catch (err) {
+      setIntakeError(err instanceof Error ? err.message : 'Scanner intake failed');
+    } finally {
+      setIntakeBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (!selectedItem) return;
@@ -173,50 +233,190 @@ export const View1RacePipeline: React.FC<View1RacePipelineProps> = ({
             </button>
           </div>
 
-          {/* Interactive Live Simulation Triggers (Hidden when Feed Mode is LIVE) */}
-          {!isLiveFeedMode ? (
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-[11px] font-mono uppercase text-slate-500 mr-1">Live Fleet Drills:</span>
+          {/* Token-Only Finder Intake Button + Optional Simulator Fault Drills */}
+          <div className="flex flex-wrap items-center gap-2">
+            {onSubmitIntake && (
               <button
                 type="button"
-                disabled={simRunning !== null}
-                onClick={() => runSim('inject-kev')}
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-emerald-700 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold disabled:opacity-50"
+                onClick={() => setShowIntakePanel((v) => !v)}
+                aria-expanded={showIntakePanel}
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded border border-blue-700 bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold"
               >
-                <Play className="w-3 h-3" />
-                {simRunning === 'inject-kev' ? 'Running Closure...' : 'Inject KEV SARIF'}
+                <span>{showIntakePanel ? 'Close Scanner Intake' : 'Ingest Scanner Export (Token-Only)'}</span>
               </button>
-              <button
-                type="button"
-                disabled={simRunning !== null}
-                onClick={() => runSim('bad-syscall')}
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-red-300 bg-red-50 hover:bg-red-100 text-red-950 text-xs font-semibold disabled:opacity-50"
-              >
-                {simRunning === 'bad-syscall' ? 'Testing Canary...' : 'Trigger Bad Syscall Patch'}
-              </button>
-              <button
-                type="button"
-                disabled={simRunning !== null}
-                onClick={() => runSim('stateful-ddl')}
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-950 text-xs font-semibold disabled:opacity-50"
-              >
-                {simRunning === 'stateful-ddl' ? 'Routing...' : 'Trigger Stateful DDL'}
-              </button>
-              <button
-                type="button"
-                disabled={simRunning !== null}
-                onClick={() => runSim('runtime-drift')}
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-800 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold disabled:opacity-50"
-              >
-                {simRunning === 'runtime-drift' ? 'Injecting Drift...' : 'Simulate Runtime Drift'}
-              </button>
-            </div>
-          ) : (
-            <div className="text-[11px] font-mono font-semibold px-2.5 py-1 rounded border border-emerald-300 bg-emerald-50 text-emerald-950">
-              LIVE FEED POSTURE ACTIVE · FAULT-INJECTION DRILLS DISABLED
-            </div>
-          )}
+            )}
+
+            {!isLiveFeedMode ? (
+              <div className="flex flex-wrap items-center gap-1.5 pl-2 border-l border-slate-200">
+                <span className="text-[11px] font-mono uppercase text-slate-600 mr-1">Simulator Fault Drills:</span>
+                <button
+                  type="button"
+                  disabled={simRunning !== null}
+                  onClick={() => runSim('inject-kev')}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-emerald-700 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold disabled:opacity-50"
+                >
+                  <Play className="w-3 h-3" />
+                  {simRunning === 'inject-kev' ? 'Running Drill...' : 'Drill: KEV Closure'}
+                </button>
+                <button
+                  type="button"
+                  disabled={simRunning !== null}
+                  onClick={() => runSim('bad-syscall')}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-red-300 bg-red-50 hover:bg-red-100 text-red-950 text-xs font-semibold disabled:opacity-50"
+                >
+                  {simRunning === 'bad-syscall' ? 'Testing Canary...' : 'Drill: Bad Syscall'}
+                </button>
+                <button
+                  type="button"
+                  disabled={simRunning !== null}
+                  onClick={() => runSim('stateful-ddl')}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-950 text-xs font-semibold disabled:opacity-50"
+                >
+                  {simRunning === 'stateful-ddl' ? 'Routing...' : 'Drill: Stateful DDL'}
+                </button>
+                <button
+                  type="button"
+                  disabled={simRunning !== null}
+                  onClick={() => runSim('runtime-drift')}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-800 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold disabled:opacity-50"
+                >
+                  {simRunning === 'runtime-drift' ? 'Injecting Drift...' : 'Drill: Runtime Drift'}
+                </button>
+              </div>
+            ) : (
+              <div className="text-[11px] font-mono font-semibold px-2.5 py-1 rounded border border-emerald-300 bg-emerald-50 text-emerald-950">
+                LIVE FEED POSTURE ACTIVE · FAULT-INJECTION DRILLS DISABLED
+              </div>
+            )}
+          </div>
         </div>
+
+        {showIntakePanel && onSubmitIntake && (
+          <form
+            onSubmit={handleTokenOnlyIntakeSubmit}
+            aria-label="Token-Only Scanner Export Intake Form"
+            className="border-t border-slate-200 pt-3 mt-2 space-y-2.5 bg-slate-50 p-3 rounded"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-xs font-bold text-slate-900">
+                WN-7 Zero-Signature Scanner Intake (`POST /api/v1/intake/{intakeVendor}` · `X-Warrant-Intake-Token` Only)
+              </div>
+              <span className="text-[11px] font-mono text-slate-600">
+                Zero Dual-Key · Zero WebAuthn · Zero Standing Warrant Prerequisite at Arrival
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-2.5">
+              <div>
+                <label htmlFor="intake-vendor-select" className="block text-[11px] font-semibold text-slate-700 mb-1">
+                  Scanner Format
+                </label>
+                <select
+                  id="intake-vendor-select"
+                  value={intakeVendor}
+                  onChange={(e) => loadSamplePayload(e.target.value as 'qualys' | 'tenable' | 'rapid7' | 'sarif')}
+                  className="w-full text-xs border border-slate-300 rounded px-2 py-1.5 bg-white text-slate-900"
+                >
+                  <option value="qualys">Qualys VMDR (XML / JSON)</option>
+                  <option value="tenable">Tenable.io / Tenable.sc (JSON)</option>
+                  <option value="rapid7">Rapid7 InsightVM v3 (JSON)</option>
+                  <option value="sarif">SARIF 2.1.0 (Trivy / Semgrep)</option>
+                </select>
+              </div>
+
+              <div>
+                <label htmlFor="intake-token-input" className="block text-[11px] font-semibold text-slate-700 mb-1">
+                  X-Warrant-Intake-Token
+                </label>
+                <input
+                  id="intake-token-input"
+                  type="password"
+                  value={intakeToken}
+                  onChange={(e) => setIntakeToken(e.target.value)}
+                  placeholder="Optional in offline sandbox; required in live/K8s"
+                  className="w-full text-xs font-mono border border-slate-300 rounded px-2 py-1.5 bg-white text-slate-900"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="intake-service-input" className="block text-[11px] font-semibold text-slate-700 mb-1">
+                  Target Service Override
+                </label>
+                <input
+                  id="intake-service-input"
+                  type="text"
+                  value={intakeService}
+                  onChange={(e) => setIntakeService(e.target.value)}
+                  className="w-full text-xs font-mono border border-slate-300 rounded px-2 py-1.5 bg-white text-slate-900"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="intake-file-upload" className="block text-[11px] font-semibold text-slate-700 mb-1">
+                  Load Export File (XML/JSON)
+                </label>
+                <input
+                  id="intake-file-upload"
+                  type="file"
+                  accept=".xml,.json,.sarif"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (!f) return;
+                    f.text().then((txt) => setIntakePayload(txt));
+                  }}
+                  className="w-full text-xs text-slate-700"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label htmlFor="intake-payload-textarea" className="block text-[11px] font-semibold text-slate-700 mb-1">
+                Raw Untrusted Scanner Export (Terminates in Zero-Egress warrant-extractor)
+              </label>
+              <textarea
+                id="intake-payload-textarea"
+                rows={3}
+                value={intakePayload}
+                onChange={(e) => setIntakePayload(e.target.value)}
+                className="w-full text-[11px] font-mono border border-slate-300 rounded p-2 bg-white text-slate-900"
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <label htmlFor="intake-distributor-input" className="text-[11px] font-semibold text-slate-700">
+                  Optional Distributor ID:
+                </label>
+                <input
+                  id="intake-distributor-input"
+                  type="text"
+                  value={intakeDistributor}
+                  onChange={(e) => setIntakeDistributor(e.target.value)}
+                  placeholder="e.g. ms-intune, ansible-awx (leave blank to hold at Bridged)"
+                  className="text-xs font-mono border border-slate-300 rounded px-2 py-1 bg-white text-slate-900 w-72"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={intakeBusy || !intakePayload.trim()}
+                className="px-3 py-1.5 rounded bg-blue-700 hover:bg-blue-800 text-white text-xs font-bold disabled:opacity-50"
+              >
+                {intakeBusy ? 'Sanitizing & Ingesting...' : `Submit ${intakeVendor.toUpperCase()} Intake`}
+              </button>
+            </div>
+
+            {intakeError && (
+              <div role="alert" className="text-xs font-mono bg-red-50 border border-red-300 text-red-900 px-3 py-1.5 rounded">
+                INTAKE_ERROR: {intakeError}
+              </div>
+            )}
+            {intakeSuccess && (
+              <div role="status" className="text-xs font-mono bg-emerald-50 border border-emerald-300 text-emerald-950 px-3 py-1.5 rounded">
+                {intakeSuccess}
+              </div>
+            )}
+          </form>
+        )}
 
         {simError && (
           <div role="alert" className="text-xs font-mono bg-red-50 border border-red-300 text-red-900 px-3 py-1.5 rounded">

@@ -10,7 +10,7 @@ import (
 )
 
 // Version is the semantic version of the G1-Warrant Go SDK.
-const Version = "1.2.1"
+const Version = "1.3.0"
 
 // Trust-basis identifiers emitted by offline OSCAL bundle verifiers (WN-4).
 const (
@@ -98,6 +98,19 @@ const (
 
 	CVEMappingStatusMapped         = models.CVEMappingStatusMapped
 	CVEMappingStatusUnmappedVendor = models.CVEMappingStatusUnmappedVendor
+	CVEMappingStatusAbsent         = models.CVEMappingStatusAbsent
+
+	ClassBindingStatusBound   = models.ClassBindingStatusBound
+	ClassBindingStatusUnbound = models.ClassBindingStatusUnbound
+
+	PatchTargetLayerUserspace = models.PatchTargetLayerUserspace
+	PatchTargetLayerKernel    = models.PatchTargetLayerKernel
+	PatchTargetLayerBoot      = models.PatchTargetLayerBoot
+
+	TwinRuntimeContainer = models.TwinRuntimeContainer
+	TwinRuntimeVM        = models.TwinRuntimeVM
+
+	DefaultCloneTwinCount = models.DefaultCloneTwinCount
 
 	ClosureCompletenessFull         = models.ClosureCompletenessFull
 	ClosureCompletenessPartial      = models.ClosureCompletenessPartial
@@ -178,6 +191,8 @@ type (
 	DeploymentResult            = models.DeploymentResult
 	DistributorCapabilities     = models.DistributorCapabilities
 	DistributorDescriptor       = models.DistributorDescriptor
+	CloneTwinInstanceResult     = models.CloneTwinInstanceResult
+	CloneTwinProvingManifest    = models.CloneTwinProvingManifest
 )
 
 // APIError represents a structured non-2xx HTTP response from warrantd.

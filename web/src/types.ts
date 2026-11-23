@@ -231,7 +231,16 @@ export interface RemediationItem {
   vulnerable_symbol: string;
   exploit_vector: string;
   stage: 'INTAKE_REPRO' | 'BRIDGED_CONTAINED' | 'SHADOW_CANARY' | 'VERIFYING_LOCKING' | 'ATTESTED_CLOSED';
-  status_health: 'NORMAL' | 'BRIDGED' | 'EXCEPTION_ROUTED' | 'ROLLBACK_FAILED' | 'QUARANTINED_ROLLBACK' | 'DRIFT_VIOLATION' | 'FROZEN' | 'ATTESTED';
+  status_health:
+    | 'NORMAL'
+    | 'BRIDGED'
+    | 'INGESTED_UNBOUND'
+    | 'EXCEPTION_ROUTED'
+    | 'ROLLBACK_FAILED'
+    | 'QUARANTINED_ROLLBACK'
+    | 'DRIFT_VIOLATION'
+    | 'FROZEN'
+    | 'ATTESTED';
   blocker_code?: string;
   canary_weight: number;
   stateless_passed: boolean | null;
@@ -247,7 +256,22 @@ export interface RemediationItem {
   attestation_id?: string;
   finder_vendor?: string;
   vendor_detection_id?: string;
-  cve_mapping_status?: 'MAPPED' | 'UNMAPPED_VENDOR_ADVISORY' | string;
+  cve_mapping_status?: 'MAPPED' | 'UNMAPPED_VENDOR_ADVISORY' | 'ABSENT' | string;
+  class_binding_status?: 'BOUND' | 'UNBOUND' | string;
+  patch_target_layer?: 'USERSPACE_SOFTWARE' | 'KERNEL' | 'BOOT_LAYER' | string;
+  clone_twin_proving?: {
+    proving_run_id: string;
+    proving_namespace: string;
+    twin_runtime: string;
+    patch_target_layer: string;
+    clone_count: number;
+    services_up_count: number;
+    smoke_passed_count: number;
+    acceptance_passed_count: number;
+    all_passed: boolean;
+    failure_reason_code?: string;
+    transcript_sha256: string;
+  };
   normalized_detection_state?: string;
   asset_identity?: AssetIdentity;
   distributor_id?: string;

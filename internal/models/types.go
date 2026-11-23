@@ -26,12 +26,28 @@ const (
 const (
 	HealthNormal              = "NORMAL"
 	HealthBridged             = "BRIDGED"
+	HealthIngestedUnbound     = "INGESTED_UNBOUND"
 	HealthExceptionRouted     = "EXCEPTION_ROUTED"
 	HealthRollbackFailed      = "ROLLBACK_FAILED"
 	HealthQuarantinedRollback = "QUARANTINED_ROLLBACK"
 	HealthDriftViolation      = "DRIFT_VIOLATION"
 	HealthFrozen              = "FROZEN"
 	HealthAttested            = "ATTESTED"
+)
+
+// v1.3.0 Class-Binding & Clone-Twin Runtime-Follows-Patch Constants
+const (
+	ClassBindingStatusBound   = "BOUND"
+	ClassBindingStatusUnbound = "UNBOUND"
+
+	PatchTargetLayerUserspace = "USERSPACE_SOFTWARE"
+	PatchTargetLayerKernel    = "KERNEL"
+	PatchTargetLayerBoot      = "BOOT_LAYER"
+
+	TwinRuntimeContainer = "CONTAINER_TWIN"
+	TwinRuntimeVM        = "VM_TWIN"
+
+	DefaultCloneTwinCount = 3
 )
 
 // Autonomy Tiers for Brownfield vs. Greenfield Estate Services (N2)
@@ -68,6 +84,7 @@ const (
 
 	CVEMappingStatusMapped         = "MAPPED"
 	CVEMappingStatusUnmappedVendor = "UNMAPPED_VENDOR_ADVISORY"
+	CVEMappingStatusAbsent         = "ABSENT"
 
 	DetectionStateActive        = "ACTIVE"
 	DetectionStateReopened      = "REOPENED"
@@ -418,6 +435,7 @@ type WarrantPayload struct {
 	AutoRemediateCWEs          []string `json:"auto_remediate_cwes,omitempty"`
 	MinCanarySamples           int      `json:"min_canary_samples,omitempty"`
 	StageDwellSeconds          int      `json:"stage_dwell_seconds,omitempty"`
+	CloneTwinCount             int      `json:"clone_twin_count,omitempty"`
 	SLABridgeMinutes           int      `json:"sla_bridge_minutes"`
 	MaxP99LatencyMs            float64  `json:"max_p99_latency_ms"`
 	IssuedAt                   string   `json:"issued_at"`
@@ -440,6 +458,7 @@ type WarrantRecord struct {
 	AutoRemediateCWEs      []string        `json:"auto_remediate_cwes,omitempty"`
 	MinCanarySamples       int             `json:"min_canary_samples"`
 	StageDwellSeconds      int             `json:"stage_dwell_seconds"`
+	CloneTwinCount         int             `json:"clone_twin_count,omitempty"`
 	SLABridgeMinutes       int             `json:"sla_bridge_minutes"`
 	MaxP99LatencyMs        float64         `json:"max_p99_latency_ms"`
 	IssuedAt               time.Time       `json:"issued_at"`
@@ -598,22 +617,25 @@ type RemediationItem struct {
 	AttestationID            string                  `json:"attestation_id,omitempty"`
 	FinderVendor             string                  `json:"finder_vendor,omitempty"`
 	VendorDetectionID        string                  `json:"vendor_detection_id,omitempty"`
-	CVEMappingStatus         string                  `json:"cve_mapping_status,omitempty"`
-	NormalizedDetectionState string                  `json:"normalized_detection_state,omitempty"`
-	AssetIdentity            *AssetIdentity          `json:"asset_identity,omitempty"`
-	FirstSeenAt              *time.Time              `json:"first_seen_at,omitempty"`
-	LastSeenAt               *time.Time              `json:"last_seen_at,omitempty"`
-	DistributorID            string                  `json:"distributor_id,omitempty"`
-	LatestOrderID            string                  `json:"latest_order_id,omitempty"`
-	ClosureCompleteness      string                  `json:"closure_completeness,omitempty"`
-	TargetedAssetCount       int                     `json:"targeted_asset_count,omitempty"`
-	LandedAssetCount         int                     `json:"landed_asset_count,omitempty"`
-	FailedAssetCount         int                     `json:"failed_asset_count,omitempty"`
-	PendingAssetCount        int                     `json:"pending_asset_count,omitempty"`
-	RebootWaitingCount       int                     `json:"reboot_waiting_count,omitempty"`
-	RolledBackAssetCount     int                     `json:"rolled_back_asset_count,omitempty"`
-	PatchMetadata            *ExtractedPatchMetadata `json:"patch_metadata,omitempty"`
-	ShadowReport             *ShadowComparisonReport `json:"shadow_report,omitempty"`
+	CVEMappingStatus         string                     `json:"cve_mapping_status,omitempty"`
+	ClassBindingStatus       string                     `json:"class_binding_status,omitempty"`
+	PatchTargetLayer         string                     `json:"patch_target_layer,omitempty"`
+	NormalizedDetectionState string                     `json:"normalized_detection_state,omitempty"`
+	AssetIdentity            *AssetIdentity             `json:"asset_identity,omitempty"`
+	FirstSeenAt              *time.Time                 `json:"first_seen_at,omitempty"`
+	LastSeenAt               *time.Time                 `json:"last_seen_at,omitempty"`
+	DistributorID            string                     `json:"distributor_id,omitempty"`
+	LatestOrderID            string                     `json:"latest_order_id,omitempty"`
+	ClosureCompleteness      string                     `json:"closure_completeness,omitempty"`
+	TargetedAssetCount       int                        `json:"targeted_asset_count,omitempty"`
+	LandedAssetCount         int                        `json:"landed_asset_count,omitempty"`
+	FailedAssetCount         int                        `json:"failed_asset_count,omitempty"`
+	PendingAssetCount        int                        `json:"pending_asset_count,omitempty"`
+	RebootWaitingCount       int                        `json:"reboot_waiting_count,omitempty"`
+	RolledBackAssetCount     int                        `json:"rolled_back_asset_count,omitempty"`
+	PatchMetadata            *ExtractedPatchMetadata    `json:"patch_metadata,omitempty"`
+	ShadowReport             *ShadowComparisonReport    `json:"shadow_report,omitempty"`
+	CloneTwinProving         *CloneTwinProvingManifest  `json:"clone_twin_proving,omitempty"`
 	CreatedAt        time.Time               `json:"created_at"`
 	BridgedAt        *time.Time              `json:"bridged_at,omitempty"`
 	ClosedAt         *time.Time              `json:"closed_at,omitempty"`
@@ -1187,4 +1209,44 @@ type LiveFeedStatus struct {
 	LastKEVSyncAt        *time.Time          `json:"last_kev_sync_at,omitempty"`
 	OSVAdvisories        []ExtractedOSVEntry `json:"osv_advisories"`
 	RecentSyncRuns       []FeedSyncRun       `json:"recent_sync_runs"`
+}
+
+// CloneTwinInstanceResult records readiness, smoke, and authorization-class acceptance checks for a single ephemeral clone.
+type CloneTwinInstanceResult struct {
+	CloneIndex            int     `json:"clone_index"`
+	CloneName             string  `json:"clone_name"`
+	NodeOrHost            string  `json:"node_or_host,omitempty"`
+	PodIP                 string  `json:"pod_ip,omitempty"`
+	RunningDigest         string  `json:"running_digest"`
+	ServiceUpPassed       bool    `json:"service_up_passed"`
+	SmokeTestPassed       bool    `json:"smoke_test_passed"`
+	ClassAcceptancePassed bool    `json:"class_acceptance_passed"`
+	ObservedLatencyMs     float64 `json:"observed_latency_ms"`
+	ExitCode              int     `json:"exit_code"`
+	EvidenceSHA256        string  `json:"evidence_sha256"`
+	LogSummary            string  `json:"log_summary,omitempty"`
+}
+
+// CloneTwinProvingManifest captures the 3-clone isolated proving ground evidence bound into N3, OPA, and OSCAL 1.1.2 POA&M.
+type CloneTwinProvingManifest struct {
+	ProvingRunID          string                    `json:"proving_run_id"`
+	RemediationID         string                    `json:"remediation_id"`
+	ServiceID             string                    `json:"service_id"`
+	WarrantID             string                    `json:"warrant_id"`
+	WarrantClass          string                    `json:"warrant_class"`
+	CVEID                 string                    `json:"cve_id"`
+	CandidateDigest       string                    `json:"candidate_digest"`
+	PatchTargetLayer      string                    `json:"patch_target_layer"` // "USERSPACE_SOFTWARE" | "KERNEL" | "BOOT_LAYER"
+	TwinRuntime           string                    `json:"twin_runtime"`       // "CONTAINER_TWIN" | "VM_TWIN"
+	ProvingNamespace      string                    `json:"proving_namespace"`
+	ZeroProductionEgress  bool                      `json:"zero_production_egress"`
+	CloneCount            int                       `json:"clone_count"`
+	ServicesUpCount       int                       `json:"services_up_count"`
+	SmokePassedCount      int                       `json:"smoke_passed_count"`
+	AcceptancePassedCount int                       `json:"acceptance_passed_count"`
+	AllPassed             bool                      `json:"all_passed"`
+	FailureReasonCode     string                    `json:"failure_reason_code,omitempty"`
+	Clones                []CloneTwinInstanceResult `json:"clones"`
+	TranscriptSHA256      string                    `json:"transcript_sha256"`
+	ProvedAt              time.Time                 `json:"proved_at"`
 }

@@ -286,6 +286,36 @@ export const App: React.FC = () => {
             onSimulate={async (sc) => {
               await postActionJSON(`/api/v1/simulate/${sc}`, {}, 'SIMULATION_DRILL', { scenario: sc });
             }}
+            onSubmitIntake={async (vendor, rawPayload, intakeToken, targetService, distributorId) => {
+              const params = new URLSearchParams();
+              if (targetService) params.set('target_service', targetService);
+              if (distributorId && vendor !== 'sarif') params.set('distributor_id', distributorId);
+              const qs = params.toString() ? `?${params.toString()}` : '';
+              const headers: Record<string, string> = {
+                'Content-Type': vendor === 'qualys' && rawPayload.trim().startsWith('<') ? 'application/xml' : 'application/json',
+              };
+              if (intakeToken.trim()) {
+                headers['X-Warrant-Intake-Token'] = intakeToken.trim();
+              }
+              const resp = await fetch(`/api/v1/intake/${vendor}${qs}`, {
+                method: 'POST',
+                headers,
+                body: rawPayload,
+              });
+              const text = await resp.text();
+              if (!resp.ok) {
+                let msg = text;
+                try {
+                  const errJson = JSON.parse(text);
+                  msg = errJson.error || errJson.reason || text;
+                } catch {
+                  // raw body fallback
+                }
+                throw new Error(msg || `HTTP ${resp.status}`);
+              }
+              await loadBootstrap();
+              return JSON.parse(text);
+            }}
             onEmergencyRollback={async (remId, reason) => {
               await postActionJSON(
                 `/api/v1/pipeline/${remId}/emergency-rollback`,

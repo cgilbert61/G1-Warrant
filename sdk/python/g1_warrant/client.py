@@ -77,7 +77,7 @@ class WarrantClient:
         full_path = f"{self._base_path}{path}"
         conn_cls = http.client.HTTPSConnection if self._scheme == "https" else http.client.HTTPConnection
         conn = conn_cls(self._host, self._port, timeout=self.timeout)
-        headers: dict[str, str] = {"User-Agent": "g1-warrant-python-sdk/1.2.1"}
+        headers: dict[str, str] = {"User-Agent": "g1-warrant-python-sdk/1.3.0"}
         if content_type:
             headers["Content-Type"] = content_type
         tok = (bearer_override if bearer_override is not None else self.auditor_token).strip()
@@ -765,3 +765,21 @@ class WarrantClient:
             payload={"reason_code": reason_code},
             signer_bundle=signer_bundle,
         )
+
+    def bind_remediation_class(
+        self,
+        remediation_id: str,
+        warrant_id: str | None = None,
+        warrant_envelope: dict[str, Any] | None = None,
+        distributor_id: str | None = None,
+        auto_execute: bool = False,
+    ) -> dict[str, Any]:
+        safe_id = urllib.parse.quote(remediation_id, safe="")
+        body: dict[str, Any] = {"auto_execute": auto_execute}
+        if warrant_id:
+            body["warrant_id"] = warrant_id
+        if warrant_envelope is not None:
+            body["warrant_envelope"] = warrant_envelope
+        if distributor_id:
+            body["distributor_id"] = distributor_id
+        return self._request_json("POST", f"/api/v1/remediations/{safe_id}/bind-class", payload=body)

@@ -186,6 +186,126 @@ func (o *ControlPlaneOrchestrator) registerFinderAndDistributorRoutes(mux *http.
 		}
 		writeAPIJSON(w, http.StatusOK, res)
 	})
+
+	// v1.3.0 Item 1 Decoupled Class-Binding Route:
+	// Binds an unbound/unmapped ingested RemediationItem to an active 2-of-2 Standing Warrant class
+	// (either submitting a new 2-of-2 Warrant DSSE envelope or referencing an active 2-of-2 Warrant ID),
+	// strictly decoupling class authorization from X-Warrant-Intake-Token arrival.
+	mux.HandleFunc("POST /api/v1/remediations/{id}/bind-class", func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		remID := strings.TrimSpace(r.PathValue("id"))
+		var req struct {
+			WarrantID       string           `json:"warrant_id,omitempty"`
+			WarrantEnvelope *crypto.Envelope `json:"warrant_envelope,omitempty"`
+			DistributorID   string           `json:"distributor_id,omitempty"`
+			AutoExecute     bool             `json:"auto_execute,omitempty"`
+		}
+		if err := decodeJSONBody(w, r, &req); err != nil {
+			writeAPIError(w, statusForBodyReadError(err), err)
+			return
+		}
+		updated, err := o.BindRemediationToWarrantClass(ctx, remID, req.WarrantID, req.WarrantEnvelope, req.DistributorID, req.AutoExecute)
+		if err != nil {
+			writeAPIError(w, http.StatusUnprocessableEntity, err)
+			return
+		}
+		writeAPIJSON(w, http.StatusOK, updated)
+	})
+}
+
+// BindRemediationToWarrantClass binds an ingested unbound/unmapped finding to a verified 2-of-2 Standing Warrant class
+// (strictly decoupled from ingest) and optionally drives Clone-Twin Proving + rollout.
+func (o *ControlPlaneOrchestrator) BindRemediationToWarrantClass(
+	ctx context.Context,
+	remediationID string,
+	warrantID string,
+	warrantEnvelope *crypto.Envelope,
+	distributorID string,
+	autoExecute bool,
+) (*models.RemediationItem, error) {
+	item, err := o.Store.GetRemediation(ctx, remediationID)
+	if err != nil {
+		return nil, err
+	}
+	svc, err := o.Store.GetEstateService(ctx, item.ServiceID)
+	if err != nil {
+		return nil, err
+	}
+
+	var wRec *models.WarrantRecord
+	if warrantEnvelope != nil {
+		minted, mErr := o.N1Warrant.SubmitDualSignedWarrant(ctx, *warrantEnvelope)
+		if mErr != nil {
+			return nil, fmt.Errorf("CLASS_BINDING_DUAL_KEY_WARRANT_INVALID: %w", mErr)
+		}
+		wRec = minted
+	} else if strings.TrimSpace(warrantID) != "" {
+		reverified, rErr := o.N1Warrant.ReverifyWarrantForExecution(ctx, strings.TrimSpace(warrantID), svc.ServiceID, item.CVSSScore, svc.Replicas, item.RemediationKind, item.CWEID)
+		if rErr != nil {
+			return nil, fmt.Errorf("CLASS_BINDING_WARRANT_REVERIFY_FAILED: %w", rErr)
+		}
+		wRec = reverified
+	} else {
+		return nil, fmt.Errorf("CLASS_BINDING_REQUIRES_2OF2_WARRANT: provide warrant_envelope (2-of-2 DSSE) or active warrant_id")
+	}
+
+	// Verify unmapped vendor detections are explicitly authorized on the Standing Warrant class
+	if item.CVEMappingStatus == models.CVEMappingStatusUnmappedVendor || item.CVEMappingStatus == models.CVEMappingStatusAbsent {
+		authorized := false
+		for _, authDet := range wRec.AuthorizedVendorDetections {
+			if strings.EqualFold(strings.TrimSpace(authDet), item.VendorDetectionID) || authDet == "*" {
+				authorized = true
+				break
+			}
+		}
+		if !authorized {
+			return nil, fmt.Errorf("UNMAPPED_FINDING_NOT_IN_AUTHORIZED_DETECTIONS: warrant %s does not authorize %s", wRec.WarrantID, item.VendorDetectionID)
+		}
+	}
+
+	item.WarrantID = wRec.WarrantID
+	item.ClassBindingStatus = models.ClassBindingStatusBound
+	item.BridgeSLAMIN = wRec.SLABridgeMinutes
+	if item.BlockerCode == "UNMAPPED_FINDING_REQUIRES_CLASS_BINDING" || item.BlockerCode == "NO_ACTIVE_WARRANT_FAIL_CLOSED" {
+		item.BlockerCode = ""
+	}
+	if err := o.Store.UpsertRemediation(ctx, item); err != nil {
+		return nil, err
+	}
+	_ = o.Store.AppendTrace(ctx, models.TraceEvent{
+		TraceID:       "trc-" + uuid.NewString()[:8],
+		RemediationID: item.RemediationID,
+		Engine:        "N1",
+		StepCode:      "DECOUPLED_WARRANT_CLASS_BOUND",
+		Outcome:       "PASS",
+		ActorOrToken:  wRec.WarrantID,
+		EvidenceHash:  wRec.EntryHash,
+		Fields: map[string]string{
+			"warrant_id":           wRec.WarrantID,
+			"warrant_class":        wRec.WarrantClass,
+			"class_binding_status": models.ClassBindingStatusBound,
+		},
+		OccurredAt: time.Now().UTC(),
+	})
+	o.Broker.Broadcast("REMEDIATION_UPDATED", item)
+
+	if autoExecute {
+		dist := strings.TrimSpace(distributorID)
+		if dist == "" {
+			dist = strings.TrimSpace(item.DistributorID)
+		}
+		if dist != "" {
+			resp, dErr := o.ExecuteGovernedDistributorDispatch(ctx, DistributorDispatchAPIRequest{
+				RemediationID: item.RemediationID,
+				DistributorID: dist,
+			})
+			if dErr != nil {
+				return item, dErr
+			}
+			return &resp.Remediation, nil
+		}
+	}
+	return item, nil
 }
 
 // ExecuteFinderIntakeRemediation ingests Qualys VMDR, Tenable.io/sc, or Rapid7 InsightVM scan payloads via
@@ -276,9 +396,12 @@ func (o *ControlPlaneOrchestrator) ExecuteFinderIntakeRemediation(
 		s1ID, s2ID := "UNBOUND", "UNBOUND"
 		if wErr == nil {
 			item.WarrantID = matchedWarrant.WarrantID
+			item.ClassBindingStatus = models.ClassBindingStatusBound
 			item.BridgeSLAMIN = matchedWarrant.SLABridgeMinutes
 			s1ID = matchedWarrant.Slot1PrincipalID
 			s2ID = matchedWarrant.Slot2PrincipalID
+		} else {
+			item.ClassBindingStatus = models.ClassBindingStatusUnbound
 		}
 
 		if err := o.Store.UpsertRemediation(ctx, &item); err != nil {
@@ -349,26 +472,15 @@ func (o *ControlPlaneOrchestrator) ExecuteFinderIntakeRemediation(
 		_ = o.Store.UpsertRemediation(ctx, &item)
 		o.Broker.Broadcast("BRIDGE_ARMED", bridge)
 
-		// WN-7 Fail-Visible Rule: unmapped vendor detections without an explicit Standing Warrant binding
-		// surface visibly in the Action Inbox / Triage Stream (never silently dropped, never auto-executed!).
+		// v1.3.0 Item 1 Zero-Signature Intake Doctrine:
+		// Unmapped vendor advisories and unbound findings NEVER demand dual-key at ingest, NEVER set StatusHealth=EXCEPTION_ROUTED,
+		// and NEVER create rows in ceiling_exceptions / Four-Eyes Queue. Containment is armed autonomously (StatusHealth=BRIDGED,
+		// ClassBindingStatus=UNBOUND) while the typed record waits passively for a separate, decoupled 2-of-2 class-binding act.
 		if wErr != nil {
-			item.StatusHealth = models.HealthExceptionRouted
-			if f.CVEMappingStatus == models.CVEMappingStatusUnmappedVendor {
+			item.StatusHealth = models.HealthBridged
+			item.ClassBindingStatus = models.ClassBindingStatusUnbound
+			if f.CVEMappingStatus == models.CVEMappingStatusUnmappedVendor || f.CVEMappingStatus == models.CVEMappingStatusAbsent {
 				item.BlockerCode = "UNMAPPED_FINDING_REQUIRES_CLASS_BINDING"
-				_ = o.Store.UpsertException(ctx, models.CeilingException{
-					ExceptionID:           "exc-" + uuid.NewString()[:8],
-					RemediationID:         remID,
-					ServiceID:             svc.ServiceID,
-					CVEID:                 f.CVEID,
-					WarrantClass:          svc.WarrantClass,
-					TriggerCode:           "UNMAPPED_FINDING_REQUIRES_CLASS_BINDING",
-					APIBackwardCompatible: true,
-					ShadowReplayStatus:    "HELD_UNMAPPED_VENDOR_ADVISORY",
-					SyscallDiffSummary:    fmt.Sprintf("%s:%s", f.FinderVendor, f.VendorDetectionID),
-					ActiveBridgeID:        bridge.BridgeID,
-					Status:                "PENDING_DUAL_KEY",
-					CreatedAt:             now,
-				})
 			} else {
 				item.BlockerCode = "NO_ACTIVE_WARRANT_FAIL_CLOSED"
 			}
@@ -510,6 +622,11 @@ func (o *ControlPlaneOrchestrator) ExecuteGovernedDistributorDispatch(
 		if fixIdent.TargetDigest == "" {
 			fixIdent.TargetDigest = item.PatchedDigest
 		}
+	}
+
+	// v1.3.0 Item 2: Execute 3-Clone Proving Ground + Runtime-Follows-Patch BEFORE dispatching any WN-8 DeploymentOrder!
+	if _, cErr := o.N3Verify.RunCloneTwinProving(ctx, item, svc, &fixIdent, item.PatchMetadata); cErr != nil {
+		return nil, fmt.Errorf("NO_PROOF_NO_DEPLOYMENT_ORDER: %w", cErr)
 	}
 
 	targets := req.TargetAssets

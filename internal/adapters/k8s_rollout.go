@@ -245,6 +245,85 @@ func (k *K8sRolloutAdapter) RunExploitReplay(ctx context.Context, req fleetsim.T
 	return &out, nil
 }
 
+// RunCloneTwinProving executes a 3-clone isolated proving ground check via fleet-sim.
+func (k *K8sRolloutAdapter) RunCloneTwinProving(ctx context.Context, req CloneTwinProvingRequest) (*models.CloneTwinProvingManifest, error) {
+	cloneCount := req.CloneCount
+	if cloneCount <= 0 {
+		cloneCount = models.DefaultCloneTwinCount
+	}
+	simReq := fleetsim.CloneTwinSimRequest{
+		RemediationID:    req.RemediationID,
+		ServiceID:        req.ServiceID,
+		WarrantID:        req.WarrantID,
+		WarrantClass:     req.WarrantClass,
+		CVEID:            req.CVEID,
+		CandidateDigest:  req.CandidateDigest,
+		PatchTargetLayer: req.PatchTargetLayer,
+		CloneCount:       cloneCount,
+		MaxP99LatencyMs:  req.MaxP99LatencyMs,
+	}
+	body, err := json.Marshal(simReq)
+	if err != nil {
+		return nil, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, k.fleetBaseURL+"/v1/twins/clone-proving", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := k.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("clone-twin proving HTTP error: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("clone-twin proving returned HTTP %d", resp.StatusCode)
+	}
+	var simOut fleetsim.CloneTwinSimResponse
+	if err := json.NewDecoder(resp.Body).Decode(&simOut); err != nil {
+		return nil, err
+	}
+	clones := make([]models.CloneTwinInstanceResult, 0, len(simOut.Clones))
+	for _, c := range simOut.Clones {
+		clones = append(clones, models.CloneTwinInstanceResult{
+			CloneIndex:            c.CloneIndex,
+			CloneName:             c.CloneName,
+			NodeOrHost:            c.NodeOrHost,
+			PodIP:                 c.PodIP,
+			RunningDigest:         c.RunningDigest,
+			ServiceUpPassed:       c.ServiceUpPassed,
+			SmokeTestPassed:       c.SmokeTestPassed,
+			ClassAcceptancePassed: c.ClassAcceptancePassed,
+			ObservedLatencyMs:     c.ObservedLatencyMs,
+			ExitCode:              c.ExitCode,
+			EvidenceSHA256:        c.EvidenceSHA256,
+			LogSummary:            c.LogSummary,
+		})
+	}
+	return &models.CloneTwinProvingManifest{
+		ProvingRunID:          simOut.ProvingRunID,
+		RemediationID:         req.RemediationID,
+		ServiceID:             req.ServiceID,
+		WarrantID:             req.WarrantID,
+		WarrantClass:          req.WarrantClass,
+		CVEID:                 req.CVEID,
+		CandidateDigest:       req.CandidateDigest,
+		PatchTargetLayer:      req.PatchTargetLayer,
+		TwinRuntime:           models.TwinRuntimeContainer,
+		ProvingNamespace:      simOut.ProvingNamespace,
+		ZeroProductionEgress:  simOut.ZeroProductionEgress,
+		CloneCount:            simOut.CloneCount,
+		ServicesUpCount:       simOut.ServicesUpCount,
+		SmokePassedCount:      simOut.SmokePassedCount,
+		AcceptancePassedCount: simOut.AcceptancePassedCount,
+		AllPassed:             simOut.AllPassed,
+		FailureReasonCode:     simOut.FailureReasonCode,
+		Clones:                clones,
+		TranscriptSHA256:      simOut.TranscriptSHA256,
+		ProvedAt:              time.Now().UTC(),
+	}, nil
+}
+
 func (k *K8sRolloutAdapter) InjectDriftSimulation(ctx context.Context, serviceID, bannedDigest string) (string, int64, error) {
 	body, _ := json.Marshal(map[string]string{
 		"service_id":    serviceID,

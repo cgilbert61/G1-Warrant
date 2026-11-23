@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "g1-warrant-sdk"
-version = "1.2.1"
+version = "1.3.0"
 description = "Official Python Client SDK, Offline DSSE/OSCAL Verifier & CLI for G1-Warrant by G1163RT Security Labs"
 readme = "README.md"
 license = "Apache-2.0"

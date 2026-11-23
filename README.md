@@ -15,7 +15,7 @@
 [![Federal Compliance](https://img.shields.io/badge/9--Gate%20DevSecOps-100%25%20COMPLIANT-success.svg)](docs/federal_devsecops_compliance_report.md)
 [![Section 508](https://img.shields.io/badge/Section%20508%20%2F%20WCAG%202.1%20AA-PASS-success.svg)](reports/axe-accessibility.json)
 
-**Deterministic Autonomous Remediation, Virtual Containment & NIST OSCAL 1.1.2 Attestation Control Plane (`v1.2.0`) — G1163RT Security Labs, Inc.**
+**Deterministic Autonomous Remediation, Virtual Containment & NIST OSCAL 1.1.2 Attestation Control Plane (`v1.3.0`) — G1163RT Security Labs, Inc.**
 
 > **Core Operational Principle:** **Contain in seconds; verify and roll out safely in minutes.**
 
@@ -42,7 +42,7 @@ Remediation stalls in that merge-to-production gap for four structural reasons:
 
 ## Incumbent Integration Architecture (`v1.2.0` — 18 Vendor Translators)
 
-> **Proof Tier & Verification Fence:** The 3 `WN-7` Finder translators and all 15 `WN-8` Distributor translators are verified against deterministic invariant tests (`TestInvariant15`, `TestInvariant16`), wire-PoP mock HTTP servers, and recorded/sandbox sessions; **none has yet run against a live vendor API**. They stand behind the same proof fence as `LiveKubernetesAdapter`: **built and wired behind the typed contracts, not yet vendor-proven**. Output from `/warrant distributors list` (and `GET /api/v1/distributors`) confirms translator registration in the control-plane registry; it does **not** confirm an authenticated conversation with a live vendor API.
+> **Proof Tier & Verification Fence:** `LiveKubernetesAdapter` (`WARRANT_CLUSTER_DRIVER=kubernetes`) and the `v1.3.0` 3-Clone `CONTAINER_TWIN` Proving Ground (`g1-twin-proving`) have been **executed end-to-end against a real disposable `k3s` Kubernetes cluster** (`scripts/run_disposable_cluster_f3_proof.py`, closing `F3`). By contrast, the 3 `WN-7` commercial Finder translators and the remaining 14 non-Kubernetes `WN-8` Distributor translators are verified against deterministic invariant tests (`TestInvariant15`–`TestInvariant18`), wire-PoP mock HTTP servers, and recorded/sandbox sessions; **none of those external vendor translators has yet run against a live commercial vendor API**, and no hypervisor `VMTwinProvider` is bundled (`KERNEL` and `BOOT_LAYER` patches fail closed with `KERNEL_PATCH_REQUIRES_VM_TWIN_RUNTIME`). Output from `/warrant distributors list` (and `GET /api/v1/distributors`) confirms translator registration in the control-plane registry; it does **not** confirm an authenticated conversation with a live vendor API.
 
 ### Inbound Finders (`WN-7` — 3 Vendor Translators + Open Standards)
 

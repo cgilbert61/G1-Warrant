@@ -121,7 +121,11 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 
 	provenanceOK, provenanceHash := e.deriveVerifiedArtifactProvenance(ctx, item, bundle)
 
-	verDec, err := e.policy.EvalVerify(ctx, policy.VerifyInput{
+	ctp := bundle.CloneTwinProving
+	if ctp == nil && item != nil {
+		ctp = item.CloneTwinProving
+	}
+	vIn := policy.VerifyInput{
 		RemediationKind:           actionKind,
 		SecretRotatedAndRevoked:   bundle.AssuranceTier == models.AssuranceTierSecretRotated,
 		ExposedSecretSHA256:       bundle.ExposedSecretSHA256,
@@ -141,7 +145,18 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 		RebootWaitingAssets:       bundle.RebootWaitingCount,
 		AdmissionLockoutEnforced:  bundle.Lockout.PolicyName != "",
 		WarrantReverified:         warrantOK,
-	})
+	}
+	if item != nil && item.PatchTargetLayer != "" {
+		vIn.PatchTargetLayer = item.PatchTargetLayer
+	}
+	if ctp != nil {
+		vIn.CloneTwinProvingPresent = true
+		vIn.PatchTargetLayer = ctp.PatchTargetLayer
+		vIn.TwinRuntime = ctp.TwinRuntime
+		vIn.CloneTwinCount = ctp.CloneCount
+		vIn.CloneTwinAllPassed = ctp.AllPassed
+	}
+	verDec, err := e.policy.EvalVerify(ctx, vIn)
 	if err != nil {
 		return nil, err
 	}
@@ -166,6 +181,7 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 	obsWarrantUUID := deterministicUUID("obs:warrant:" + attID)
 	obsAgentUUID := deterministicUUID("obs:agent-lineage:" + attID)
 	obsTwinUUID := deterministicUUID("obs:twin:" + attID)
+	obsCloneProvingUUID := deterministicUUID("obs:clone-twin-proving:" + attID)
 	obsFleetUUID := deterministicUUID("obs:fleet:" + attID)
 	obsLockoutUUID := deterministicUUID("obs:lockout:" + attID)
 	riskUUID := deterministicUUID("risk:" + attID)
@@ -272,6 +288,7 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 					},
 				},
 				buildN3ProofObservation(obsTwinUUID, now, actionKind, hasProbe, provenanceOK, provenanceHash, item, bundle),
+				buildCloneTwinProvingObservation(obsCloneProvingUUID, now, item, ctp),
 				{
 					"uuid":        obsFleetUUID,
 					"title":       "N3 Passive Fleet & WN-8 Distributor Per-Asset Landing Manifest",
@@ -330,6 +347,7 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 						{"observation-uuid": obsWarrantUUID},
 						{"observation-uuid": obsAgentUUID},
 						{"observation-uuid": obsTwinUUID},
+						{"observation-uuid": obsCloneProvingUUID},
 						{"observation-uuid": obsFleetUUID},
 						{"observation-uuid": obsLockoutUUID},
 					},
@@ -665,4 +683,60 @@ func buildTierHonestRiskStatement(actionKind string, hasProbe bool, assuranceTie
 		return fmt.Sprintf("Exploit vector contained via Cilium bridge, patched with verified publisher provenance, verified via differential exploit replay in isolated twin, and recorded with honest per-asset landing telemetry (completeness=%s).", closureCompleteness)
 	}
 	return fmt.Sprintf("Advisory contained via Cilium bridge, patched with verified publisher provenance and SBOM package absence (no active exploit probe executed), and recorded with honest per-asset landing telemetry (completeness=%s).", closureCompleteness)
+}
+
+func buildCloneTwinProvingObservation(
+	obsUUID string,
+	now time.Time,
+	item *models.RemediationItem,
+	ctp *models.CloneTwinProvingManifest,
+) map[string]any {
+	if ctp == nil {
+		layer := models.PatchTargetLayerUserspace
+		if item != nil && item.PatchTargetLayer != "" {
+			layer = item.PatchTargetLayer
+		}
+		return map[string]any{
+			"uuid":        obsUUID,
+			"title":       "N3 Clone-Twin Proving Ground Status",
+			"description": "No candidate image/package clone-twin run recorded for this closure type.",
+			"methods":     []string{"EXAMINE"},
+			"collected":   now.Format(time.RFC3339),
+			"props": []map[string]string{
+				{"name": "clone-twin-proving-executed", "value": "false"},
+				{"name": "patch-target-layer", "value": layer},
+			},
+		}
+	}
+	evidence := make([]map[string]any, 0, len(ctp.Clones))
+	for _, c := range ctp.Clones {
+		evidence = append(evidence, map[string]any{
+			"href": fmt.Sprintf("twin://%s/%s?index=%d", ctp.ProvingNamespace, c.CloneName, c.CloneIndex),
+			"description": fmt.Sprintf("Clone %d (%s | ip=%s | ready=%t | smoke=%t | acceptance=%t | latency_ms=%.2f | sha256=%s)",
+				c.CloneIndex, c.CloneName, c.PodIP, c.ServiceUpPassed, c.SmokeTestPassed, c.ClassAcceptancePassed, c.ObservedLatencyMs, c.EvidenceSHA256),
+		})
+	}
+	return map[string]any{
+		"uuid":  obsUUID,
+		"title": "N3 Isolated Clone-Twin Proving Ground Verification",
+		"description": fmt.Sprintf("Proved candidate patch %s across %d isolated clones in %s (%s | layer=%s | ready=%d/%d | smoke=%d/%d | acceptance=%d/%d).",
+			ctp.CandidateDigest, ctp.CloneCount, ctp.ProvingNamespace, ctp.TwinRuntime, ctp.PatchTargetLayer,
+			ctp.ServicesUpCount, ctp.CloneCount, ctp.SmokePassedCount, ctp.CloneCount, ctp.AcceptancePassedCount, ctp.CloneCount),
+		"methods":   []string{"TEST", "EXAMINE"},
+		"collected": ctp.ProvedAt.Format(time.RFC3339),
+		"props": []map[string]string{
+			{"name": "clone-twin-proving-executed", "value": "true"},
+			{"name": "proving-run-id", "value": ctp.ProvingRunID},
+			{"name": "proving-namespace", "value": ctp.ProvingNamespace},
+			{"name": "twin-runtime", "value": ctp.TwinRuntime},
+			{"name": "patch-target-layer", "value": ctp.PatchTargetLayer},
+			{"name": "clone-count", "value": fmt.Sprintf("%d", ctp.CloneCount)},
+			{"name": "services-up-count", "value": fmt.Sprintf("%d", ctp.ServicesUpCount)},
+			{"name": "smoke-passed-count", "value": fmt.Sprintf("%d", ctp.SmokePassedCount)},
+			{"name": "acceptance-passed-count", "value": fmt.Sprintf("%d", ctp.AcceptancePassedCount)},
+			{"name": "all-passed", "value": fmt.Sprintf("%t", ctp.AllPassed)},
+			{"name": "proving-transcript-sha256", "value": ctp.TranscriptSHA256},
+		},
+		"relevant-evidence": evidence,
+	}
 }
