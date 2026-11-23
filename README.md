@@ -40,6 +40,44 @@ Remediation stalls in that merge-to-production gap for four structural reasons:
 
 ---
 
+## Incumbent Integration Architecture (`v1.2.0` — 18 Vendor Translators)
+
+> **Proof Tier & Verification Fence:** The 3 `WN-7` Finder translators and all 15 `WN-8` Distributor translators are verified against deterministic invariant tests (`TestInvariant15`, `TestInvariant16`), wire-PoP mock HTTP servers, and recorded/sandbox sessions; **none has yet run against a live vendor API**. They stand behind the same proof fence as `LiveKubernetesAdapter`: **built and wired behind the typed contracts, not yet vendor-proven**. Output from `/warrant distributors list` (and `GET /api/v1/distributors`) confirms translator registration in the control-plane registry; it does **not** confirm an authenticated conversation with a live vendor API.
+
+### Inbound Finders (`WN-7` — 3 Vendor Translators + Open Standards)
+
+All inbound scan exports terminate inside zero-egress `warrant-extractor` (`POST /extract/{qualys,tenable,rapid7,sarif,secrets}` under `X-Warrant-Task-DSSE` + `X-Warrant-Agent-PoP`), stripping 100% of scanner prose, HTML, markdown, and prompt-injection payloads before crossing into `warrantd`:
+
+1. **Qualys VMDR (`qualys_vmdr`)** — XXE-hardened Host Detection XML (`<HOST_LIST_VM_DETECTION_OUTPUT>`) and JSON v2 (`QID-*` detections, severity/CVSSv3, `CVE-*` / `CWE-*`, `KB` / package hints, and fail-visible `UNMAPPED-QID-*` routing).
+2. **Tenable (`tenable` — `Tenable.io` & `Tenable.sc`)** — Vulnerability Export JSON & `Tenable.sc` analysis payloads (`PLUGIN-*` IDs, asset UUID / EC2 instance / FQDN alias resolution, VPR/CVSSv3, and fail-visible `UNMAPPED-PLUGIN-*` routing).
+3. **Rapid7 InsightVM (`rapid7_insightvm`)** — InsightVM v3 Asset-Vulnerability JSON (`R7-*` check normalization, CVSSv3/v2 + bounded risk-score fallback, and fail-visible unmapped check routing).
+
+*(Plus built-in open-schema parsers for `SARIF 2.1.0` [`Wiz`, `Trivy`, `Semgrep`, `Snyk`], `CISA KEV`, `Google OSV.dev`, and `Gitleaks` / `GitGuardian` secret scans.)*
+
+### Outbound / Inbound Mirror Distributors (`WN-8` — 15 Registered Translators Across 6 Families)
+
+Every distributor implements `DistributorTranslator` (`DispatchOrder`, `PollResult`, `ExecuteRollback`), translating canonical `DeploymentOrder` and `DeploymentResult` records under `agt-distributor-gateway` wire PoP:
+
+| Family | Distributor (`distributor_id`) | Ring Sequencing | Evidence & Default Symmetric Rollback |
+| :--- | :--- | :--- | :--- |
+| **Containers & GitOps** | **1. Kubernetes with Cilium** (`k8s-cilium-native`) *(adapter predates `v1.2.0`; now registered as a `DistributorTranslator` like the rest)* | Native progressive canary | Per-pod digest verified · Pin previous OCI digest |
+| **Containers & GitOps** | **2. Argo CD** (`argocd`) | Native sync waves | Per-resource health · Application history rollback |
+| **Containers & GitOps** | **3. Flux** (`flux`) | Warrant-sequenced (`5% → 25% → 100%`) | `DISPATCH_ACK_ONLY` (`Tier 0`) · Git revert commit |
+| **Microsoft Estate** | **4. Microsoft Intune** (`ms-intune`) | Native Windows Update rings | Per-device Graph state (`LANDED` / `REBOOT_WAITING`) · Expedited KB uninstall |
+| **Microsoft Estate** | **5. Microsoft Configuration Manager** (`ms-mecm`) | Native phased deployments | Per-device compliance · `wusa.exe /uninstall` deployment |
+| **Microsoft Estate** | **6. Microsoft WSUS** (`ms-wsus`) | Warrant-sequenced (`5% → 25% → 100%`) | Per-computer target group report · WSUS decline + `wusa /uninstall` |
+| **Linux Automation** | **7. Ansible (`AWX`)** (`ansible-awx`) | Warrant-sequenced (`5% → 25% → 100%`) | Per-host `/job_events/` (`runner_on_ok` / `reboot_required`) · Playbook NEVRA downgrade |
+| **Linux Automation** | **8. Red Hat Satellite** (`redhat-satellite`) | Warrant-sequenced (`5% → 25% → 100%`) | Per-host Katello remote execution · `dnf history undo` / content-view revert |
+| **Apple Estate** | **9. Jamf Pro** (`jamf-pro`) | Warrant-sequenced (`5% → 25% → 100%`) | Per-macOS computer policy log · Policy disable + previous `.pkg` revert |
+| **Cloud Patchers** | **10. AWS Systems Manager** (`aws-ssm`) | Native `MaxConcurrency` / `MaxErrors` | Per-instance `AWS-RunPatchBaseline` status · SSM rollback document |
+| **Cloud Patchers** | **11. Azure Update Manager** (`azure-update-manager`) | Native maintenance configurations | Per-VM assessment/install result · Azure VM Run Command rollback |
+| **Cloud Patchers** | **12. Google Cloud OS Config** (`gcp-os-config`) | Native rolling zone/percent disruption budget | Per-instance OS patch job compliance · OS Config exec-step rollback |
+| **Multi-Platform Patch** | **13. Tanium Patch** (`tanium-patch`) | Native deployment rings | Per-endpoint patch status · Tanium uninstall action |
+| **Multi-Platform Patch** | **14. Ivanti Neurons** (`ivanti-neurons`) | Native staged rings | Per-device deployment telemetry · Ivanti rollback package bundle |
+| **Multi-Platform Patch** | **15. Automox** (`automox`) | Warrant-sequenced (`5% → 25% → 100%`) | Per-device policy execution event · Remediation worklet revert |
+
+---
+
 ## Operator Console Overview
 
 ### 1. 5-Stage Autonomous Race Pipeline & Live Fleet Drills
@@ -119,44 +157,6 @@ flowchart LR
    - Enforces **3-Way `Builder != Commissioner` Separation of Duties** (`G1_AGENT_PROVENANCE_V1` signed by build attestors, commissioned separately by `SERVICE_OWNER` + `AUTHORIZING_OFFICIAL` under a `CommissioningFunction`), backup-sponsor continuity on HR transfers/reorgs with bounded orphan grace windows and `0s` `KEY_COMPROMISE` cutoff, `OPA` wire-level permission intersection (`StandingWarrantScope ∩ AgentCapabilityCeiling ∩ ParentTaskScope ∩ RequestedTask`), holder-of-key `cnf` + nested `act` `EphemeralTaskWarrant` token exchange (`X-Warrant-Task-DSSE` + `X-Warrant-Agent-PoP`), and **9-Chain Combined Merkle Root (`v3`)** anchoring.
 10. **Two-Contract Incumbent Integration & Honest Per-Asset Closure (`WN-7` & `WN-8` — `v1.2.0`):**
     - *"The ends belong to incumbents; the middle is the product."* Every external scanner terminates inside zero-egress `warrant-extractor` into canonical `ExtractedFindingSet` (`WN-7`), surfacing unmapped vendor advisories fail-visibly (`UNMAPPED_FINDING_REQUIRES_CLASS_BINDING`) behind armed containment rather than dropping them silently. Every patch deployment tool translates between WORM-protected `DeploymentOrder` (persisting `NativeRollbackSpec` **before Wave 1 fires** and refusing execution without both a scoped `2-of-2` Standing Warrant and passing `N3` proof — `NO_PROOF_NO_DEPLOYMENT_ORDER`) and per-asset `DeploymentResult` (`WN-8`), enforcing honest `FULL` vs. `PARTIAL` (bridge held armed) vs. `DISPATCH_ONLY` (`ASSURANCE_TIER_0_DISTRIBUTOR_DISPATCH_ONLY`, bridge held armed) OSCAL closure.
-
----
-
-## Incumbent Integration Architecture (`v1.2.0` — 18 Vendor Translators)
-
-> **Proof Tier & Verification Fence:** The 3 `WN-7` Finder translators and all 15 `WN-8` Distributor translators are verified against deterministic invariant tests (`TestInvariant15`, `TestInvariant16`), wire-PoP mock HTTP servers, and recorded/sandbox sessions; **none has yet run against a live vendor API**. They stand behind the same proof fence as `LiveKubernetesAdapter`: **built and wired behind the typed contracts, not yet vendor-proven**. Output from `/warrant distributors list` (and `GET /api/v1/distributors`) confirms translator registration in the control-plane registry; it does **not** confirm an authenticated conversation with a live vendor API.
-
-### Inbound Finders (`WN-7` — 3 Vendor Translators + Open Standards)
-
-All inbound scan exports terminate inside zero-egress `warrant-extractor` (`POST /extract/{qualys,tenable,rapid7,sarif,secrets}` under `X-Warrant-Task-DSSE` + `X-Warrant-Agent-PoP`), stripping 100% of scanner prose, HTML, markdown, and prompt-injection payloads before crossing into `warrantd`:
-
-1. **Qualys VMDR (`qualys_vmdr`)** — XXE-hardened Host Detection XML (`<HOST_LIST_VM_DETECTION_OUTPUT>`) and JSON v2 (`QID-*` detections, severity/CVSSv3, `CVE-*` / `CWE-*`, `KB` / package hints, and fail-visible `UNMAPPED-QID-*` routing).
-2. **Tenable (`tenable` — `Tenable.io` & `Tenable.sc`)** — Vulnerability Export JSON & `Tenable.sc` analysis payloads (`PLUGIN-*` IDs, asset UUID / EC2 instance / FQDN alias resolution, VPR/CVSSv3, and fail-visible `UNMAPPED-PLUGIN-*` routing).
-3. **Rapid7 InsightVM (`rapid7_insightvm`)** — InsightVM v3 Asset-Vulnerability JSON (`R7-*` check normalization, CVSSv3/v2 + bounded risk-score fallback, and fail-visible unmapped check routing).
-
-*(Plus built-in open-schema parsers for `SARIF 2.1.0` [`Wiz`, `Trivy`, `Semgrep`, `Snyk`], `CISA KEV`, `Google OSV.dev`, and `Gitleaks` / `GitGuardian` secret scans.)*
-
-### Outbound / Inbound Mirror Distributors (`WN-8` — 15 Registered Translators Across 6 Families)
-
-Every distributor implements `DistributorTranslator` (`DispatchOrder`, `PollResult`, `ExecuteRollback`), translating canonical `DeploymentOrder` and `DeploymentResult` records under `agt-distributor-gateway` wire PoP:
-
-| Family | Distributor (`distributor_id`) | Ring Sequencing | Evidence & Default Symmetric Rollback |
-| :--- | :--- | :--- | :--- |
-| **Containers & GitOps** | **1. Kubernetes with Cilium** (`k8s-cilium-native`) *(adapter predates `v1.2.0`; now registered as a `DistributorTranslator` like the rest)* | Native progressive canary | Per-pod digest verified · Pin previous OCI digest |
-| **Containers & GitOps** | **2. Argo CD** (`argocd`) | Native sync waves | Per-resource health · Application history rollback |
-| **Containers & GitOps** | **3. Flux** (`flux`) | Warrant-sequenced (`5% → 25% → 100%`) | `DISPATCH_ACK_ONLY` (`Tier 0`) · Git revert commit |
-| **Microsoft Estate** | **4. Microsoft Intune** (`ms-intune`) | Native Windows Update rings | Per-device Graph state (`LANDED` / `REBOOT_WAITING`) · Expedited KB uninstall |
-| **Microsoft Estate** | **5. Microsoft Configuration Manager** (`ms-mecm`) | Native phased deployments | Per-device compliance · `wusa.exe /uninstall` deployment |
-| **Microsoft Estate** | **6. Microsoft WSUS** (`ms-wsus`) | Warrant-sequenced (`5% → 25% → 100%`) | Per-computer target group report · WSUS decline + `wusa /uninstall` |
-| **Linux Automation** | **7. Ansible (`AWX`)** (`ansible-awx`) | Warrant-sequenced (`5% → 25% → 100%`) | Per-host `/job_events/` (`runner_on_ok` / `reboot_required`) · Playbook NEVRA downgrade |
-| **Linux Automation** | **8. Red Hat Satellite** (`redhat-satellite`) | Warrant-sequenced (`5% → 25% → 100%`) | Per-host Katello remote execution · `dnf history undo` / content-view revert |
-| **Apple Estate** | **9. Jamf Pro** (`jamf-pro`) | Warrant-sequenced (`5% → 25% → 100%`) | Per-macOS computer policy log · Policy disable + previous `.pkg` revert |
-| **Cloud Patchers** | **10. AWS Systems Manager** (`aws-ssm`) | Native `MaxConcurrency` / `MaxErrors` | Per-instance `AWS-RunPatchBaseline` status · SSM rollback document |
-| **Cloud Patchers** | **11. Azure Update Manager** (`azure-update-manager`) | Native maintenance configurations | Per-VM assessment/install result · Azure VM Run Command rollback |
-| **Cloud Patchers** | **12. Google Cloud OS Config** (`gcp-os-config`) | Native rolling zone/percent disruption budget | Per-instance OS patch job compliance · OS Config exec-step rollback |
-| **Multi-Platform Patch** | **13. Tanium Patch** (`tanium-patch`) | Native deployment rings | Per-endpoint patch status · Tanium uninstall action |
-| **Multi-Platform Patch** | **14. Ivanti Neurons** (`ivanti-neurons`) | Native staged rings | Per-device deployment telemetry · Ivanti rollback package bundle |
-| **Multi-Platform Patch** | **15. Automox** (`automox`) | Warrant-sequenced (`5% → 25% → 100%`) | Per-device policy execution event · Remediation worklet revert |
 
 ---
 
