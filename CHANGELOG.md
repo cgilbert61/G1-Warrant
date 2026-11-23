@@ -1,11 +1,49 @@
 # Changelog
 
 All notable changes to **G1-Warrant** are documented in this file.
-Published Git tags (`v1.0.0`, `v1.0.1`, `v1.0.2`, `v1.0.3`, ...) are immutable to preserve Go Checksum Database (`sum.golang.org`) reproducibility for `github.com/cgilbert61/G1-Warrant/pkg/warrantsdk`.
+Published Git tags (`v1.0.0`, `v1.0.1`, `v1.0.2`, `v1.0.3`, `v1.0.4`, `v1.1.0`, `v1.2.0`, ...) are immutable to preserve Go Checksum Database (`sum.golang.org`) reproducibility for `github.com/cgilbert61/G1-Warrant/pkg/warrantsdk`.
 
 ---
 
-## [v1.0.3] - 2026-11-20
+## [v1.2.0] - 2026-11-22
+
+### Proof Tier & Verification Fence (Plain-Words Statement)
+- **Built and Wired; Not Yet Vendor-Proven:** The 3 `WN-7` Finder translators (`qualys_vmdr`, `tenable`, `rapid7_insightvm`) and all 15 `WN-8` Distributor translators (`k8s-cilium-native`, `argocd`, `flux`, `ms-intune`, `ms-mecm`, `ms-wsus`, `ansible-awx`, `redhat-satellite`, `jamf-pro`, `aws-ssm`, `azure-update-manager`, `gcp-os-config`, `tanium-patch`, `ivanti-neurons`, `automox`) are verified against deterministic invariant tests (`TestInvariant15`, `TestInvariant16`), wire-PoP mock HTTP servers, and recorded/sandbox sessions. **None has yet run against a live vendor API.** They stand behind the same proof fence as `LiveKubernetesAdapter`: built and wired behind the typed contracts, not yet vendor-proven. Output from `/warrant distributors list` (and `GET /api/v1/distributors`) confirms translator registration in the control-plane registry; it does **not** confirm a live vendor conversation.
+
+### Explicit `WN-1`–`WN-6` (`v1.1.1` R2 Remediation Track) Inclusion Status in `v1.2.0`
+`v1.2.0` was cut directly from `v1.1.0` (`64f2d9f`) to deliver `WN-7` and `WN-8` alongside `WN-6` release packaging. By explicit ordering decision:
+- **`WN-1`:** **NOT included** in `v1.2.0` (deferred to follow-on R2 remediation).
+- **`WN-2`:** **NOT included** in `v1.2.0` (deferred to follow-on R2 remediation).
+- **`WN-3`:** **NOT included** in `v1.2.0` (deferred to follow-on R2 remediation).
+- **`WN-4`:** **NOT included** in `v1.2.0` (deferred to follow-on R2 remediation).
+- **`WN-5`:** **NOT included** in `v1.2.0` (deferred to follow-on R2 remediation).
+- **`WN-6`:** **INCLUDED** in `v1.2.0` — Published GitHub Release with `SHA256SUMS.txt` checksummed cross-platform CLI binaries, CycloneDX SBOM, NIST OSCAL Rev 5 component definition, Python sdist, and Python wheel (`g1_warrant_sdk-1.2.0-py3-none-any.whl`) embedding both `LICENSE` and `NOTICE` (`license-files = ["LICENSE", "NOTICE"]`).
+
+### Incumbent Integration Architecture (`WN-7` & `WN-8`)
+1. **`WN-7` — Zero-Egress Finder Translation Layer & Fail-Visible Unmapped Advisories:**
+   - Added `FinderTranslator` implementations (`internal/extractor/finders/{qualys_vmdr,tenable,rapid7_insightvm}.go`) terminating untrusted Qualys VMDR (XXE-hardened XML + JSON v2), Tenable.io/sc (JSON), and Rapid7 InsightVM v3 (JSON) payloads inside zero-egress `warrant-extractor` (`POST /extract/{qualys,tenable,rapid7}` under `X-Warrant-Task-DSSE` + `X-Warrant-Agent-PoP`), stripping 100% of prose/HTML/XSS/prompt-injection fields.
+   - Added `asset_identity_aliases` (`009_v1_2_0_finders_and_distributors.sql`) and fail-visible `UNMAPPED_VENDOR_ADVISORY` handling (`UNMAPPED_FINDING_REQUIRES_CLASS_BINDING`), arming containment immediately while refusing autonomous execution unless explicitly bound in `AuthorizedVendorDetections`.
+2. **`WN-8` — Governed Distributor Translation Layer, Wave Sequencer & Honest Per-Asset Closure:**
+   - Added canonical `DeploymentOrder` (outbound) + `DeploymentResult` (inbound mirror), WORM-protected `deployment_orders` & `deployment_results` tables, `DistributorRegistry` with 15 translators across 6 enterprise families, and `wave_sequencer.go` (`SupportsNativeRings` pass-through vs. `5% -> 25% -> 100%` `N2`-gated waves).
+   - Enforced `TargetAssets ⊆ WarrantScope` (`TARGET_ASSET_OUTSIDE_WARRANT_SCOPE`), `NO_PROOF_NO_DEPLOYMENT_ORDER`, immutable pre-Wave-1 `NativeRollbackSpec` persistence, symmetric `ExecuteRollback` on wave failure/stall, and honest `FULL` / `PARTIAL` (bridge held active) / `DISPATCH_ONLY` (`ASSURANCE_TIER_0_DISTRIBUTOR_DISPATCH_ONLY`, bridge held active) OSCAL `1.1.2` closure tiering in `policies/verify_closure.rego`.
+3. **Go SDK (`pkg/warrantsdk` `1.2.0`), Python SDK (`g1-warrant-sdk` `1.2.0`), CLI & Console:**
+   - Bumped both SDKs to `1.2.0` with 100% backwards-compatible exported Go signatures, added `warrant intake [qualys|tenable|rapid7]` and `warrant distributors [list|orders|results|aliases|dispatch|rollback]`, and updated the React 19 Console.
+
+---
+
+## [v1.1.0] - 2026-11-21 (`64f2d9f`)
+
+- **Agent Workload Identity, Commissioning Function Governance, IGA Orphan Quarantine & RFC 8693 Wire-Level Permission Intersection (`A1`–`A6`):** Added `008_v1_1_0_agent_identities.sql`, 3-Way `Builder != Commissioner` SoD (`G1_AGENT_PROVENANCE_V1`), `CommissioningFunction` sponsor continuity + bounded orphan grace windows + `0s` `KEY_COMPROMISE` cutoff, `data.warrant.agent` permission intersection (`StandingWarrantScope ∩ AgentCapabilityCeiling ∩ ParentTaskScope ∩ RequestedTask`), `cnf` + `act` `EphemeralTaskWarrant` token exchange, wire-level `X-Warrant-Task-DSSE` + `X-Warrant-Agent-PoP` verification, and 9-table Merkle v3 anchoring (`TestInvariant14`).
+
+---
+
+## [v1.0.4] - 2026-11-20 (`d8f21cd`)
+
+- **Consolidated Integrity & Security Remediation (`F1`–`F6`):** Publisher & rulepack authority custody ladder (`F1`), database credential hygiene (`F2`), `LiveKubernetesAdapter` isolated twin `batch/v1` Job execution (`F3`), canary sample/dwell floors & measured telemetry (`F4`), public-only persona serialization (`F5`), and external notary witness posture reporting (`F6`) (`TestInvariant13`).
+
+---
+
+## [v1.0.3] - 2026-11-20 (`a8e35cc`)
 
 ### Security & Governance Hardening
 

@@ -1,7 +1,7 @@
 {
   "system": "G1-Warrant",
   "project_license": "Apache-2.0",
-  "timestamp": "2026-11-21T00:06:36.168733+00:00",
+  "timestamp": "2026-11-23T04:36:18.202557+00:00",
   "policy": "Permissive Open-Source Only (Zero Copyleft / Zero GPL-LGPL-AGPL in Linked Binaries)",
   "total_dependencies_audited": 46,
   "go_modules_count": 32,

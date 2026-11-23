@@ -4,7 +4,10 @@ import rego.v1
 
 default allow_bridge_retirement := false
 default allow_attestation_mint := false
+default allow_partial_attestation_mint := false
+default allow_dispatch_only_record := false
 default assurance_tier := "UNVERIFIED"
+default closure_completeness := "UNVERIFIED"
 
 is_secret_rotation if {
 	object.get(input, "remediation_kind", "IMAGE_PATCH") == "SECRET_ROTATION"
@@ -17,6 +20,29 @@ secret_hashes_distinct_and_nonempty if {
 	exposed_secret_sha != ""
 	rotated_secret_sha != ""
 	lower(rotated_secret_sha) != lower(exposed_secret_sha)
+}
+
+# Normalize WN-8 per-asset telemetry alongside legacy pod-sweep fields (100% backwards-compatible)
+raw_granularity := trim_space(object.get(input, "evidence_granularity", ""))
+
+effective_granularity := "PER_ASSET_VERIFIED" if {
+	raw_granularity == ""
+} else := raw_granularity
+
+has_distributor_counts if {
+	object.get(input, "targeted_assets", 0) > 0
+}
+
+eff_targeted := object.get(input, "targeted_assets", 0) if {
+	has_distributor_counts
+} else := object.get(input, "total_pods", 0)
+
+eff_landed := object.get(input, "landed_assets", 0) if {
+	has_distributor_counts
+} else := object.get(input, "attested_pods", 0)
+
+is_dispatch_or_wave_only if {
+	effective_granularity in {"DISPATCH_ACK_ONLY", "WAVE_AGGREGATE_ONLY"}
 }
 
 # Case A: Signed Regression Probe Present -> Differential Twin Proof Required
@@ -47,12 +73,45 @@ secret_rotation_valid if {
 	secret_hashes_distinct_and_nonempty
 }
 
-assurance_tier := "ASSURANCE_TIER_SECRET_ROTATED" if {
+closure_evidence_valid if {
+	differential_twin_valid
+}
+
+closure_evidence_valid if {
+	passive_sbom_valid
+}
+
+# Honest Assurance Tiering: distributors lacking per-asset reporting are capped at ASSURANCE_TIER_0_DISTRIBUTOR_DISPATCH_ONLY
+assurance_tier := "ASSURANCE_TIER_0_DISTRIBUTOR_DISPATCH_ONLY" if {
+	is_dispatch_or_wave_only
+	closure_evidence_valid
+} else := "ASSURANCE_TIER_SECRET_ROTATED" if {
 	secret_rotation_valid
 } else := "ASSURANCE_TIER_2_DIFFERENTIAL_TWIN" if {
 	differential_twin_valid
 } else := "ASSURANCE_TIER_1_PASSIVE_DIGEST_SBOM" if {
 	passive_sbom_valid
+}
+
+closure_completeness := "DISPATCH_ONLY" if {
+	is_dispatch_or_wave_only
+	closure_evidence_valid
+} else := "FULL" if {
+	effective_granularity == "PER_ASSET_VERIFIED"
+	eff_targeted > 0
+	eff_landed == eff_targeted
+	closure_evidence_valid
+} else := "FULL" if {
+	effective_granularity == "PER_ASSET_VERIFIED"
+	eff_targeted > 0
+	eff_landed == eff_targeted
+	secret_rotation_valid
+} else := "PARTIAL" if {
+	effective_granularity == "PER_ASSET_VERIFIED"
+	eff_targeted > 0
+	eff_landed > 0
+	eff_landed < eff_targeted
+	closure_evidence_valid
 }
 
 blockers contains "SECRET_ROTATION_INCOMPLETE" if {
@@ -83,15 +142,36 @@ blockers contains "PASSIVE_CLOSURE_MISSING_PROVENANCE" if {
 
 blockers contains "SBOM_STILL_CONTAINS_VULNERABLE_PACKAGE" if {
 	not is_secret_rotation
+	not has_probe
 	object.get(input, "vulnerable_pkg_absent_in_sbom", false) != true
 }
 
-blockers contains "FLEET_DIGEST_SWEEP_INCOMPLETE" if {
-	input.total_pods <= 0
+blockers contains "DISTRIBUTOR_LACKS_PER_ASSET_EVIDENCE" if {
+	is_dispatch_or_wave_only
+}
+
+blockers contains "PARTIAL_FLEET_LANDING_BRIDGE_HELD" if {
+	effective_granularity == "PER_ASSET_VERIFIED"
+	has_distributor_counts
+	eff_landed > 0
+	eff_landed < eff_targeted
 }
 
 blockers contains "FLEET_DIGEST_SWEEP_INCOMPLETE" if {
-	input.attested_pods != input.total_pods
+	not is_dispatch_or_wave_only
+	eff_targeted <= 0
+}
+
+blockers contains "FLEET_DIGEST_SWEEP_INCOMPLETE" if {
+	not is_dispatch_or_wave_only
+	not has_distributor_counts
+	eff_landed != eff_targeted
+}
+
+blockers contains "FLEET_DIGEST_SWEEP_INCOMPLETE" if {
+	not is_dispatch_or_wave_only
+	has_distributor_counts
+	eff_landed <= 0
 }
 
 blockers contains "ADMISSION_LOCKOUT_NOT_ENFORCED" if {
@@ -103,29 +183,38 @@ blockers contains "N1_WARRANT_REVERIFY_FAILED" if {
 	input.warrant_reverified != true
 }
 
-closure_evidence_valid if {
-	differential_twin_valid
-}
-
-closure_evidence_valid if {
-	passive_sbom_valid
-}
-
 allow_bridge_retirement if {
+	effective_granularity == "PER_ASSET_VERIFIED"
 	closure_evidence_valid
-	input.total_pods > 0
-	input.attested_pods == input.total_pods
+	eff_targeted > 0
+	eff_landed == eff_targeted
 	object.get(input, "vulnerable_pkg_absent_in_sbom", false) == true
 	input.admission_lockout_enforced == true
 }
 
 allow_bridge_retirement if {
+	effective_granularity == "PER_ASSET_VERIFIED"
 	secret_rotation_valid
-	input.total_pods > 0
-	input.attested_pods == input.total_pods
+	eff_targeted > 0
+	eff_landed == eff_targeted
 }
 
 allow_attestation_mint if {
 	allow_bridge_retirement
+	input.warrant_reverified == true
+}
+
+allow_partial_attestation_mint if {
+	effective_granularity == "PER_ASSET_VERIFIED"
+	closure_evidence_valid
+	eff_targeted > 0
+	eff_landed > 0
+	eff_landed < eff_targeted
+	input.warrant_reverified == true
+}
+
+allow_dispatch_only_record if {
+	is_dispatch_or_wave_only
+	closure_evidence_valid
 	input.warrant_reverified == true
 }

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/cgilbert61/G1-Warrant/internal/adapters"
+	"github.com/cgilbert61/G1-Warrant/internal/adapters/distributors"
 	"github.com/cgilbert61/G1-Warrant/internal/agentcp"
 	"github.com/cgilbert61/G1-Warrant/internal/crypto"
 	"github.com/cgilbert61/G1-Warrant/internal/db"
@@ -48,6 +49,7 @@ type ControlPlaneOrchestrator struct {
 	Shield      adapters.ShieldEnforcer
 	Deploy              adapters.DeploymentTarget
 	Twin                adapters.TwinRunner
+	Distributors        *adapters.DistributorRegistry
 	Broker              *SSEBroker
 	WebAuthnCfg         crypto.WebAuthnConfig
 	tetragonSensorToken string
@@ -760,6 +762,8 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 	n2 := gate.NewEngine(store, pol, n1, n4, deploy, broker.Broadcast)
 	n3 := verify.NewEngine(store, pol, n1, n4, shield, deploy, twin, broker.Broadcast, rulepacks)
 	n5 := ledger.NewEngine(store, pol, n1, signer, broker.Broadcast)
+	distReg := adapters.NewDistributorRegistry()
+	distributors.RegisterAllBuiltinDistributors(distReg, deploy, n4.NewGovernedRoundTripper("distributor-gateway", nil), os.Getenv)
 	store.SetBootstrapSealAnchorFunc(n5.CreateCheckpoint)
 
 	if warn := ExternalAnchorStartupWarning(os.Getenv); warn != "" {
@@ -783,6 +787,7 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 		Shield:              shield,
 		Deploy:              deploy,
 		Twin:                twin,
+		Distributors:        distReg,
 		Broker:              broker,
 		WebAuthnCfg:         webauthnCfg,
 		tetragonSensorToken: tetToken,

@@ -1,6 +1,13 @@
 import React, { useState } from 'react';
-import { Shield, Lock, AlertTriangle, Code2, X } from 'lucide-react';
-import type { AdmissionLockout, ContainmentBridge, DriftIncident } from '../types';
+import { Shield, Lock, AlertTriangle, Code2, X, RotateCcw, Server } from 'lucide-react';
+import type {
+  AdmissionLockout,
+  ContainmentBridge,
+  DeploymentOrder,
+  DeploymentResult,
+  DistributorDescriptor,
+  DriftIncident,
+} from '../types';
 import {
   computeRipeningBridgeStyle,
   formatBridgeBlockerReason,
@@ -12,18 +19,28 @@ interface View4ContainmentLockoutProps {
   bridges: ContainmentBridge[];
   lockouts: AdmissionLockout[];
   drifts: DriftIncident[];
+  distributors?: DistributorDescriptor[];
+  deploymentOrders?: DeploymentOrder[];
+  deploymentResults?: DeploymentResult[];
   nowMs: number;
+  onRollbackOrder?: (orderId: string, reason: string) => Promise<void>;
 }
 
 export const View4ContainmentLockout: React.FC<View4ContainmentLockoutProps> = ({
   bridges,
   lockouts,
   drifts,
+  distributors = [],
+  deploymentOrders = [],
+  deploymentResults = [],
   nowMs,
+  onRollbackOrder,
 }) => {
   const [manifestModal, setManifestModal] = useState<{ title: string; primary: string; secondary?: string } | null>(
     null
   );
+  const [rollbackBusyOrder, setRollbackBusyOrder] = useState<string | null>(null);
+  const [rollbackErr, setRollbackErr] = useState<string | null>(null);
 
   return (
     <div className="space-y-6">
@@ -222,6 +239,115 @@ export const View4ContainmentLockout: React.FC<View4ContainmentLockoutProps> = (
           )}
         </section>
       </div>
+
+      {/* WN-8 Governed Distributor Orders & WORM Pre-Recorded Native Rollback Ledger */}
+      <section className="bg-white border border-slate-200 rounded p-4 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
+          <div className="flex items-center gap-2">
+            <Server className="w-4 h-4 text-slate-800" />
+            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-900">
+              WN-8 Distributor Translation Orders &amp; Pre-Recorded Native Rollback Specs ({distributors.length} Registered Translators)
+            </h2>
+          </div>
+          <span className="text-xs font-mono text-slate-500">
+            {deploymentOrders.length} WORM Order(s) · {deploymentResults.length} Result Snapshot(s)
+          </span>
+        </div>
+
+        {rollbackErr && (
+          <div role="alert" className="p-2.5 rounded border border-red-300 bg-red-50 text-xs font-mono text-red-900">
+            ROLLBACK_ERROR: {rollbackErr}
+          </div>
+        )}
+
+        {deploymentOrders.length === 0 ? (
+          <div className="p-3 rounded bg-slate-50 border border-slate-200 text-xs font-mono text-slate-600">
+            No outbound WN-8 DeploymentOrders dispatched yet. Registered distributor families ({distributors.length} translators): K8s/Cilium, GitOps (ArgoCD/Flux), Microsoft Estate (Intune/MECM/WSUS), Linux (AWX/Satellite), macOS (Jamf Pro), Cloud (AWS SSM/Azure Update/GCP OS Config), and Multi-Platform (Tanium/Ivanti/Automox).
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="bg-slate-100 border-y border-slate-300 font-mono text-[11px] uppercase text-slate-700">
+                  <th className="p-2.5">Order ID / Distributor</th>
+                  <th className="p-2.5">Workload · CVE · Warrant</th>
+                  <th className="p-2.5">Target Assets</th>
+                  <th className="p-2.5">Pre-Recorded Native Rollback</th>
+                  <th className="p-2.5">Latest Landing Status</th>
+                  <th className="p-2.5">Symmetric Rollback</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {deploymentOrders.map((ord) => {
+                  const latestRes = deploymentResults.find((r) => r.order_id === ord.order_id);
+                  return (
+                    <tr key={ord.order_id} className="hover:bg-slate-50">
+                      <td className="p-2.5 font-mono">
+                        <div className="font-bold text-slate-900">{ord.order_id}</div>
+                        <div className="text-[11px] text-slate-600">{ord.distributor_id}</div>
+                      </td>
+                      <td className="p-2.5 font-mono">
+                        <div className="font-semibold text-slate-900">
+                          {ord.service_id} · {ord.fix_identity?.cve_id || '—'}
+                        </div>
+                        <div className="text-[11px] text-slate-500">Warrant: {ord.warrant_id}</div>
+                      </td>
+                      <td className="p-2.5 font-mono text-[11px] text-slate-700">
+                        {ord.target_assets.length} asset(s) · Wave {ord.wave_number}/{ord.total_waves}
+                      </td>
+                      <td className="p-2.5 font-mono text-[11px] text-slate-800">
+                        <div className="font-semibold">{ord.rollback_instruction.strategy}</div>
+                        <div className="text-[10px] text-slate-500 truncate max-w-[240px]">
+                          {ord.rollback_instruction.uninstall_kb ||
+                            ord.rollback_instruction.previous_package_nevra ||
+                            shortHash(ord.rollback_instruction.previous_digest, 16)}
+                        </div>
+                      </td>
+                      <td className="p-2.5 font-mono text-[11px]">
+                        {latestRes ? (
+                          <div>
+                            <span className="font-bold text-slate-900">
+                              Landed {latestRes.landed_count}/{latestRes.targeted_count}
+                            </span>{' '}
+                            <span className="text-slate-600">
+                              (RebootWait {latestRes.reboot_waiting_count} · Fail {latestRes.failed_count})
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-slate-500">Wave {ord.wave_number} Dispatched</span>
+                        )}
+                      </td>
+                      <td className="p-2.5">
+                        {onRollbackOrder && (
+                          <button
+                            type="button"
+                            disabled={rollbackBusyOrder === ord.order_id}
+                            onClick={async () => {
+                              setRollbackBusyOrder(ord.order_id);
+                              setRollbackErr(null);
+                              try {
+                                await onRollbackOrder(ord.order_id, 'CONSOLE_DISTRIBUTOR_ROLLBACK');
+                              } catch (err) {
+                                setRollbackErr(err instanceof Error ? err.message : 'Rollback failed');
+                              } finally {
+                                setRollbackBusyOrder(null);
+                              }
+                            }}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded border border-red-300 bg-red-50 hover:bg-red-100 font-mono text-[11px] font-semibold text-red-950 disabled:opacity-50"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                            {rollbackBusyOrder === ord.order_id ? 'Rolling Back...' : 'Execute Rollback'}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
 
       {manifestModal && (
         <div

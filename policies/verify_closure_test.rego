@@ -96,3 +96,48 @@ test_block_mint_if_warrant_revoked_at_mint_time if {
 	not verify.allow_attestation_mint with input as revoked
 	"N1_WARRANT_REVERIFY_FAILED" in verify.blockers with input as revoked
 }
+
+test_wn8_full_per_asset_distributor_closure_allows_retirement_and_mint if {
+	full_dist := object.union(verified_input, {
+		"evidence_granularity": "PER_ASSET_VERIFIED",
+		"targeted_assets": 6,
+		"landed_assets": 6,
+		"reboot_waiting_assets": 0,
+		"failed_assets": 0,
+	})
+	verify.allow_bridge_retirement with input as full_dist
+	verify.allow_attestation_mint with input as full_dist
+	not verify.allow_partial_attestation_mint with input as full_dist
+	verify.closure_completeness == "FULL" with input as full_dist
+	verify.assurance_tier == "ASSURANCE_TIER_2_DIFFERENTIAL_TWIN" with input as full_dist
+}
+
+test_wn8_partial_fleet_landing_mints_partial_attestation_and_holds_bridge if {
+	partial_dist := object.union(verified_input, {
+		"evidence_granularity": "PER_ASSET_VERIFIED",
+		"targeted_assets": 6,
+		"landed_assets": 4,
+		"reboot_waiting_assets": 2,
+		"failed_assets": 0,
+	})
+	not verify.allow_bridge_retirement with input as partial_dist
+	not verify.allow_attestation_mint with input as partial_dist
+	verify.allow_partial_attestation_mint with input as partial_dist
+	verify.closure_completeness == "PARTIAL" with input as partial_dist
+	"PARTIAL_FLEET_LANDING_BRIDGE_HELD" in verify.blockers with input as partial_dist
+}
+
+test_wn8_dispatch_ack_only_assigns_tier0_and_blocks_bridge_retirement if {
+	dispatch_only := object.union(verified_input, {
+		"evidence_granularity": "DISPATCH_ACK_ONLY",
+		"targeted_assets": 6,
+		"landed_assets": 0,
+	})
+	not verify.allow_bridge_retirement with input as dispatch_only
+	not verify.allow_attestation_mint with input as dispatch_only
+	not verify.allow_partial_attestation_mint with input as dispatch_only
+	verify.allow_dispatch_only_record with input as dispatch_only
+	verify.closure_completeness == "DISPATCH_ONLY" with input as dispatch_only
+	verify.assurance_tier == "ASSURANCE_TIER_0_DISTRIBUTOR_DISPATCH_ONLY" with input as dispatch_only
+	"DISTRIBUTOR_LACKS_PER_ASSET_EVIDENCE" in verify.blockers with input as dispatch_only
+}

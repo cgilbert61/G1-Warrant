@@ -47,12 +47,59 @@ const (
 	ContainmentModeSignedRulepackL7    = "SIGNED_RULEPACK_L7_SHIELD"
 )
 
-// Closure Assurance Tiers Distinguishing Differential PoC Proof, Passive Digest/SBOM Proof, and Secret Rotation (N3/N5)
+// Closure Assurance Tiers Distinguishing Dispatch-Only, Passive Digest/SBOM Proof, Differential PoC Proof, and Secret Rotation (N3/N5)
 const (
-	AssuranceTier1PassiveDigestSBOM = "ASSURANCE_TIER_1_PASSIVE_DIGEST_SBOM"
-	AssuranceTier2DifferentialTwin  = "ASSURANCE_TIER_2_DIFFERENTIAL_TWIN"
-	AssuranceTierSecretRotated      = "ASSURANCE_TIER_SECRET_ROTATED"
+	AssuranceTier0DistributorDispatchOnly = "ASSURANCE_TIER_0_DISTRIBUTOR_DISPATCH_ONLY"
+	AssuranceTier1PassiveDigestSBOM       = "ASSURANCE_TIER_1_PASSIVE_DIGEST_SBOM"
+	AssuranceTier2DifferentialTwin        = "ASSURANCE_TIER_2_DIFFERENTIAL_TWIN"
+	AssuranceTierSecretRotated            = "ASSURANCE_TIER_SECRET_ROTATED"
 )
+
+// WN-7 Finder Vendors, CVE Mapping Statuses & Normalized Detection States (v1.2.0)
+const (
+	FinderVendorSARIFGeneric    = "SARIF_GENERIC"
+	FinderVendorQualysVMDR      = "QUALYS_VMDR"
+	FinderVendorTenableIOSC     = "TENABLE_IO_SC"
+	FinderVendorRapid7InsightVM = "RAPID7_INSIGHTVM"
+	FinderVendorTrivy           = "TRIVY"
+	FinderVendorWiz             = "WIZ"
+	FinderVendorSemgrep         = "SEMGREP"
+	FinderVendorSnyk            = "SNYK"
+
+	CVEMappingStatusMapped         = "MAPPED"
+	CVEMappingStatusUnmappedVendor = "UNMAPPED_VENDOR_ADVISORY"
+
+	DetectionStateActive        = "ACTIVE"
+	DetectionStateReopened      = "REOPENED"
+	DetectionStateNew           = "NEW"
+	DetectionStateFixedReported = "FIXED_REPORTED"
+)
+
+// AssetIdentity is the prose-free canonical normalized host/workload asset identity emitted by WN-7 Finder translators.
+type AssetIdentity struct {
+	AssetKey        string `json:"asset_key"`
+	Hostname        string `json:"hostname,omitempty"`
+	IPv4            string `json:"ipv4,omitempty"`
+	IPv6            string `json:"ipv6,omitempty"`
+	ScannerAssetID  string `json:"scanner_asset_id,omitempty"`
+	CloudInstanceID string `json:"cloud_instance_id,omitempty"`
+	PlatformFamily  string `json:"platform_family,omitempty"`
+}
+
+// AssetIdentityAlias maps scanner-specific hostnames, IPs, cloud instance IDs, or scanner UUIDs to canonical Warrant EstateService / AssetKey entries.
+type AssetIdentityAlias struct {
+	AliasKey        string    `json:"alias_key"`
+	AliasType       string    `json:"alias_type"` // "HOSTNAME" | "IPV4" | "IPV6" | "SCANNER_ASSET_ID" | "CLOUD_INSTANCE_ID" | "ASSET_KEY"
+	ServiceID       string    `json:"service_id"`
+	AssetKey        string    `json:"asset_key"`
+	Hostname        string    `json:"hostname,omitempty"`
+	IPv4            string    `json:"ipv4,omitempty"`
+	IPv6            string    `json:"ipv6,omitempty"`
+	ScannerAssetID  string    `json:"scanner_asset_id,omitempty"`
+	CloudInstanceID string    `json:"cloud_instance_id,omitempty"`
+	PlatformFamily  string    `json:"platform_family,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+}
 
 // Warrant Classes & Remediation Kinds (N1–N4)
 const (
@@ -98,10 +145,20 @@ type ExtractedFinding struct {
 	PatchedDigest    string   `json:"patched_digest"`
 	VulnerableSymbol string   `json:"vulnerable_symbol"`
 	ExploitVector    string   `json:"exploit_vector"` // "HTTP_PATH_TRAVERSAL" | "JNDI_LOOKUP" | "PROTO_DESERIALIZE" | "TLS_HEARTBEAT" | "HTTP2_RAPID_RESET"
-	AffectedPort          int      `json:"affected_port"`
-	BlockedPaths          []string `json:"blocked_paths"`
-	ArtifactPaths         []string `json:"artifact_paths"`
-	ChainedExploitEnabler bool     `json:"chained_exploit_enabler,omitempty"`
+	AffectedPort             int            `json:"affected_port"`
+	BlockedPaths             []string       `json:"blocked_paths"`
+	ArtifactPaths            []string       `json:"artifact_paths"`
+	ChainedExploitEnabler    bool           `json:"chained_exploit_enabler,omitempty"`
+	FinderVendor             string         `json:"finder_vendor,omitempty"`
+	AssetIdentity            *AssetIdentity `json:"asset_identity,omitempty"`
+	VendorDetectionID        string         `json:"vendor_detection_id,omitempty"`
+	CVEMappingStatus         string         `json:"cve_mapping_status,omitempty"`
+	NormalizedDetectionState string         `json:"normalized_detection_state,omitempty"`
+	FirstSeenAt              string         `json:"first_seen_at,omitempty"`
+	LastSeenAt               string         `json:"last_seen_at,omitempty"`
+	KBArticleID              string         `json:"kb_article_id,omitempty"`
+	PackageNEVRA             string         `json:"package_nevra,omitempty"`
+	AdvisoryID               string         `json:"advisory_id,omitempty"`
 }
 
 // ExtractedFindingSet wraps extracted findings with input/output cryptographic digests.
@@ -347,30 +404,34 @@ type KernelKeyRotationPayload struct {
 
 // WarrantPayload is the JCS-canonicalized body inside a dual-signed Standing Warrant DSSE envelope.
 type WarrantPayload struct {
-	WarrantID              string   `json:"warrant_id"`
-	WarrantClass           string   `json:"warrant_class"`
-	ScopeServices          []string `json:"scope_services"`
-	MaxCVSS                float64  `json:"max_cvss"`
-	KEVEligible            bool     `json:"kev_eligible"`
-	MaxBlastRadiusReplicas int      `json:"max_blast_radius_replicas"`
-	AllowStatefulPatches   bool     `json:"allow_stateful_patches"`
-	AllowGuardedCanary     bool     `json:"allow_guarded_canary,omitempty"`
-	AllowSecretRotation    bool     `json:"allow_secret_rotation,omitempty"`
-	AutoRemediateCWEs      []string `json:"auto_remediate_cwes,omitempty"`
-	MinCanarySamples       int      `json:"min_canary_samples,omitempty"`
-	StageDwellSeconds      int      `json:"stage_dwell_seconds,omitempty"`
-	SLABridgeMinutes       int      `json:"sla_bridge_minutes"`
-	MaxP99LatencyMs        float64  `json:"max_p99_latency_ms"`
-	IssuedAt               string   `json:"issued_at"`
-	ExpiresAt              string   `json:"expires_at"`
+	WarrantID                  string   `json:"warrant_id"`
+	WarrantClass               string   `json:"warrant_class"`
+	ScopeServices              []string `json:"scope_services"`
+	ScopeAssets                []string `json:"scope_assets,omitempty"`
+	AuthorizedVendorDetections []string `json:"authorized_vendor_detections,omitempty"`
+	MaxCVSS                    float64  `json:"max_cvss"`
+	KEVEligible                bool     `json:"kev_eligible"`
+	MaxBlastRadiusReplicas     int      `json:"max_blast_radius_replicas"`
+	AllowStatefulPatches       bool     `json:"allow_stateful_patches"`
+	AllowGuardedCanary         bool     `json:"allow_guarded_canary,omitempty"`
+	AllowSecretRotation        bool     `json:"allow_secret_rotation,omitempty"`
+	AutoRemediateCWEs          []string `json:"auto_remediate_cwes,omitempty"`
+	MinCanarySamples           int      `json:"min_canary_samples,omitempty"`
+	StageDwellSeconds          int      `json:"stage_dwell_seconds,omitempty"`
+	SLABridgeMinutes           int      `json:"sla_bridge_minutes"`
+	MaxP99LatencyMs            float64  `json:"max_p99_latency_ms"`
+	IssuedAt                   string   `json:"issued_at"`
+	ExpiresAt                  string   `json:"expires_at"`
 }
 
 // WarrantRecord represents an immutable Standing Warrant row in warrant_envelopes.
 type WarrantRecord struct {
-	WarrantID              string          `json:"warrant_id"`
-	WarrantClass           string          `json:"warrant_class"`
-	ScopeServices          []string        `json:"scope_services"`
-	MaxCVSS                float64         `json:"max_cvss"`
+	WarrantID                  string          `json:"warrant_id"`
+	WarrantClass               string          `json:"warrant_class"`
+	ScopeServices              []string        `json:"scope_services"`
+	ScopeAssets                []string        `json:"scope_assets,omitempty"`
+	AuthorizedVendorDetections []string        `json:"authorized_vendor_detections,omitempty"`
+	MaxCVSS                    float64         `json:"max_cvss"`
 	KEVEligible            bool            `json:"kev_eligible"`
 	MaxBlastRadiusReplicas int             `json:"max_blast_radius_replicas"`
 	AllowStatefulPatches   bool            `json:"allow_stateful_patches"`
@@ -534,9 +595,25 @@ type RemediationItem struct {
 	LockoutPolicyID  string                  `json:"lockout_policy_id,omitempty"`
 	BridgeID         string                  `json:"bridge_id,omitempty"`
 	BridgeSLAMIN     int                     `json:"bridge_sla_minutes"`
-	AttestationID    string                  `json:"attestation_id,omitempty"`
-	PatchMetadata    *ExtractedPatchMetadata `json:"patch_metadata,omitempty"`
-	ShadowReport     *ShadowComparisonReport `json:"shadow_report,omitempty"`
+	AttestationID            string                  `json:"attestation_id,omitempty"`
+	FinderVendor             string                  `json:"finder_vendor,omitempty"`
+	VendorDetectionID        string                  `json:"vendor_detection_id,omitempty"`
+	CVEMappingStatus         string                  `json:"cve_mapping_status,omitempty"`
+	NormalizedDetectionState string                  `json:"normalized_detection_state,omitempty"`
+	AssetIdentity            *AssetIdentity          `json:"asset_identity,omitempty"`
+	FirstSeenAt              *time.Time              `json:"first_seen_at,omitempty"`
+	LastSeenAt               *time.Time              `json:"last_seen_at,omitempty"`
+	DistributorID            string                  `json:"distributor_id,omitempty"`
+	LatestOrderID            string                  `json:"latest_order_id,omitempty"`
+	ClosureCompleteness      string                  `json:"closure_completeness,omitempty"`
+	TargetedAssetCount       int                     `json:"targeted_asset_count,omitempty"`
+	LandedAssetCount         int                     `json:"landed_asset_count,omitempty"`
+	FailedAssetCount         int                     `json:"failed_asset_count,omitempty"`
+	PendingAssetCount        int                     `json:"pending_asset_count,omitempty"`
+	RebootWaitingCount       int                     `json:"reboot_waiting_count,omitempty"`
+	RolledBackAssetCount     int                     `json:"rolled_back_asset_count,omitempty"`
+	PatchMetadata            *ExtractedPatchMetadata `json:"patch_metadata,omitempty"`
+	ShadowReport             *ShadowComparisonReport `json:"shadow_report,omitempty"`
 	CreatedAt        time.Time               `json:"created_at"`
 	BridgedAt        *time.Time              `json:"bridged_at,omitempty"`
 	ClosedAt         *time.Time              `json:"closed_at,omitempty"`
@@ -914,9 +991,18 @@ type AttestationRecord struct {
 	Slot1Email           string           `json:"slot1_email"`
 	Slot2PrincipalID     string           `json:"slot2_principal_id"`
 	Slot2Email           string           `json:"slot2_email"`
-	TwinTranscriptSHA256 string           `json:"twin_transcript_sha256"`
-	AssuranceTier        string           `json:"assurance_tier"`
-	SignerBackend        string           `json:"signer_backend"`
+	TwinTranscriptSHA256    string           `json:"twin_transcript_sha256"`
+	AssuranceTier           string           `json:"assurance_tier"`
+	ClosureCompleteness     string           `json:"closure_completeness,omitempty"`
+	TargetedAssetCount      int              `json:"targeted_asset_count,omitempty"`
+	LandedAssetCount        int              `json:"landed_asset_count,omitempty"`
+	FailedAssetCount        int              `json:"failed_asset_count,omitempty"`
+	PendingAssetCount       int              `json:"pending_asset_count,omitempty"`
+	RebootWaitingCount      int              `json:"reboot_waiting_count,omitempty"`
+	DistributorID           string           `json:"distributor_id,omitempty"`
+	DistributorOrderID      string           `json:"distributor_order_id,omitempty"`
+	DistributorReportSHA256 string           `json:"distributor_report_sha256,omitempty"`
+	SignerBackend           string           `json:"signer_backend"`
 	FleetDigestManifest  []PodDigestEntry `json:"fleet_digest_manifest"`
 	LockoutPolicyID      string           `json:"lockout_policy_id"`
 	ReverifyExpiresAt    time.Time        `json:"reverify_expires_at"`
@@ -1017,6 +1103,8 @@ type GlobalScoreboard struct {
 	AwaitingDualKeyInboxCount    int         `json:"awaiting_dual_key_inbox_count"`
 	ActiveDriftViolationsCount   int         `json:"active_drift_violations_count"`
 	RollbackFailuresCount        int         `json:"rollback_failures_count"`
+	UnmappedAdvisoriesCount      int         `json:"unmapped_advisories_count,omitempty"`
+	PartialClosuresCount         int         `json:"partial_closures_count,omitempty"`
 }
 
 // FeedMode constants for offline air-gapped enclaves vs. live public threat feeds.

@@ -10,7 +10,7 @@ import (
 )
 
 // Version is the semantic version of the G1-Warrant Go SDK.
-const Version = "1.1.0"
+const Version = "1.2.0"
 
 // Re-exported protocol constants for callers outside internal/.
 const (
@@ -77,6 +77,40 @@ const (
 	GovActionRecertifyAgentIdentity       = models.GovActionRecertifyAgentIdentity
 	GovActionRevokeAgentIdentity          = models.GovActionRevokeAgentIdentity
 	GovActionEmitIGAEvent                 = models.GovActionEmitIGAEvent
+
+	AssuranceTier0DistributorDispatchOnly = models.AssuranceTier0DistributorDispatchOnly
+
+	FinderVendorSARIF    = models.FinderVendorSARIFGeneric
+	FinderVendorQualys   = models.FinderVendorQualysVMDR
+	FinderVendorTenable  = models.FinderVendorTenableIOSC
+	FinderVendorRapid7   = models.FinderVendorRapid7InsightVM
+	FinderVendorTrivy    = models.FinderVendorTrivy
+	FinderVendorWiz      = models.FinderVendorWiz
+	FinderVendorSemgrep  = models.FinderVendorSemgrep
+	FinderVendorSnyk     = models.FinderVendorSnyk
+
+	CVEMappingStatusMapped         = models.CVEMappingStatusMapped
+	CVEMappingStatusUnmappedVendor = models.CVEMappingStatusUnmappedVendor
+
+	ClosureCompletenessFull         = models.ClosureCompletenessFull
+	ClosureCompletenessPartial      = models.ClosureCompletenessPartial
+	ClosureCompletenessDispatchOnly = models.ClosureCompletenessDispatchOnly
+
+	DistributorK8sCiliumNative    = models.DistributorK8sCiliumNative
+	DistributorArgoCD             = models.DistributorArgoCD
+	DistributorFlux               = models.DistributorFlux
+	DistributorMSIntune           = models.DistributorMSIntune
+	DistributorMSMECM             = models.DistributorMSMECM
+	DistributorMSWSUS             = models.DistributorMSWSUS
+	DistributorAnsibleAWX         = models.DistributorAnsibleAWX
+	DistributorRedHatSatellite    = models.DistributorRedHatSatellite
+	DistributorJamfPro            = models.DistributorJamfPro
+	DistributorAWSSSM             = models.DistributorAWSSSM
+	DistributorAzureUpdateManager = models.DistributorAzureUpdateManager
+	DistributorGCPOSConfig        = models.DistributorGCPOSConfig
+	DistributorTaniumPatch        = models.DistributorTaniumPatch
+	DistributorIvantiNeurons      = models.DistributorIvantiNeurons
+	DistributorAutomox            = models.DistributorAutomox
 )
 
 // Public type aliases re-exported cleanly for external Go SDK consumers.
@@ -124,6 +158,19 @@ type (
 	FeedSyncRun                 = models.FeedSyncRun
 	LiveFeedStatus              = models.LiveFeedStatus
 	ExtractedOSVEntry           = models.ExtractedOSVEntry
+	AssetIdentity               = models.AssetIdentity
+	AssetIdentityAlias          = models.AssetIdentityAlias
+	FixIdentity                 = models.FixIdentity
+	AssetTarget                 = models.AssetTarget
+	RolloutWave                 = models.RolloutWave
+	RolloutPlan                 = models.RolloutPlan
+	NativeRollbackSpec          = models.NativeRollbackSpec
+	DeploymentOrder             = models.DeploymentOrder
+	DeploymentDispatchReceipt   = models.DeploymentDispatchReceipt
+	AssetDeploymentStatus       = models.AssetDeploymentStatus
+	DeploymentResult            = models.DeploymentResult
+	DistributorCapabilities     = models.DistributorCapabilities
+	DistributorDescriptor       = models.DistributorDescriptor
 )
 
 // APIError represents a structured non-2xx HTTP response from warrantd.

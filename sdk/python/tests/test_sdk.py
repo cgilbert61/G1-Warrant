@@ -46,7 +46,7 @@ class TestG1WarrantCryptoAndSDK(unittest.TestCase):
         )
 
     def test_split_keygen_hygiene_and_governance_envelopes(self) -> None:
-        self.assertEqual(__version__, "1.1.0")
+        self.assertEqual(__version__, "1.2.0")
         so = generate_ed25519_signer_bundle("usr-so", "so@agency.gov", "Alice SO", ROLE_SERVICE_OWNER)
         ao = generate_ed25519_signer_bundle("usr-ao", "ao@agency.gov", "Bob AO", ROLE_AUTHORIZING_OFFICIAL)
         so2 = generate_ed25519_signer_bundle("usr-so2", "so2@agency.gov", "Carol SO2", ROLE_SERVICE_OWNER)
@@ -186,6 +186,27 @@ class TestG1WarrantCryptoAndSDK(unittest.TestCase):
         self.assertIn("X-Warrant-Task-DSSE", hdrs)
         self.assertTrue(hdrs["X-Warrant-Agent-PoP"].startswith("1795000000."))
 
+    def test_v1_2_0_finder_and_distributor_contracts(self) -> None:
+        env = draft_warrant_envelope(
+            scope_services=["payments-ledger-api"],
+            scope_assets=["payments-ledger-api", "srv-win-01"],
+            authorized_vendor_detections=["QID-99101"],
+        )
+        decoded = json.loads(base64.b64decode(env["payload"]).decode("utf-8"))
+        self.assertEqual(decoded["scope_assets"], ["payments-ledger-api", "srv-win-01"])
+        self.assertEqual(decoded["authorized_vendor_detections"], ["QID-99101"])
+
+        cli = WarrantClient("http://localhost:8080")
+        with self.assertRaises(ValueError):
+            cli.submit_finder_intake("unsupported-scanner", b"{}")
+
+        sdk_root = Path(__file__).resolve().parents[1]
+        self.assertTrue((sdk_root / "LICENSE").is_file())
+        self.assertTrue((sdk_root / "NOTICE").is_file())
+        pyproject_text = (sdk_root / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn("LICENSE", pyproject_text)
+        self.assertIn("NOTICE", pyproject_text)
+
     def test_live_server_integration_if_running(self) -> None:
         cli = WarrantClient("http://localhost:8080", timeout=2.0)
         try:
@@ -198,10 +219,10 @@ class TestG1WarrantCryptoAndSDK(unittest.TestCase):
         sb = cli.scoreboard()
         self.assertIn("active_warrants_count", sb)
 
-        # Verify 6-chain ledger verification passes on live server
+        # Verify ledger hash-chain verification passes on live server
         chain_rep = cli.verify_ledger_chains()
         self.assertTrue(chain_rep["all_valid"])
-        self.assertEqual(len(chain_rep["tables"]), 6)
+        self.assertGreaterEqual(len(chain_rep["tables"]), 6)
 
         # Verify simulator clean-room estate seeding (6 workloads)
         estate = cli.list_estate()

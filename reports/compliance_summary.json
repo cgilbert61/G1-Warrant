@@ -1,18 +1,18 @@
 {
   "framework": "G1-Warrant Federal DevSecOps Pipeline",
   "fisma_id": "G1-WARRANT-001",
-  "timestamp": "2026-11-22T03:05:13.149102+00:00",
+  "timestamp": "2026-11-23T04:06:54.415548+00:00",
   "total_gates": 1,
   "passed_gates": 1,
   "failed_gates": 0,
-  "duration_seconds": 17.36,
+  "duration_seconds": 32.97,
   "gates": [
     {
-      "gate": "IaC Security Scanning",
-      "tool": "Checkov",
-      "standard": "NIST SP 800-53 CM-2 / DISA STIG K8s & Docker",
+      "gate": "Secrets Detection",
+      "tool": "Gitleaks",
+      "standard": "NIST SP 800-53 IA-5 / DISA STIG",
       "status": "PASS",
-      "report": "D:\\G1-Warrant\\reports\\checkov.sarif",
+      "report": "D:\\G1-Warrant\\reports\\gitleaks.sarif",
       "findings": 0
     }
   ]

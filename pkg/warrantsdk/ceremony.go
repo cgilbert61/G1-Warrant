@@ -253,9 +253,11 @@ type WarrantDraftOptions struct {
 	AutoRemediateCWEs      []string
 	MinCanarySamples       int
 	StageDwellSeconds      int
-	SLABridgeMinutes       int
-	MaxP99LatencyMs        float64
-	TTLDays                int
+	SLABridgeMinutes           int
+	MaxP99LatencyMs            float64
+	TTLDays                    int
+	ScopeAssets                []string
+	AuthorizedVendorDetections []string
 }
 
 // DraftWarrantEnvelope builds an unsigned RFC 8785 JCS canonicalized DSSEv1 Standing Warrant envelope.
@@ -295,22 +297,24 @@ func DraftWarrantEnvelope(opts WarrantDraftOptions) (*Envelope, WarrantPayload, 
 	}
 	now := time.Now().UTC()
 	payload := WarrantPayload{
-		WarrantID:              opts.WarrantID,
-		WarrantClass:           opts.WarrantClass,
-		ScopeServices:          opts.ScopeServices,
-		MaxCVSS:                opts.MaxCVSS,
-		KEVEligible:            opts.KEVEligible,
-		MaxBlastRadiusReplicas: opts.MaxBlastRadiusReplicas,
-		AllowStatefulPatches:   opts.AllowStatefulPatches,
-		AllowGuardedCanary:     opts.AllowGuardedCanary,
-		AllowSecretRotation:    opts.AllowSecretRotation,
-		AutoRemediateCWEs:      opts.AutoRemediateCWEs,
-		MinCanarySamples:       opts.MinCanarySamples,
-		StageDwellSeconds:      opts.StageDwellSeconds,
-		SLABridgeMinutes:       opts.SLABridgeMinutes,
-		MaxP99LatencyMs:        opts.MaxP99LatencyMs,
-		IssuedAt:               now.Format(time.RFC3339),
-		ExpiresAt:              now.Add(time.Duration(opts.TTLDays) * 24 * time.Hour).Format(time.RFC3339),
+		WarrantID:                  opts.WarrantID,
+		WarrantClass:               opts.WarrantClass,
+		ScopeServices:              opts.ScopeServices,
+		ScopeAssets:                opts.ScopeAssets,
+		AuthorizedVendorDetections: opts.AuthorizedVendorDetections,
+		MaxCVSS:                    opts.MaxCVSS,
+		KEVEligible:                opts.KEVEligible,
+		MaxBlastRadiusReplicas:     opts.MaxBlastRadiusReplicas,
+		AllowStatefulPatches:       opts.AllowStatefulPatches,
+		AllowGuardedCanary:         opts.AllowGuardedCanary,
+		AllowSecretRotation:        opts.AllowSecretRotation,
+		AutoRemediateCWEs:          opts.AutoRemediateCWEs,
+		MinCanarySamples:           opts.MinCanarySamples,
+		StageDwellSeconds:          opts.StageDwellSeconds,
+		SLABridgeMinutes:           opts.SLABridgeMinutes,
+		MaxP99LatencyMs:            opts.MaxP99LatencyMs,
+		IssuedAt:                   now.Format(time.RFC3339),
+		ExpiresAt:                  now.Add(time.Duration(opts.TTLDays) * 24 * time.Hour).Format(time.RFC3339),
 	}
 	env, _, err := crypto.NewUnsignedEnvelope(PayloadTypeWarrant, payload)
 	if err != nil {

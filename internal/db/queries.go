@@ -18,7 +18,7 @@ import (
 // ListWarrants returns all Standing Warrants annotated with live revocation/expiration status.
 func (s *Store) ListWarrants(ctx context.Context) ([]models.WarrantRecord, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT w.warrant_id, w.warrant_class, w.scope_services, w.max_cvss, w.kev_eligible,
+		SELECT w.warrant_id, w.warrant_class, w.scope_services, w.scope_assets, w.authorized_vendor_detections, w.max_cvss, w.kev_eligible,
 		       w.max_blast_radius_replicas, w.allow_stateful_patches,
 		       w.allow_guarded_canary, w.allow_secret_rotation, w.auto_remediate_cwes,
 		       w.min_canary_samples, w.stage_dwell_seconds,
@@ -46,9 +46,9 @@ func (s *Store) ListWarrants(ctx context.Context) ([]models.WarrantRecord, error
 	out := []models.WarrantRecord{}
 	for rows.Next() {
 		var w models.WarrantRecord
-		var scopeRaw, cwesRaw, envRaw []byte
+		var scopeRaw, scopeAssetsRaw, authVendorRaw, cwesRaw, envRaw []byte
 		if err := rows.Scan(
-			&w.WarrantID, &w.WarrantClass, &scopeRaw, &w.MaxCVSS, &w.KEVEligible,
+			&w.WarrantID, &w.WarrantClass, &scopeRaw, &scopeAssetsRaw, &authVendorRaw, &w.MaxCVSS, &w.KEVEligible,
 			&w.MaxBlastRadiusReplicas, &w.AllowStatefulPatches,
 			&w.AllowGuardedCanary, &w.AllowSecretRotation, &cwesRaw,
 			&w.MinCanarySamples, &w.StageDwellSeconds,
@@ -61,6 +61,8 @@ func (s *Store) ListWarrants(ctx context.Context) ([]models.WarrantRecord, error
 			return nil, err
 		}
 		_ = json.Unmarshal(scopeRaw, &w.ScopeServices)
+		_ = json.Unmarshal(scopeAssetsRaw, &w.ScopeAssets)
+		_ = json.Unmarshal(authVendorRaw, &w.AuthorizedVendorDetections)
 		_ = json.Unmarshal(cwesRaw, &w.AutoRemediateCWEs)
 		_ = json.Unmarshal(envRaw, &w.DSSEEnvelope)
 		switch {
@@ -388,12 +390,15 @@ func (s *Store) GetEstateService(ctx context.Context, serviceID string) (*models
 
 // UpsertRemediation inserts or updates a RemediationItem in remediation_items.
 func (s *Store) UpsertRemediation(ctx context.Context, item *models.RemediationItem) error {
-	var patchRaw, shadowRaw []byte
+	var patchRaw, shadowRaw, assetIdentRaw []byte
 	if item.PatchMetadata != nil {
 		patchRaw, _ = json.Marshal(item.PatchMetadata)
 	}
 	if item.ShadowReport != nil {
 		shadowRaw, _ = json.Marshal(item.ShadowReport)
+	}
+	if item.AssetIdentity != nil {
+		assetIdentRaw, _ = json.Marshal(item.AssetIdentity)
 	}
 	if item.CreatedAt.IsZero() {
 		item.CreatedAt = time.Now().UTC()
@@ -405,6 +410,12 @@ func (s *Store) UpsertRemediation(ctx context.Context, item *models.RemediationI
 	if item.RemediationKind == "" {
 		item.RemediationKind = models.RemediationKindImagePatch
 	}
+	if item.CVEMappingStatus == "" {
+		item.CVEMappingStatus = models.CVEMappingStatusMapped
+	}
+	if item.NormalizedDetectionState == "" {
+		item.NormalizedDetectionState = models.DetectionStateActive
+	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO remediation_items (
 			remediation_id, remediation_kind, cve_id, cwe_id, is_kev, chained_exploit_enabler, cvss_score, service_id, warrant_id,
@@ -413,10 +424,16 @@ func (s *Store) UpsertRemediation(ctx context.Context, item *models.RemediationI
 			stateless_passed, schema_diff_passed, syscall_diff_passed,
 			twin_replay_status, assurance_tier, pod_sweep_matched, pod_sweep_total,
 			lockout_policy_id, bridge_id, bridge_sla_minutes, attestation_id,
+			finder_vendor, vendor_detection_id, cve_mapping_status, normalized_detection_state,
+			asset_identity_json, first_seen_at, last_seen_at,
+			distributor_id, latest_order_id, closure_completeness,
+			targeted_asset_count, landed_asset_count, failed_asset_count, pending_asset_count, reboot_waiting_count, rolled_back_asset_count,
 			patch_metadata, shadow_report, created_at, bridged_at, closed_at, updated_at
 		) VALUES (
 			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-			$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36
+			$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,
+			$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,
+			$47,$48,$49,$50,$51,$52
 		)
 		ON CONFLICT (remediation_id) DO UPDATE SET
 			remediation_kind = EXCLUDED.remediation_kind,
@@ -437,6 +454,22 @@ func (s *Store) UpsertRemediation(ctx context.Context, item *models.RemediationI
 			lockout_policy_id = EXCLUDED.lockout_policy_id,
 			bridge_id = EXCLUDED.bridge_id,
 			attestation_id = EXCLUDED.attestation_id,
+			finder_vendor = EXCLUDED.finder_vendor,
+			vendor_detection_id = EXCLUDED.vendor_detection_id,
+			cve_mapping_status = EXCLUDED.cve_mapping_status,
+			normalized_detection_state = EXCLUDED.normalized_detection_state,
+			asset_identity_json = EXCLUDED.asset_identity_json,
+			first_seen_at = EXCLUDED.first_seen_at,
+			last_seen_at = EXCLUDED.last_seen_at,
+			distributor_id = EXCLUDED.distributor_id,
+			latest_order_id = EXCLUDED.latest_order_id,
+			closure_completeness = EXCLUDED.closure_completeness,
+			targeted_asset_count = EXCLUDED.targeted_asset_count,
+			landed_asset_count = EXCLUDED.landed_asset_count,
+			failed_asset_count = EXCLUDED.failed_asset_count,
+			pending_asset_count = EXCLUDED.pending_asset_count,
+			reboot_waiting_count = EXCLUDED.reboot_waiting_count,
+			rolled_back_asset_count = EXCLUDED.rolled_back_asset_count,
 			patch_metadata = EXCLUDED.patch_metadata,
 			shadow_report = EXCLUDED.shadow_report,
 			bridged_at = EXCLUDED.bridged_at,
@@ -449,6 +482,10 @@ func (s *Store) UpsertRemediation(ctx context.Context, item *models.RemediationI
 		item.StatelessPassed, item.SchemaDiffPassed, item.SyscallPassed,
 		item.TwinReplayStatus, item.AssuranceTier, item.PodSweepMatched, item.PodSweepTotal,
 		item.LockoutPolicyID, item.BridgeID, item.BridgeSLAMIN, item.AttestationID,
+		item.FinderVendor, item.VendorDetectionID, item.CVEMappingStatus, item.NormalizedDetectionState,
+		assetIdentRaw, item.FirstSeenAt, item.LastSeenAt,
+		item.DistributorID, item.LatestOrderID, item.ClosureCompleteness,
+		item.TargetedAssetCount, item.LandedAssetCount, item.FailedAssetCount, item.PendingAssetCount, item.RebootWaitingCount, item.RolledBackAssetCount,
 		patchRaw, shadowRaw, item.CreatedAt, item.BridgedAt, item.ClosedAt, item.UpdatedAt,
 	)
 	return err
@@ -463,6 +500,10 @@ func (s *Store) ListRemediations(ctx context.Context) ([]models.RemediationItem,
 		       stateless_passed, schema_diff_passed, syscall_diff_passed,
 		       twin_replay_status, assurance_tier, pod_sweep_matched, pod_sweep_total,
 		       lockout_policy_id, bridge_id, bridge_sla_minutes, attestation_id,
+		       finder_vendor, vendor_detection_id, cve_mapping_status, normalized_detection_state,
+		       asset_identity_json, first_seen_at, last_seen_at,
+		       distributor_id, latest_order_id, closure_completeness,
+		       targeted_asset_count, landed_asset_count, failed_asset_count, pending_asset_count, reboot_waiting_count, rolled_back_asset_count,
 		       patch_metadata, shadow_report, created_at, bridged_at, closed_at, updated_at
 		FROM remediation_items ORDER BY updated_at DESC, created_at DESC
 	`)
@@ -473,7 +514,7 @@ func (s *Store) ListRemediations(ctx context.Context) ([]models.RemediationItem,
 	out := []models.RemediationItem{}
 	for rows.Next() {
 		var r models.RemediationItem
-		var patchRaw, shadowRaw []byte
+		var patchRaw, shadowRaw, assetIdentRaw []byte
 		if err := rows.Scan(
 			&r.RemediationID, &r.RemediationKind, &r.CVEID, &r.CWEID, &r.IsKEV, &r.ChainedExploitEnabler, &r.CVSSScore, &r.ServiceID, &r.WarrantID,
 			&r.SecretResourceName, &r.VulnerableDigest, &r.PatchedDigest, &r.PackagePURL, &r.VulnerableSymbol, &r.ExploitVector,
@@ -481,9 +522,19 @@ func (s *Store) ListRemediations(ctx context.Context) ([]models.RemediationItem,
 			&r.StatelessPassed, &r.SchemaDiffPassed, &r.SyscallPassed,
 			&r.TwinReplayStatus, &r.AssuranceTier, &r.PodSweepMatched, &r.PodSweepTotal,
 			&r.LockoutPolicyID, &r.BridgeID, &r.BridgeSLAMIN, &r.AttestationID,
+			&r.FinderVendor, &r.VendorDetectionID, &r.CVEMappingStatus, &r.NormalizedDetectionState,
+			&assetIdentRaw, &r.FirstSeenAt, &r.LastSeenAt,
+			&r.DistributorID, &r.LatestOrderID, &r.ClosureCompleteness,
+			&r.TargetedAssetCount, &r.LandedAssetCount, &r.FailedAssetCount, &r.PendingAssetCount, &r.RebootWaitingCount, &r.RolledBackAssetCount,
 			&patchRaw, &shadowRaw, &r.CreatedAt, &r.BridgedAt, &r.ClosedAt, &r.UpdatedAt,
 		); err != nil {
 			return nil, err
+		}
+		if len(assetIdentRaw) > 0 {
+			var ai models.AssetIdentity
+			if json.Unmarshal(assetIdentRaw, &ai) == nil {
+				r.AssetIdentity = &ai
+			}
 		}
 		if len(patchRaw) > 0 {
 			var pm models.ExtractedPatchMetadata
@@ -890,7 +941,10 @@ func (s *Store) ListAttestations(ctx context.Context) ([]models.AttestationRecor
 	rows, err := s.pool.Query(ctx, `
 		SELECT attestation_id, remediation_id, service_id, cve_id, is_kev, warrant_id,
 		       slot1_principal_id, slot1_email, slot2_principal_id, slot2_email,
-		       twin_transcript_sha256, assurance_tier, signer_backend, fleet_digest_manifest, lockout_policy_id, reverify_expires_at,
+		       twin_transcript_sha256, assurance_tier,
+		       closure_completeness, targeted_asset_count, landed_asset_count, failed_asset_count, pending_asset_count, reboot_waiting_count,
+		       distributor_id, distributor_order_id, distributor_report_sha256,
+		       signer_backend, fleet_digest_manifest, lockout_policy_id, reverify_expires_at,
 		       dsse_envelope, oscal_poam_json, ttvr_seconds, prev_hash, entry_hash, minted_at
 		FROM attestation_records ORDER BY seq_no DESC
 	`)
@@ -905,7 +959,10 @@ func (s *Store) ListAttestations(ctx context.Context) ([]models.AttestationRecor
 		if err := rows.Scan(
 			&a.AttestationID, &a.RemediationID, &a.ServiceID, &a.CVEID, &a.IsKEV, &a.WarrantID,
 			&a.Slot1PrincipalID, &a.Slot1Email, &a.Slot2PrincipalID, &a.Slot2Email,
-			&a.TwinTranscriptSHA256, &a.AssuranceTier, &a.SignerBackend, &manifestRaw, &a.LockoutPolicyID, &a.ReverifyExpiresAt,
+			&a.TwinTranscriptSHA256, &a.AssuranceTier,
+			&a.ClosureCompleteness, &a.TargetedAssetCount, &a.LandedAssetCount, &a.FailedAssetCount, &a.PendingAssetCount, &a.RebootWaitingCount,
+			&a.DistributorID, &a.DistributorOrderID, &a.DistributorReportSHA256,
+			&a.SignerBackend, &manifestRaw, &a.LockoutPolicyID, &a.ReverifyExpiresAt,
 			&envRaw, &oscalRaw, &a.TTVRSeconds, &a.PrevHash, &a.EntryHash, &a.MintedAt,
 		); err != nil {
 			return nil, err
@@ -1126,6 +1183,13 @@ func (s *Store) ComputeScoreboard(ctx context.Context) (*models.GlobalScoreboard
 		pendingTransfersCount = len(transfers)
 	}
 
+	var unmappedCount, partialClosuresCount int
+	_ = s.pool.QueryRow(ctx, `
+		SELECT
+			(SELECT COUNT(*) FROM remediation_items WHERE cve_mapping_status = 'UNMAPPED_VENDOR_ADVISORY'),
+			(SELECT COUNT(*) FROM attestation_records WHERE closure_completeness = 'PARTIAL')
+	`).Scan(&unmappedCount, &partialClosuresCount)
+
 	return &models.GlobalScoreboard{
 		FreezeState:                  fs,
 		ActiveWarrantsCount:          activeWarrants,
@@ -1141,6 +1205,8 @@ func (s *Store) ComputeScoreboard(ctx context.Context) (*models.GlobalScoreboard
 		AwaitingDualKeyInboxCount:    pendingInbox + pendingTransfersCount,
 		ActiveDriftViolationsCount:   driftCount,
 		RollbackFailuresCount:        rollbackCount,
+		UnmappedAdvisoriesCount:      unmappedCount,
+		PartialClosuresCount:         partialClosuresCount,
 	}, nil
 }
 

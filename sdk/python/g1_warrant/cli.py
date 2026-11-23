@@ -156,6 +156,18 @@ def main(argv: list[str] | None = None) -> int:
     p_aud_vault = sub.add_parser("auditor-vault", help="Inspect the read-only /auditor vault with a g1aud_* token")
     p_aud_vault.add_argument("--token", default=None)
 
+    p_fintake = sub.add_parser("finder-intake", help="Submit Qualys VMDR, Tenable.io/sc, or Rapid7 InsightVM findings (WN-7)")
+    p_fintake.add_argument("vendor", choices=["qualys", "tenable", "rapid7"])
+    p_fintake.add_argument("report_file", type=Path)
+    p_fintake.add_argument("--service", default=None)
+    p_fintake.add_argument("--distributor", default=None)
+
+    p_dist = sub.add_parser("distributors", help="List WN-8 patch distributors, orders, results, or trigger native rollback")
+    p_dist.add_argument("action", choices=["list", "orders", "results", "aliases", "rollback"])
+    p_dist.add_argument("--id", default=None, help="Remediation ID (orders) or Order ID (results/rollback)")
+    p_dist.add_argument("--reason", default="OPERATOR_CLI_DISTRIBUTOR_ROLLBACK")
+    p_dist.add_argument("--key", type=Path, default=None, help="Active principal .priv.json for rollback")
+
     args = parser.parse_args(argv)
 
     try:
@@ -343,6 +355,32 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "auditor-vault":
             _dump(cli.get_auditor_vault(bearer_token=args.token))
+            return 0
+
+        if args.command == "finder-intake":
+            _dump(
+                cli.submit_finder_intake(
+                    args.vendor,
+                    args.report_file,
+                    target_service=args.service,
+                    distributor_id=args.distributor,
+                )
+            )
+            return 0
+
+        if args.command == "distributors":
+            if args.action == "list":
+                _dump(cli.list_distributors())
+            elif args.action == "orders":
+                _dump(cli.list_deployment_orders(remediation_id=args.id))
+            elif args.action == "results":
+                _dump(cli.list_deployment_results(order_id=args.id))
+            elif args.action == "aliases":
+                _dump(cli.list_asset_aliases())
+            elif args.action == "rollback":
+                if not args.id:
+                    raise ValueError("--id <order-id> is required for distributors rollback")
+                _dump(cli.rollback_distributor_order(args.id, reason_code=args.reason, signer_bundle=_load_priv_key(args.key)))
             return 0
 
     except WarrantAPIError as exc:

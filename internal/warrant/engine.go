@@ -165,10 +165,12 @@ func (e *Engine) SubmitDualSignedWarrant(ctx context.Context, env crypto.Envelop
 	}
 
 	rec := &models.WarrantRecord{
-		WarrantID:              wp.WarrantID,
-		WarrantClass:           wp.WarrantClass,
-		ScopeServices:          wp.ScopeServices,
-		MaxCVSS:                wp.MaxCVSS,
+		WarrantID:                  wp.WarrantID,
+		WarrantClass:               wp.WarrantClass,
+		ScopeServices:              wp.ScopeServices,
+		ScopeAssets:                wp.ScopeAssets,
+		AuthorizedVendorDetections: wp.AuthorizedVendorDetections,
+		MaxCVSS:                    wp.MaxCVSS,
 		KEVEligible:            wp.KEVEligible,
 		MaxBlastRadiusReplicas: wp.MaxBlastRadiusReplicas,
 		AllowStatefulPatches:   wp.AllowStatefulPatches,

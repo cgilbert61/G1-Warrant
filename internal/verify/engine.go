@@ -28,6 +28,21 @@ type VerificationBundle struct {
 	VulnerablePkgAbsentInSBOM bool
 	PodManifest               []models.PodDigestEntry
 	Lockout                   models.AdmissionLockout
+
+	// v1.2.0 WN-8 Per-Asset Distributor Closure Evidence
+	EvidenceGranularity     string
+	ClosureCompleteness     string
+	TargetedAssetCount      int
+	LandedAssetCount        int
+	FailedAssetCount        int
+	PendingAssetCount       int
+	RebootWaitingCount      int
+	RolledBackAssetCount    int
+	DistributorID           string
+	DistributorOrderID      string
+	DistributorReportSHA256 string
+	LandedAssetKeys         []string
+	NonLandedAssetKeys      []string
 }
 
 // Engine implements N3: Differential Twin Replay (with Positive-Control Verification),

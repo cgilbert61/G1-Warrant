@@ -178,8 +178,8 @@ func TestSplitKeygenHygieneAndPrivateKeyClientRejection(t *testing.T) {
 }
 
 func TestRequestScopedGovernanceHeadersAndEpochThawDrafts(t *testing.T) {
-	if warrantsdk.Version != "1.1.0" {
-		t.Fatalf("expected warrantsdk.Version == 1.1.0, got %s", warrantsdk.Version)
+	if warrantsdk.Version != "1.2.0" {
+		t.Fatalf("expected warrantsdk.Version == 1.2.0, got %s", warrantsdk.Version)
 	}
 	so, err := warrantsdk.GenerateEd25519SignerBundle("usr-so-scope", "so-scope@agency.gov", "Scope SO", warrantsdk.RoleServiceOwner)
 	if err != nil {
@@ -246,8 +246,8 @@ func TestRequestScopedGovernanceHeadersAndEpochThawDrafts(t *testing.T) {
 }
 
 func TestAgentProvenanceTokenExchangeAndWirePoPHeaders(t *testing.T) {
-	if warrantsdk.Version != "1.1.0" {
-		t.Fatalf("expected Go SDK Version 1.1.0, got %s", warrantsdk.Version)
+	if warrantsdk.Version != "1.2.0" {
+		t.Fatalf("expected Go SDK Version 1.2.0, got %s", warrantsdk.Version)
 	}
 	builder, err := warrantsdk.GenerateAgentKeyBundle("bld-test", "Builder")
 	if err != nil {
@@ -275,5 +275,57 @@ func TestAgentProvenanceTokenExchangeAndWirePoPHeaders(t *testing.T) {
 	}, nil)
 	if err != nil || len(xchEnv.Signatures) != 1 {
 		t.Fatalf("SignTokenExchangeRequest failed: %v", err)
+	}
+}
+
+func TestV120FinderIntakeAndDistributorSDKContracts(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/intake/qualys", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("distributor_id") != warrantsdk.DistributorAnsibleAWX {
+			t.Fatalf("expected distributor_id=%s, got %s", warrantsdk.DistributorAnsibleAWX, r.URL.Query().Get("distributor_id"))
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode([]warrantsdk.RemediationItem{
+			{
+				RemediationID:     "rem-q-1",
+				CVEID:             "UNMAPPED-QID-99101",
+				FinderVendor:      warrantsdk.FinderVendorQualys,
+				VendorDetectionID: "QID-99101",
+				CVEMappingStatus:  warrantsdk.CVEMappingStatusUnmappedVendor,
+			},
+		})
+	})
+	mux.HandleFunc("GET /api/v1/distributors", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]warrantsdk.DistributorDescriptor{
+			{DistributorID: warrantsdk.DistributorMSIntune, DisplayName: "Microsoft Intune"},
+			{DistributorID: warrantsdk.DistributorAnsibleAWX, DisplayName: "Ansible AWX"},
+		})
+	})
+	mux.HandleFunc("GET /api/v1/distributors/orders", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]warrantsdk.DeploymentOrder{
+			{OrderID: "ord-123", DistributorID: warrantsdk.DistributorAnsibleAWX, WarrantID: "wrt-1"},
+		})
+	})
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	cli := warrantsdk.NewClient(ts.URL, warrantsdk.WithIntakeToken("g1int_test"))
+	ctx := context.Background()
+
+	items, err := cli.SubmitFinderIntake(ctx, "qualys", []byte(`<HOST_LIST_VM_DETECTION_OUTPUT/>`), warrantsdk.FinderIntakeOptions{
+		TargetService: "payments-ledger-api",
+		DistributorID: warrantsdk.DistributorAnsibleAWX,
+	})
+	if err != nil || len(items) != 1 || items[0].CVEMappingStatus != warrantsdk.CVEMappingStatusUnmappedVendor {
+		t.Fatalf("SubmitFinderIntake failed: %+v err=%v", items, err)
+	}
+	dists, err := cli.ListDistributors(ctx)
+	if err != nil || len(dists) != 2 {
+		t.Fatalf("ListDistributors failed: %+v err=%v", dists, err)
+	}
+	orders, err := cli.ListDeploymentOrders(ctx, "rem-q-1")
+	if err != nil || len(orders) != 1 || orders[0].OrderID != "ord-123" {
+		t.Fatalf("ListDeploymentOrders failed: %+v err=%v", orders, err)
 	}
 }

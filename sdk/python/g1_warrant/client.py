@@ -77,7 +77,7 @@ class WarrantClient:
         full_path = f"{self._base_path}{path}"
         conn_cls = http.client.HTTPSConnection if self._scheme == "https" else http.client.HTTPConnection
         conn = conn_cls(self._host, self._port, timeout=self.timeout)
-        headers: dict[str, str] = {"User-Agent": "g1-warrant-python-sdk/1.1.0"}
+        headers: dict[str, str] = {"User-Agent": "g1-warrant-python-sdk/1.2.0"}
         if content_type:
             headers["Content-Type"] = content_type
         tok = (bearer_override if bearer_override is not None else self.auditor_token).strip()
@@ -649,3 +649,119 @@ class WarrantClient:
             extra["X-Warrant-IGA-Token"] = iga_token
         raw = self._request_raw("POST", "/api/v1/iga/events", body=raw_body, content_type="application/json", extra_headers=extra or None)
         return json.loads(raw.decode("utf-8"))
+
+    # ------------------------------------------------------------------
+    # v1.2.0 WN-7 Finder Translation & WN-8 Distributor Translation
+    # ------------------------------------------------------------------
+    def submit_finder_intake(
+        self,
+        vendor: str,
+        raw_payload: bytes | str | Path | dict[str, Any],
+        target_service: str | None = None,
+        distributor_id: str | None = None,
+        patch_profile: str | None = None,
+        max_findings: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Submit Qualys VMDR (XML/JSON), Tenable.io/sc (JSON), or Rapid7 InsightVM (JSON) findings via WN-7."""
+        slug = vendor.strip().lower()
+        alias_map = {
+            "qualys": "qualys",
+            "qualys_vmdr": "qualys",
+            "tenable": "tenable",
+            "tenable_io_sc": "tenable",
+            "tenable.io": "tenable",
+            "tenable.sc": "tenable",
+            "rapid7": "rapid7",
+            "rapid7_insightvm": "rapid7",
+        }
+        if slug not in alias_map:
+            raise ValueError(f"Unsupported finder vendor {vendor!r}; expected qualys, tenable, or rapid7")
+        slug = alias_map[slug]
+
+        if isinstance(raw_payload, Path):
+            raw = raw_payload.read_bytes()
+        elif isinstance(raw_payload, dict):
+            raw = json.dumps(raw_payload).encode("utf-8")
+        elif isinstance(raw_payload, str):
+            raw = raw_payload.encode("utf-8")
+        else:
+            raw = raw_payload
+
+        params: dict[str, str] = {}
+        if target_service:
+            params["target_service"] = target_service
+        if distributor_id:
+            params["distributor_id"] = distributor_id
+        if patch_profile:
+            params["patch_profile"] = patch_profile
+        if max_findings and max_findings > 0:
+            params["max_findings"] = str(max_findings)
+
+        path = f"/api/v1/intake/{slug}"
+        if params:
+            path += "?" + urllib.parse.urlencode(params)
+        content_type = "application/xml" if raw.lstrip().startswith(b"<") else "application/json"
+        resp = self._request_raw("POST", path, body=raw, content_type=content_type)
+        return json.loads(resp.decode("utf-8"))
+
+    def list_asset_aliases(self) -> list[dict[str, Any]]:
+        return self._request_json("GET", "/api/v1/finders/aliases")
+
+    def upsert_asset_alias(
+        self,
+        alias: dict[str, Any],
+        signer_bundle: SignerKeyBundle | None = None,
+    ) -> dict[str, Any]:
+        return self._request_action_json(
+            "POST",
+            "/api/v1/finders/aliases",
+            "FEED_MUTATION",
+            {},
+            payload=alias,
+            signer_bundle=signer_bundle,
+        )
+
+    def list_distributors(self) -> list[dict[str, Any]]:
+        return self._request_json("GET", "/api/v1/distributors")
+
+    def list_deployment_orders(self, remediation_id: str | None = None) -> list[dict[str, Any]]:
+        path = "/api/v1/distributors/orders"
+        if remediation_id:
+            path += "?" + urllib.parse.urlencode({"remediation_id": remediation_id})
+        return self._request_json("GET", path)
+
+    def list_deployment_results(self, order_id: str | None = None) -> list[dict[str, Any]]:
+        path = "/api/v1/distributors/results"
+        if order_id:
+            path += "?" + urllib.parse.urlencode({"order_id": order_id})
+        return self._request_json("GET", path)
+
+    def dispatch_distributor_order(
+        self,
+        request: dict[str, Any],
+        signer_bundle: SignerKeyBundle | None = None,
+    ) -> dict[str, Any]:
+        return self._request_action_json(
+            "POST",
+            "/api/v1/distributors/dispatch",
+            "FEED_MUTATION",
+            {},
+            payload=request,
+            signer_bundle=signer_bundle,
+        )
+
+    def rollback_distributor_order(
+        self,
+        order_id: str,
+        reason_code: str = "OPERATOR_DISTRIBUTOR_ROLLBACK",
+        signer_bundle: SignerKeyBundle | None = None,
+    ) -> dict[str, Any]:
+        safe_id = urllib.parse.quote(order_id, safe="")
+        return self._request_action_json(
+            "POST",
+            f"/api/v1/distributors/orders/{safe_id}/rollback",
+            "EMERGENCY_ROLLBACK",
+            {"reason_code": reason_code},
+            payload={"reason_code": reason_code},
+            signer_bundle=signer_bundle,
+        )

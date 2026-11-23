@@ -189,7 +189,7 @@ export const View5AuditorLedger: React.FC<View5AuditorLedgerProps> = ({
               return (
                 <div key={att.attestation_id} className="bg-white border border-emerald-300 rounded p-4 space-y-3">
                   <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span className="text-xs font-mono font-bold text-slate-900">{att.attestation_id}</span>
                       <span className="text-xs font-mono font-bold px-2 py-0.5 rounded bg-emerald-50 border border-emerald-300 text-emerald-900">
                         {att.cve_id} · {att.service_id}
@@ -197,6 +197,24 @@ export const View5AuditorLedger: React.FC<View5AuditorLedgerProps> = ({
                       {att.is_kev && (
                         <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-red-600 text-white">
                           KEV CLOSED
+                        </span>
+                      )}
+                      {att.closure_completeness && (
+                        <span
+                          className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded border ${
+                            att.closure_completeness === 'FULL'
+                              ? 'bg-emerald-700 border-emerald-800 text-white'
+                              : att.closure_completeness === 'PARTIAL'
+                              ? 'bg-amber-100 border-amber-400 text-amber-950'
+                              : 'bg-slate-200 border-slate-400 text-slate-900'
+                          }`}
+                        >
+                          OSCAL: {att.closure_completeness}
+                        </span>
+                      )}
+                      {att.distributor_id && (
+                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-white">
+                          {att.distributor_id}
                         </span>
                       )}
                     </div>
@@ -229,8 +247,12 @@ export const View5AuditorLedger: React.FC<View5AuditorLedgerProps> = ({
                       <span className="text-slate-500">Twin Transcript:</span> {shortHash(att.twin_transcript_sha256, 16)}
                     </div>
                     <div>
-                      <span className="text-slate-500">Pods Attested:</span> {att.fleet_digest_manifest.length}/
-                      {att.fleet_digest_manifest.length} Running Patched Digest
+                      <span className="text-slate-500">Assets Attested:</span>{' '}
+                      {(att.targeted_asset_count || 0) > 0
+                        ? `${att.landed_asset_count || 0}/${att.targeted_asset_count} Landed (RebootWait: ${
+                            att.reboot_waiting_count || 0
+                          }, Failed: ${att.failed_asset_count || 0})`
+                        : `${att.fleet_digest_manifest.length}/${att.fleet_digest_manifest.length} Running Patched Digest`}
                     </div>
                     <div>
                       <span className="text-slate-500">TTVR:</span> {att.ttvr_seconds}s

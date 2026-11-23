@@ -67,6 +67,13 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		agents, _ := o.Store.ListAgentIdentities(ctx)
 		agentLifecycleEvents, _ := o.Store.ListAgentLifecycleEvents(ctx)
 		pendingSponsorTransfers, _ := o.Store.ListPendingSponsorTransfers(ctx)
+		distOrders, _ := o.Store.ListDeploymentOrders(ctx, "")
+		distResults, _ := o.Store.ListDeploymentResults(ctx, "")
+		assetAliases, _ := o.Store.ListAssetIdentityAliases(ctx)
+		var distDescriptors []models.DistributorDescriptor
+		if o.Distributors != nil {
+			distDescriptors = o.Distributors.ListDescriptors()
+		}
 		auditorTokens, _ := o.Store.ListAuditorTokens(ctx)
 		checkpoints, _ := o.Store.ListLedgerCheckpoints(ctx)
 		feedStatus, _ := o.Store.GetLiveFeedStatus(ctx)
@@ -103,6 +110,10 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			"agents":                    agents,
 			"agent_lifecycle_events":    agentLifecycleEvents,
 			"pending_sponsor_transfers": pendingSponsorTransfers,
+			"distributors":              distDescriptors,
+			"deployment_orders":         distOrders,
+			"deployment_results":        distResults,
+			"asset_aliases":             assetAliases,
 			"auditor_tokens":            auditorTokens,
 			"checkpoints":     checkpoints,
 			"feed_status":     feedStatus,
@@ -1266,6 +1277,8 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		rep.WitnessMode = o.N5Ledger.WitnessMode()
 		writeAPIJSON(w, http.StatusOK, rep)
 	})
+
+	o.registerFinderAndDistributorRoutes(mux)
 
 	// Scoped External Auditor Surface (Read-Only, Bearer Token Required)
 	mux.HandleFunc("GET /api/v1/auditor/vault", func(w http.ResponseWriter, r *http.Request) {

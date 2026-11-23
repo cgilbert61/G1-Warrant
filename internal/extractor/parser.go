@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/cgilbert61/G1-Warrant/internal/crypto"
+	"github.com/cgilbert61/G1-Warrant/internal/extractor/finders"
 	"github.com/cgilbert61/G1-Warrant/internal/models"
 )
 
@@ -968,7 +969,86 @@ func NewGovernedHTTPHandler(extractorDigest string, kernelPubKeysFn func() []ed2
 		}
 		writeJSON(w, http.StatusOK, res)
 	})
+	registerFinderRoute := func(routePath, vendor string) {
+		mux.HandleFunc("POST "+routePath, func(w http.ResponseWriter, r *http.Request) {
+			body, err := readBounded(w, r, 16<<20)
+			if err != nil {
+				writeJSON(w, statusForExtractorReadErr(err), map[string]string{"error": err.Error()})
+				return
+			}
+			if !checkAuth(w, r, body, "EXTRACT_ESTATE_FINDINGS") {
+				return
+			}
+			rawVendorPayload, opts := decodeFinderEnvelopeOrRaw(r, body)
+			tr, err := finders.LookupTranslator(vendor)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			res, err := tr.Translate(rawVendorPayload, extractorDigest, opts)
+			if err != nil {
+				writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, res)
+		})
+	}
+	registerFinderRoute("/extract/qualys", "qualys")
+	registerFinderRoute("/extract/tenable", "tenable")
+	registerFinderRoute("/extract/rapid7", "rapid7")
 	return mux
+}
+
+// FinderExtractEnvelope is an optional governed transport wrapper allowing warrantd to pass bounded asset-alias lookup maps
+// alongside base64-encoded raw scanner XML/JSON without mutating the underlying scanner bytes.
+type FinderExtractEnvelope struct {
+	G1FinderEnvelope        bool              `json:"g1_finder_envelope"`
+	RawPayloadB64           string            `json:"raw_payload_b64"`
+	DefaultServiceID        string            `json:"default_service_id,omitempty"`
+	DefaultVulnerableDigest string            `json:"default_vulnerable_digest,omitempty"`
+	DefaultPatchedDigest    string            `json:"default_patched_digest,omitempty"`
+	MaxFindings             int               `json:"max_findings,omitempty"`
+	AliasToService          map[string]string `json:"alias_to_service,omitempty"`
+	AliasToAssetKey         map[string]string `json:"alias_to_asset_key,omitempty"`
+}
+
+func decodeFinderEnvelopeOrRaw(r *http.Request, body []byte) ([]byte, finders.FinderTranslateOptions) {
+	maxFindings := 0
+	if mf := r.URL.Query().Get("max_findings"); mf != "" {
+		if parsed, pErr := strconv.Atoi(mf); pErr == nil && parsed > 0 {
+			maxFindings = parsed
+		}
+	}
+	opts := finders.FinderTranslateOptions{
+		DefaultServiceID:        r.URL.Query().Get("target_service"),
+		DefaultVulnerableDigest: r.URL.Query().Get("vulnerable_digest"),
+		DefaultPatchedDigest:    r.URL.Query().Get("patched_digest"),
+		MaxFindings:             maxFindings,
+	}
+	trimmed := strings.TrimSpace(string(body))
+	if strings.HasPrefix(trimmed, "{") && strings.Contains(trimmed, `"g1_finder_envelope"`) {
+		var env FinderExtractEnvelope
+		if json.Unmarshal(body, &env) == nil && env.G1FinderEnvelope && env.RawPayloadB64 != "" {
+			if decoded, err := crypto.DecodeBase64Any(env.RawPayloadB64); err == nil {
+				if env.DefaultServiceID != "" {
+					opts.DefaultServiceID = env.DefaultServiceID
+				}
+				if env.DefaultVulnerableDigest != "" {
+					opts.DefaultVulnerableDigest = env.DefaultVulnerableDigest
+				}
+				if env.DefaultPatchedDigest != "" {
+					opts.DefaultPatchedDigest = env.DefaultPatchedDigest
+				}
+				if env.MaxFindings > 0 {
+					opts.MaxFindings = env.MaxFindings
+				}
+				opts.AliasToService = env.AliasToService
+				opts.AliasToAssetKey = env.AliasToAssetKey
+				return decoded, opts
+			}
+		}
+	}
+	return body, opts
 }
 
 // ParseUntrustedSecretFindings parses Gitleaks (JSON array or SARIF 2.1.0), GitGuardian, or cloud secret-exposure

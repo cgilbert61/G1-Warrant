@@ -30,5 +30,6 @@ stopwords = [
   "synthetic_token",
   "SAMPLE_KEY",
   "slot2Key",
+  "holderPubB64",
   "oscal_catalog_key"
 ]

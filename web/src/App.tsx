@@ -487,7 +487,18 @@ export const App: React.FC = () => {
             bridges={snapshot.bridges}
             lockouts={snapshot.lockouts}
             drifts={snapshot.drifts}
+            distributors={snapshot.distributors}
+            deploymentOrders={snapshot.deployment_orders}
+            deploymentResults={snapshot.deployment_results}
             nowMs={nowMs}
+            onRollbackOrder={async (orderId, reason) => {
+              await postActionJSON(
+                `/api/v1/distributors/orders/${encodeURIComponent(orderId)}/rollback`,
+                { reason_code: reason },
+                'EMERGENCY_ROLLBACK',
+                { reason_code: reason }
+              );
+            }}
           />
         )}
 

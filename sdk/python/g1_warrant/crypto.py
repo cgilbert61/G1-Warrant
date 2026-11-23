@@ -399,6 +399,8 @@ def draft_warrant_envelope(
     max_p99_latency_ms: float = 120.0,
     ttl_days: int = 30,
     warrant_id: str | None = None,
+    scope_assets: list[str] | None = None,
+    authorized_vendor_detections: list[str] | None = None,
 ) -> dict[str, Any]:
     """Create an unsigned DSSEv1 Standing Warrant envelope ready for 2-of-2 AC-5 co-signing."""
     if not scope_services:
@@ -421,6 +423,10 @@ def draft_warrant_envelope(
         "issued_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "expires_at": exp.strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+    if scope_assets:
+        payload["scope_assets"] = scope_assets
+    if authorized_vendor_detections:
+        payload["authorized_vendor_detections"] = authorized_vendor_detections
     if auto_remediate_cwes:
         payload["auto_remediate_cwes"] = auto_remediate_cwes
     return draft_unsigned_envelope(PAYLOAD_TYPE_WARRANT, payload)

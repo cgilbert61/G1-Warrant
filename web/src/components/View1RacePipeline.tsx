@@ -282,11 +282,21 @@ export const View1RacePipeline: React.FC<View1RacePipelineProps> = ({
                     >
                       <div className="flex items-start justify-between gap-1">
                         <div>
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex flex-wrap items-center gap-1.5">
                             <span className="text-xs font-mono font-bold text-slate-900">{item.cve_id}</span>
                             {item.is_kev && (
                               <span className="text-[10px] font-mono font-bold px-1.5 py-0.2 bg-red-600 text-white rounded">
                                 CISA KEV
+                              </span>
+                            )}
+                            {item.finder_vendor && (
+                              <span className="text-[10px] font-mono font-semibold px-1.5 py-0.2 bg-slate-800 text-white rounded">
+                                {item.finder_vendor}
+                              </span>
+                            )}
+                            {item.cve_mapping_status === 'UNMAPPED_VENDOR_ADVISORY' && (
+                              <span className="text-[10px] font-mono font-bold px-1.5 py-0.2 bg-amber-500 text-slate-950 rounded">
+                                UNMAPPED ({item.vendor_detection_id || 'VENDOR'})
                               </span>
                             )}
                           </div>
@@ -300,6 +310,34 @@ export const View1RacePipeline: React.FC<View1RacePipelineProps> = ({
                       <div className="text-[11px] font-mono text-slate-600 truncate" title={item.package_purl}>
                         {item.package_purl}
                       </div>
+
+                      {item.distributor_id && (
+                        <div className="text-[10px] font-mono bg-slate-50 border border-slate-200 rounded px-2 py-1 space-y-0.5">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-slate-800">WN-8: {item.distributor_id}</span>
+                            {item.closure_completeness && (
+                              <span
+                                className={`px-1.5 py-0.2 rounded font-bold ${
+                                  item.closure_completeness === 'FULL'
+                                    ? 'bg-emerald-100 text-emerald-900'
+                                    : item.closure_completeness === 'PARTIAL'
+                                    ? 'bg-amber-100 text-amber-950'
+                                    : 'bg-slate-200 text-slate-800'
+                                }`}
+                              >
+                                {item.closure_completeness}
+                              </span>
+                            )}
+                          </div>
+                          {(item.targeted_asset_count || 0) > 0 && (
+                            <div className="text-slate-600">
+                              Landed {item.landed_asset_count || 0}/{item.targeted_asset_count} · RebootWait{' '}
+                              {item.reboot_waiting_count || 0} · Pend {item.pending_asset_count || 0} · Fail{' '}
+                              {item.failed_asset_count || 0}
+                            </div>
+                          )}
+                        </div>
+                      )}
 
                       {/* Stage-specific deterministic telemetry */}
                       {item.bridged_at && item.stage !== 'ATTESTED_CLOSED' && bridgeStyle && (

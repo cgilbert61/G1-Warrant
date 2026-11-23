@@ -13,7 +13,7 @@
     "compliance": "Section 508 Federal Accessibility",
     "liveEndpointVerified": true
   },
-  "timestamp": "2026-11-22T03:04:55.516140+00:00",
+  "timestamp": "2026-11-23T04:02:28.145232+00:00",
   "filesAudited": 13,
   "violations": [],
   "passes": [
@@ -885,6 +885,17 @@
       "file": "web/src/components/View4ContainmentLockout.tsx"
     },
     {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View4ContainmentLockout.tsx"
+    },
+    {
       "id": "aria-dialog-name",
       "impact": "serious",
       "description": "Modal dialog declares aria-modal and aria-labelledby/aria-label",
@@ -1032,8 +1043,8 @@
     }
   ],
   "summary": {
-    "totalChecks": 90,
-    "passedChecks": 90,
+    "totalChecks": 91,
+    "passedChecks": 91,
     "violationsCount": 0,
     "status": "PASS"
   }

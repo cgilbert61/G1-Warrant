@@ -334,15 +334,21 @@ func main() {
 			ttlDays := fs.Int("ttl-days", 30, "Hard expiration in days")
 			allowSecRot := fs.Bool("allow-secret-rotation", false, "Authorize stateless secret/token rotation under this warrant")
 			autoCWEs := fs.String("auto-cwes", "", "Optional comma-separated attack-path CWEs (e.g. CWE-209,CWE-918,CWE-434)")
+			scopeAssets := fs.String("assets", "", "Optional comma-separated WN-8 target asset keys (defaults to scope_services)")
+			vendorDetections := fs.String("vendor-detections", "", "Optional comma-separated WN-7 unmapped vendor detection IDs (e.g. QID-99101)")
 			outFile := fs.String("out", "warrant-draft.dsse.json", "Output DSSE draft file")
 			_ = fs.Parse(args[2:])
 
 			svcList := splitCSV(*services)
 			cweList := splitCSV(*autoCWEs)
+			assetList := splitCSV(*scopeAssets)
+			detList := splitCSV(*vendorDetections)
 			env, payload, err := warrantsdk.DraftWarrantEnvelope(warrantsdk.WarrantDraftOptions{
-				WarrantClass:           *wClass,
-				ScopeServices:          svcList,
-				MaxCVSS:                *maxCVSS,
+				WarrantClass:               *wClass,
+				ScopeServices:              svcList,
+				ScopeAssets:                assetList,
+				AuthorizedVendorDetections: detList,
+				MaxCVSS:                    *maxCVSS,
 				KEVEligible:            true,
 				MaxBlastRadiusReplicas: *maxRep,
 				AllowSecretRotation:    *allowSecRot,
@@ -691,13 +697,14 @@ func main() {
 		}
 
 	case "intake":
-		if len(args) < 3 || (args[1] != "sarif" && args[1] != "secrets") {
-			fatalf("usage: warrant intake [sarif|secrets] <path-to-report.json> [--service <id>] [--profile <name>]")
+		if len(args) < 3 {
+			fatalf("usage: warrant intake [sarif|secrets|qualys|tenable|rapid7] <path-to-report> [--service <id>] [--distributor <id>] [--profile <name>]")
 		}
-		subIntake := args[1]
+		subIntake := strings.ToLower(strings.TrimSpace(args[1]))
 		reportPath := args[2]
 		fs := flag.NewFlagSet("intake", flag.ExitOnError)
 		svc := fs.String("service", "", "Optional target service override")
+		distID := fs.String("distributor", "", "Optional WN-8 distributor translator ID (e.g. ms-intune, ansible-awx, aws-ssm)")
 		profile := fs.String("profile", "", "Optional patch profile (STATELESS_CLEAN, STATEFUL_DDL, BAD_SYSCALL_EXECVE, POISONED_BUILD_CONFIG)")
 		maxFindings := fs.Int("max-findings", 0, "Optional maximum findings to ingest")
 		if len(args) > 3 {
@@ -705,11 +712,12 @@ func main() {
 		}
 		raw, err := os.ReadFile(reportPath)
 		must(err)
-		if subIntake == "secrets" {
+		switch subIntake {
+		case "secrets":
 			items, sErr := cli.IngestSecretScan(ctx, raw, *svc)
 			must(sErr)
 			printJSON(items)
-		} else {
+		case "sarif":
 			items, sErr := cli.IngestSARIF(ctx, raw, warrantsdk.SARIFIntakeOptions{
 				Profile:       *profile,
 				TargetService: *svc,
@@ -717,6 +725,17 @@ func main() {
 			})
 			must(sErr)
 			printJSON(items)
+		case "qualys", "tenable", "rapid7":
+			items, fErr := cli.SubmitFinderIntake(ctx, subIntake, raw, warrantsdk.FinderIntakeOptions{
+				PatchProfile:  *profile,
+				TargetService: *svc,
+				DistributorID: *distID,
+				MaxFindings:   *maxFindings,
+			})
+			must(fErr)
+			printJSON(items)
+		default:
+			fatalf("usage: warrant intake [sarif|secrets|qualys|tenable|rapid7] <path-to-report> [--service <id>] [--distributor <id>] [--profile <name>]")
 		}
 
 	case "attestations":
@@ -933,6 +952,9 @@ func main() {
 	case "iga":
 		handleIGACommand(ctx, cli, args, jsonOutput)
 
+	case "distributors":
+		handleDistributorsCommand(ctx, cli, baseURL, opToken, autoToken, globalSignerPath, args, jsonOutput)
+
 	default:
 		printUsage()
 		os.Exit(1)
@@ -963,7 +985,8 @@ Commands:
   warrant lockouts
   warrant drift
   warrant simulate [inject-kev | bad-syscall | stateful-ddl | runtime-drift | secret-exposure | in-pod-webshell | poisoned-config]
-  warrant intake [sarif|secrets] <file.json> [--service <id>] [--profile <STATELESS_CLEAN|STATEFUL_DDL|BAD_SYSCALL_EXECVE|POISONED_BUILD_CONFIG>]
+  warrant intake [sarif|secrets|qualys|tenable|rapid7] <file> [--service <id>] [--distributor <id>] [--profile <STATELESS_CLEAN|STATEFUL_DDL|BAD_SYSCALL_EXECVE|POISONED_BUILD_CONFIG>]
+  warrant distributors [list | orders [--remediation <id>] | results [--order <id>] | aliases | rollback <order-id> --key <active.priv.json> [--reason <code>]]
   warrant feeds [status | mode <offline|live> | sync-kev | sync-osv | ingest-osv <osv-id> <service-id>]
   warrant freeze [hold | rollback] --key <active.priv.json> [--reason <code>]
   warrant freeze thaw --slot1-key <so.priv.json> --slot2-key <ao.priv.json>

@@ -128,16 +128,25 @@ type VerifyInput struct {
 	VulnerablePkgAbsentInSBOM bool   `json:"vulnerable_pkg_absent_in_sbom"`
 	AttestedPods              int    `json:"attested_pods"`
 	TotalPods                 int    `json:"total_pods"`
+	EvidenceGranularity       string `json:"evidence_granularity,omitempty"`
+	TargetedAssets            int    `json:"targeted_assets,omitempty"`
+	LandedAssets              int    `json:"landed_assets,omitempty"`
+	FailedAssets              int    `json:"failed_assets,omitempty"`
+	PendingAssets             int    `json:"pending_assets,omitempty"`
+	RebootWaitingAssets       int    `json:"reboot_waiting_assets,omitempty"`
 	AdmissionLockoutEnforced  bool   `json:"admission_lockout_enforced"`
 	WarrantReverified         bool   `json:"warrant_reverified"`
 }
 
 // VerifyDecision is the deterministic decision from data.warrant.verify.
 type VerifyDecision struct {
-	AllowBridgeRetirement bool     `json:"allow_bridge_retirement"`
-	AllowAttestationMint  bool     `json:"allow_attestation_mint"`
-	AssuranceTier         string   `json:"assurance_tier"`
-	Blockers              []string `json:"blockers"`
+	AllowBridgeRetirement       bool     `json:"allow_bridge_retirement"`
+	AllowAttestationMint        bool     `json:"allow_attestation_mint"`
+	AllowPartialAttestationMint bool     `json:"allow_partial_attestation_mint"`
+	AllowDispatchOnlyRecord     bool     `json:"allow_dispatch_only_record"`
+	ClosureCompleteness         string   `json:"closure_completeness"`
+	AssuranceTier               string   `json:"assurance_tier"`
+	Blockers                    []string `json:"blockers"`
 }
 
 // AgentProfileInput represents the enrolled AgentIdentity & live sponsorship health passed to data.warrant.agent.
@@ -316,12 +325,18 @@ func (e *Engine) EvalVerify(ctx context.Context, in VerifyInput) (*VerifyDecisio
 	}
 	retire, _ := m["allow_bridge_retirement"].(bool)
 	mint, _ := m["allow_attestation_mint"].(bool)
+	partialMint, _ := m["allow_partial_attestation_mint"].(bool)
+	dispatchOnly, _ := m["allow_dispatch_only_record"].(bool)
+	completeness, _ := m["closure_completeness"].(string)
 	tier, _ := m["assurance_tier"].(string)
 	return &VerifyDecision{
-		AllowBridgeRetirement: retire,
-		AllowAttestationMint:  mint,
-		AssuranceTier:         tier,
-		Blockers:              extractSortedStrings(m["blockers"]),
+		AllowBridgeRetirement:       retire,
+		AllowAttestationMint:        mint,
+		AllowPartialAttestationMint: partialMint,
+		AllowDispatchOnlyRecord:     dispatchOnly,
+		ClosureCompleteness:         completeness,
+		AssuranceTier:               tier,
+		Blockers:                    extractSortedStrings(m["blockers"]),
 	}, nil
 }
 

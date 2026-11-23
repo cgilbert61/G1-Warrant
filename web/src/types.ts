@@ -59,6 +59,8 @@ export interface GlobalScoreboard {
   awaiting_dual_key_inbox_count: number;
   active_drift_violations_count: number;
   rollback_failures_count: number;
+  unmapped_vendor_findings_count?: number;
+  partial_closures_count?: number;
 }
 
 export interface Principal {
@@ -93,6 +95,8 @@ export interface WarrantRecord {
   warrant_id: string;
   warrant_class: string;
   scope_services: string[];
+  scope_assets?: string[];
+  authorized_vendor_detections?: string[];
   max_cvss: number;
   kev_eligible: boolean;
   max_blast_radius_replicas: number;
@@ -241,6 +245,20 @@ export interface RemediationItem {
   bridge_id?: string;
   bridge_sla_minutes: number;
   attestation_id?: string;
+  finder_vendor?: string;
+  vendor_detection_id?: string;
+  cve_mapping_status?: 'MAPPED' | 'UNMAPPED_VENDOR_ADVISORY' | string;
+  normalized_detection_state?: string;
+  asset_identity?: AssetIdentity;
+  distributor_id?: string;
+  latest_order_id?: string;
+  targeted_asset_count?: number;
+  landed_asset_count?: number;
+  reboot_waiting_count?: number;
+  failed_asset_count?: number;
+  pending_asset_count?: number;
+  rolled_back_asset_count?: number;
+  closure_completeness?: 'FULL' | 'PARTIAL' | 'DISPATCH_ONLY' | string;
   patch_metadata?: ExtractedPatchMetadata;
   shadow_report?: ShadowComparisonReport;
   created_at: string;
@@ -356,6 +374,13 @@ export interface AttestationRecord {
   twin_transcript_sha256: string;
   assurance_tier?: string;
   signer_backend?: string;
+  distributor_id?: string;
+  deployment_order_id?: string;
+  closure_completeness?: 'FULL' | 'PARTIAL' | 'DISPATCH_ONLY' | string;
+  targeted_asset_count?: number;
+  landed_asset_count?: number;
+  reboot_waiting_count?: number;
+  failed_asset_count?: number;
   fleet_digest_manifest: PodDigestEntry[];
   lockout_policy_id: string;
   reverify_expires_at: string;
@@ -552,6 +577,10 @@ export interface BootstrapSnapshot {
   commissioning_functions?: CommissioningFunction[];
   agents?: AgentIdentity[];
   pending_sponsor_transfers?: PendingSponsorTransfer[];
+  distributors?: DistributorDescriptor[];
+  deployment_orders?: DeploymentOrder[];
+  deployment_results?: DeploymentResult[];
+  asset_aliases?: AssetIdentityAlias[];
   feed_status?: LiveFeedStatus;
   kernel_public_key: {
     key_id: string;
@@ -563,4 +592,88 @@ export interface BootstrapSnapshot {
     rp_id: string;
     origins: string[];
   };
+}
+
+export interface AssetIdentity {
+  asset_key: string;
+  hostname?: string;
+  fqdn?: string;
+  ipv4?: string;
+  cloud_instance_id?: string;
+  vendor_asset_id?: string;
+  platform_family?: string;
+}
+
+export interface AssetIdentityAlias {
+  alias_key: string;
+  service_id: string;
+  canonical_asset_key: string;
+  platform_family: string;
+  hostname?: string;
+  ipv4?: string;
+  updated_at: string;
+}
+
+export interface DistributorCapabilities {
+  supports_native_rings: boolean;
+  reports_per_asset_state: boolean;
+  supports_reboot_tracking: boolean;
+  platform_families: string[];
+  default_rollback_strategy: string;
+}
+
+export interface DistributorDescriptor {
+  distributor_id: string;
+  display_name: string;
+  family: string;
+  capabilities: DistributorCapabilities;
+  endpoint_configured: boolean;
+}
+
+export interface NativeRollbackSpec {
+  strategy: string;
+  uninstall_kb?: string;
+  previous_package_nevra?: string;
+  previous_digest?: string;
+  rollback_playbook_id?: string;
+  git_revert_commit?: string;
+}
+
+export interface DeploymentOrder {
+  order_id: string;
+  remediation_id: string;
+  warrant_id: string;
+  service_id: string;
+  distributor_id: string;
+  platform_family: string;
+  fix_identity: {
+    cve_id: string;
+    kb_article_id?: string;
+    package_nevra?: string;
+    target_digest?: string;
+  };
+  target_assets: Array<{ asset_key: string; service_id: string; hostname?: string; ipv4?: string }>;
+  rollback_instruction: NativeRollbackSpec;
+  native_job_ref?: string;
+  wave_number: number;
+  total_waves: number;
+  created_at: string;
+}
+
+export interface DeploymentResult {
+  result_id: string;
+  order_id: string;
+  remediation_id?: string;
+  distributor_id: string;
+  native_job_ref?: string;
+  evidence_granularity: string;
+  targeted_count: number;
+  landed_count: number;
+  reboot_waiting_count: number;
+  failed_count: number;
+  pending_count: number;
+  rolled_back_count: number;
+  is_rollback?: boolean;
+  rollback_reason?: string;
+  observed_at: string;
 }

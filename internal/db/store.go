@@ -720,6 +720,14 @@ func (s *Store) AppendWarrantEnvelope(ctx context.Context, w *models.WarrantReco
 	if err != nil {
 		return err
 	}
+	scopeAssetsJSON, _ := json.Marshal(w.ScopeAssets)
+	if len(w.ScopeAssets) == 0 {
+		scopeAssetsJSON = []byte("[]")
+	}
+	authVendorDetJSON, _ := json.Marshal(w.AuthorizedVendorDetections)
+	if len(w.AuthorizedVendorDetections) == 0 {
+		authVendorDetJSON = []byte("[]")
+	}
 	cwesJSON, _ := json.Marshal(w.AutoRemediateCWEs)
 	if len(w.AutoRemediateCWEs) == 0 {
 		cwesJSON = []byte("[]")
@@ -740,7 +748,7 @@ func (s *Store) AppendWarrantEnvelope(ctx context.Context, w *models.WarrantReco
 	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO warrant_envelopes (
-			warrant_id, warrant_class, scope_services, max_cvss, kev_eligible,
+			warrant_id, warrant_class, scope_services, scope_assets, authorized_vendor_detections, max_cvss, kev_eligible,
 			max_blast_radius_replicas, allow_stateful_patches, allow_guarded_canary,
 			allow_secret_rotation, auto_remediate_cwes, min_canary_samples, stage_dwell_seconds,
 			sla_bridge_minutes, max_p99_latency_ms,
@@ -750,10 +758,10 @@ func (s *Store) AppendWarrantEnvelope(ctx context.Context, w *models.WarrantReco
 			prev_hash, entry_hash, created_at
 		) VALUES (
 			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-			$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28
+			$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30
 		)
 	`,
-		w.WarrantID, w.WarrantClass, scopeJSON, w.MaxCVSS, w.KEVEligible,
+		w.WarrantID, w.WarrantClass, scopeJSON, scopeAssetsJSON, authVendorDetJSON, w.MaxCVSS, w.KEVEligible,
 		w.MaxBlastRadiusReplicas, w.AllowStatefulPatches, w.AllowGuardedCanary,
 		w.AllowSecretRotation, cwesJSON, w.MinCanarySamples, w.StageDwellSeconds,
 		w.SLABridgeMinutes, w.MaxP99LatencyMs,
@@ -864,19 +872,30 @@ func (s *Store) AppendAttestation(ctx context.Context, att *models.AttestationRe
 	if att.SignerBackend == "" {
 		att.SignerBackend = "EPHEMERAL_MEMORY_ED25519"
 	}
+	if att.ClosureCompleteness == "" {
+		att.ClosureCompleteness = models.ClosureCompletenessFull
+	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO attestation_records (
 			attestation_id, remediation_id, service_id, cve_id, is_kev, warrant_id,
 			slot1_principal_id, slot1_email, slot2_principal_id, slot2_email,
-			twin_transcript_sha256, assurance_tier, signer_backend, fleet_digest_manifest, lockout_policy_id, reverify_expires_at,
+			twin_transcript_sha256, assurance_tier,
+			closure_completeness, targeted_asset_count, landed_asset_count, failed_asset_count, pending_asset_count, reboot_waiting_count,
+			distributor_id, distributor_order_id, distributor_report_sha256,
+			signer_backend, fleet_digest_manifest, lockout_policy_id, reverify_expires_at,
 			dsse_envelope, oscal_poam_json, ttvr_seconds, prev_hash, entry_hash, minted_at
 		) VALUES (
-			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
+			$13,$14,$15,$16,$17,$18,$19,$20,$21,
+			$22,$23,$24,$25,$26,$27,$28,$29,$30,$31
 		)
 	`,
 		att.AttestationID, att.RemediationID, att.ServiceID, att.CVEID, att.IsKEV, att.WarrantID,
 		att.Slot1PrincipalID, att.Slot1Email, att.Slot2PrincipalID, att.Slot2Email,
-		att.TwinTranscriptSHA256, att.AssuranceTier, att.SignerBackend, manifestJSON, att.LockoutPolicyID, att.ReverifyExpiresAt,
+		att.TwinTranscriptSHA256, att.AssuranceTier,
+		att.ClosureCompleteness, att.TargetedAssetCount, att.LandedAssetCount, att.FailedAssetCount, att.PendingAssetCount, att.RebootWaitingCount,
+		att.DistributorID, att.DistributorOrderID, att.DistributorReportSHA256,
+		att.SignerBackend, manifestJSON, att.LockoutPolicyID, att.ReverifyExpiresAt,
 		envJSON, oscalJSON, att.TTVRSeconds, att.PrevHash, att.EntryHash, att.MintedAt,
 	)
 	if err != nil {

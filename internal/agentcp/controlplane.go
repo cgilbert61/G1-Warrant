@@ -83,7 +83,7 @@ func (cp *ControlPlane) initInternalWorkers() {
 			alias:       "warrant-extractor",
 			agentID:     "agt-warrant-extractor",
 			displayName: "Isolated Zero-Prose Extractor Worker",
-			actions:     []string{"EXTRACT_SARIF_2_1_0", "EXTRACT_PATCH_DIFF", "EXTRACT_SECRET_EXPOSURE", "EXTRACT_ADVISORY"},
+			actions:     []string{"EXTRACT_SARIF_2_1_0", "EXTRACT_ESTATE_FINDINGS", "EXTRACT_PATCH_DIFF", "EXTRACT_SECRET_EXPOSURE", "EXTRACT_ADVISORY"},
 			egress:      models.EgressProfileZeroIsolated,
 			allowIntake: true,
 		},
@@ -124,6 +124,14 @@ func (cp *ControlPlane) initInternalWorkers() {
 			agentID:     "agt-secret-rotator",
 			displayName: "Stateless Credential Rotation Worker",
 			actions:     []string{"*"},
+			egress:      models.EgressProfileInternalCluster,
+			allowIntake: false,
+		},
+		{
+			alias:       "distributor-gateway",
+			agentID:     "agt-distributor-gateway",
+			displayName: "Governed WN-8 Estate Patch Distributor Worker",
+			actions:     []string{"DISPATCH_DEPLOYMENT_ORDER", "POLL_DEPLOYMENT_RESULT", "EXECUTE_NATIVE_ROLLBACK", "*"},
 			egress:      models.EgressProfileInternalCluster,
 			allowIntake: false,
 		},
@@ -195,6 +203,14 @@ func (cp *ControlPlane) resolveInternalWorker(workerName, actionType string) *in
 		}
 	case strings.Contains(low, "secret"):
 		if wk, ok := cp.internalWorkers["secret-rotator"]; ok {
+			return wk
+		}
+	case strings.Contains(low, "distributor") || strings.Contains(low, "intune") || strings.Contains(low, "mecm") ||
+		strings.Contains(low, "wsus") || strings.Contains(low, "ansible") || strings.Contains(low, "satellite") ||
+		strings.Contains(low, "jamf") || strings.Contains(low, "ssm") || strings.Contains(low, "azure") ||
+		strings.Contains(low, "gcp") || strings.Contains(low, "tanium") || strings.Contains(low, "ivanti") ||
+		strings.Contains(low, "automox") || strings.Contains(low, "argocd") || strings.Contains(low, "flux"):
+		if wk, ok := cp.internalWorkers["distributor-gateway"]; ok {
 			return wk
 		}
 	case strings.Contains(low, "rollout") || strings.Contains(low, "k8s"):

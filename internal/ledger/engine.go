@@ -109,26 +109,46 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 		return nil, err
 	}
 
+	hasProbe := bundle.AssuranceTier == models.AssuranceTier2DifferentialTwin ||
+		(item.TwinReplayStatus == "EXPLOIT_BLOCKED" && bundle.UnpatchedTwinStatus == "EXPLOIT_SUCCEEDED")
+	attestedPods := len(bundle.PodManifest)
+	totalPods := svc.Replicas
+	if bundle.TargetedAssetCount > 0 {
+		attestedPods = bundle.LandedAssetCount
+		totalPods = bundle.TargetedAssetCount
+	}
+
 	verDec, err := e.policy.EvalVerify(ctx, policy.VerifyInput{
 		RemediationKind:           actionKind,
 		SecretRotatedAndRevoked:   bundle.AssuranceTier == models.AssuranceTierSecretRotated,
 		ExposedSecretSHA256:       bundle.ExposedSecretSHA256,
 		RotatedSecretSHA256:       bundle.RotatedSecretSHA256,
-		HasSignedProbe:            bundle.AssuranceTier == models.AssuranceTier2DifferentialTwin,
+		HasSignedProbe:            hasProbe,
 		UnpatchedTwinStatus:       bundle.UnpatchedTwinStatus,
 		TwinReplayStatus:          item.TwinReplayStatus,
 		ProvenanceVerified:        true,
 		VulnerablePkgAbsentInSBOM: bundle.VulnerablePkgAbsentInSBOM || actionKind == models.RemediationKindSecretRotation,
-		AttestedPods:              len(bundle.PodManifest),
-		TotalPods:                 svc.Replicas,
+		AttestedPods:              attestedPods,
+		TotalPods:                 totalPods,
+		EvidenceGranularity:       bundle.EvidenceGranularity,
+		TargetedAssets:            bundle.TargetedAssetCount,
+		LandedAssets:              bundle.LandedAssetCount,
+		FailedAssets:              bundle.FailedAssetCount,
+		PendingAssets:             bundle.PendingAssetCount,
+		RebootWaitingAssets:       bundle.RebootWaitingCount,
 		AdmissionLockoutEnforced:  bundle.Lockout.PolicyName != "",
 		WarrantReverified:         warrantOK,
 	})
 	if err != nil {
 		return nil, err
 	}
-	if !verDec.AllowAttestationMint {
+	if !verDec.AllowAttestationMint && !verDec.AllowPartialAttestationMint && !verDec.AllowDispatchOnlyRecord {
 		return nil, fmt.Errorf("N5_MINT_DENIED_BY_OPA: %s", strings.Join(verDec.Blockers, ","))
+	}
+
+	closureCompleteness := verDec.ClosureCompleteness
+	if closureCompleteness == "" || closureCompleteness == "UNVERIFIED" {
+		closureCompleteness = models.ClosureCompletenessFull
 	}
 
 	now := time.Now().UTC()
@@ -164,6 +184,7 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 					{"name": "control-plane", "value": "G1-Warrant Deterministic Kernel"},
 					{"name": "compliance-baseline", "value": "NIST-SP-800-53-Rev5"},
 					{"name": "assurance-tier", "value": verDec.AssuranceTier},
+					{"name": "closure-completeness", "value": closureCompleteness},
 					{"name": "signer-backend", "value": e.signer.BackendMode()},
 					{"name": "attestation-id", "value": attID},
 					{"name": "reverification-expires-at", "value": reverifyExpiry.Format(time.RFC3339)},
@@ -260,10 +281,23 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 				},
 				{
 					"uuid":        obsFleetUUID,
-					"title":       "N3 Passive 100% Fleet Digest & Unloaded Symbol Manifest",
-					"description": fmt.Sprintf("Verified %d/%d live pods running patched digest %s.", len(bundle.PodManifest), svc.Replicas, item.PatchedDigest),
+					"title":       "N3 Passive Fleet & WN-8 Distributor Per-Asset Landing Manifest",
+					"description": fmt.Sprintf("Closure completeness=%s | Landed=%d/%d | RebootWaiting=%d | Pending=%d | Failed=%d.", closureCompleteness, attestedPods, totalPods, bundle.RebootWaitingCount, bundle.PendingAssetCount, bundle.FailedAssetCount),
 					"methods":     []string{"INSPECT"},
 					"collected":   now.Format(time.RFC3339),
+					"props": []map[string]string{
+						{"name": "closure-completeness", "value": closureCompleteness},
+						{"name": "targeted-count", "value": fmt.Sprintf("%d", totalPods)},
+						{"name": "landed-count", "value": fmt.Sprintf("%d", attestedPods)},
+						{"name": "failed-count", "value": fmt.Sprintf("%d", bundle.FailedAssetCount)},
+						{"name": "pending-count", "value": fmt.Sprintf("%d", bundle.PendingAssetCount)},
+						{"name": "reboot-waiting-count", "value": fmt.Sprintf("%d", bundle.RebootWaitingCount)},
+						{"name": "distributor-id", "value": bundle.DistributorID},
+						{"name": "distributor-order-id", "value": bundle.DistributorOrderID},
+						{"name": "distributor-report-sha256", "value": bundle.DistributorReportSHA256},
+						{"name": "landed-assets", "value": strings.Join(bundle.LandedAssetKeys, ",")},
+						{"name": "non-landed-assets", "value": strings.Join(bundle.NonLandedAssetKeys, ",")},
+					},
 					"relevant-evidence": buildPodEvidenceList(bundle.PodManifest),
 				},
 				{
@@ -281,14 +315,15 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 			"risks": []map[string]any{
 				{
 					"uuid":        riskUUID,
-					"title":       fmt.Sprintf("%s Remediation Closure (%s)", item.CVEID, svc.ServiceID),
-					"description": fmt.Sprintf("Deterministic remediation closure for %s (CISA_KEV=%t, CVSS=%.1f).", item.CVEID, item.IsKEV, item.CVSSScore),
-					"statement":   "Exploit vector contained via Cilium bridge, patched statelessly via differential shadow canary, verified in isolated twin, and locked out permanently via ValidatingAdmissionPolicy.",
-					"status":      "closed",
+					"title":       fmt.Sprintf("%s Remediation Closure (%s — %s)", item.CVEID, svc.ServiceID, closureCompleteness),
+					"description": fmt.Sprintf("Deterministic remediation record for %s (CISA_KEV=%t, CVSS=%.1f, completeness=%s).", item.CVEID, item.IsKEV, item.CVSSScore, closureCompleteness),
+					"statement":   "Exploit vector contained via Cilium bridge, patched via governed distributor rollout, verified in isolated twin, and recorded with honest per-asset landing telemetry.",
+					"status":      map[bool]string{true: "closed", false: "open"}[closureCompleteness == models.ClosureCompletenessFull],
 					"props": []map[string]string{
 						{"name": "cve-id", "value": item.CVEID},
 						{"name": "cwe-id", "value": item.CWEID},
 						{"name": "cisa-kev", "value": fmt.Sprintf("%t", item.IsKEV)},
+						{"name": "closure-completeness", "value": closureCompleteness},
 						{"name": "reverify-expires-at", "value": reverifyExpiry.Format(time.RFC3339)},
 					},
 				},
@@ -327,39 +362,60 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 	}
 
 	rec := &models.AttestationRecord{
-		AttestationID:        attID,
-		RemediationID:        item.RemediationID,
-		ServiceID:            svc.ServiceID,
-		CVEID:                item.CVEID,
-		IsKEV:                item.IsKEV,
-		WarrantID:            w.WarrantID,
-		Slot1PrincipalID:     w.Slot1PrincipalID,
-		Slot1Email:           w.Slot1Email,
-		Slot2PrincipalID:     w.Slot2PrincipalID,
-		Slot2Email:           w.Slot2Email,
-		TwinTranscriptSHA256: bundle.TwinTranscriptSHA256,
-		AssuranceTier:        verDec.AssuranceTier,
-		SignerBackend:        e.signer.BackendMode(),
-		FleetDigestManifest:  bundle.PodManifest,
-		LockoutPolicyID:      bundle.Lockout.PolicyName,
-		ReverifyExpiresAt:    reverifyExpiry,
-		DSSEEnvelope:         *env,
-		OSCALPOAM:            oscalDoc,
-		TTVRSeconds:          ttvrSec,
-		MintedAt:             now,
+		AttestationID:           attID,
+		RemediationID:           item.RemediationID,
+		ServiceID:               svc.ServiceID,
+		CVEID:                   item.CVEID,
+		IsKEV:                   item.IsKEV,
+		WarrantID:               w.WarrantID,
+		Slot1PrincipalID:        w.Slot1PrincipalID,
+		Slot1Email:              w.Slot1Email,
+		Slot2PrincipalID:        w.Slot2PrincipalID,
+		Slot2Email:              w.Slot2Email,
+		TwinTranscriptSHA256:    bundle.TwinTranscriptSHA256,
+		AssuranceTier:           verDec.AssuranceTier,
+		ClosureCompleteness:     closureCompleteness,
+		TargetedAssetCount:      totalPods,
+		LandedAssetCount:        attestedPods,
+		FailedAssetCount:        bundle.FailedAssetCount,
+		PendingAssetCount:       bundle.PendingAssetCount,
+		RebootWaitingCount:      bundle.RebootWaitingCount,
+		DistributorID:           bundle.DistributorID,
+		DistributorOrderID:      bundle.DistributorOrderID,
+		DistributorReportSHA256: bundle.DistributorReportSHA256,
+		SignerBackend:           e.signer.BackendMode(),
+		FleetDigestManifest:     bundle.PodManifest,
+		LockoutPolicyID:         bundle.Lockout.PolicyName,
+		ReverifyExpiresAt:       reverifyExpiry,
+		DSSEEnvelope:            *env,
+		OSCALPOAM:               oscalDoc,
+		TTVRSeconds:             ttvrSec,
+		MintedAt:                now,
 	}
 	if err := e.store.AppendAttestation(ctx, rec); err != nil {
 		return nil, err
 	}
-	// Anchor DSSE-signed Merkle Root checkpoint across all 3 ledger tables on every closure
+	// Anchor DSSE-signed Merkle Root checkpoint across all 9 ledger tables on every attestation record
 	_, _ = e.anchor.AnchorCheckpoint(ctx, e.store, e.signer)
 
-	item.Stage = models.StageAttestedClosed
-	item.StatusHealth = models.HealthAttested
-	item.BlockerCode = ""
 	item.AttestationID = attID
 	item.AssuranceTier = verDec.AssuranceTier
-	item.ClosedAt = &now
+	item.ClosureCompleteness = closureCompleteness
+	if closureCompleteness == models.ClosureCompletenessFull {
+		item.Stage = models.StageAttestedClosed
+		item.StatusHealth = models.HealthAttested
+		item.BlockerCode = ""
+		item.ClosedAt = &now
+	} else {
+		// Honest Partial / Dispatch-Only Closure: keep item in VERIFYING_LOCKING with active containment bridge armed!
+		item.Stage = models.StageVerifyingLocking
+		item.StatusHealth = models.HealthBridged
+		if closureCompleteness == models.ClosureCompletenessPartial {
+			item.BlockerCode = "PARTIAL_FLEET_CLOSURE_CONTAINMENT_HELD"
+		} else {
+			item.BlockerCode = "DISTRIBUTOR_DISPATCH_ONLY_CONTAINMENT_HELD"
+		}
+	}
 	_ = e.store.UpsertRemediation(ctx, item)
 	kernelPK := e.signer.PublicKey()
 	_ = e.store.AppendTrace(ctx, models.TraceEvent{

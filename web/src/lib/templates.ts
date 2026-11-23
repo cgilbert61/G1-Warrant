@@ -98,6 +98,12 @@ export function formatBlockerTemplate(code?: string): string {
     N1_WARRANT_REVERIFY_FAILED: 'Fail-Closed — Warrant Signer Key/Role Revoked in N1 Registry',
     FREEZE_HOLD: 'Asymmetric Emergency Freeze (HOLD) — Canaries Paused; Shield Bridges Active',
     FREEZE_ROLLBACK: 'Asymmetric Emergency Freeze (ROLLBACK) — Canaries Rolled Back; Shield Bridges Active',
+    UNMAPPED_FINDING_REQUIRES_CLASS_BINDING:
+      'Fail-Visible WN-7 Advisory — Unmapped Vendor Detection Held Behind Containment Bridge Pending Warrant Class Binding',
+    PARTIAL_FLEET_CLOSURE:
+      'Honest Partial Closure (WN-8) — Partial OSCAL Minted; Containment Bridge Held Active Until Remaining Assets Land/Reboot',
+    DISTRIBUTOR_DISPATCH_ONLY:
+      'Assurance Tier 0 (WN-8 Dispatch-Only) — Distributor Lacks Per-Asset Confirmation; Containment Bridge Held Active',
   };
   return map[code] || `Gate Policy Trigger: ${code}`;
 }
@@ -127,6 +133,12 @@ export function formatBridgeBlockerReason(b: ContainmentBridge): string {
     PATCH_ATTESTED_AND_LOCKED_OUT: 'Retired Following Twin Replay + ValidatingAdmissionPolicy Lockout',
     RUNTIME_DRIFT_BANNED_DIGEST_REARMED: 'Auto Re-Armed by N3 Watcher Due to Runtime Digest Drift',
     NO_VALID_STANDING_WARRANT_FAIL_CLOSED: 'Fail-Closed Containment — Awaiting Co-Signed Standing Warrant',
+    UNMAPPED_FINDING_REQUIRES_CLASS_BINDING:
+      'Fail-Visible Unmapped Vendor Detection (WN-7) — Contained Pending Explicit Warrant Authorization',
+    PARTIAL_FLEET_CLOSURE_BRIDGE_HELD:
+      'WN-8 Partial Fleet Landing — Bridge Held Active Until Reboot-Waiting / Pending Assets Converge',
+    DISTRIBUTOR_DISPATCH_ONLY_BRIDGE_HELD:
+      'WN-8 Dispatch-Only Distributor — Bridge Held Active Until Out-of-Band Per-Asset Verification',
   };
   return map[b.blocker_reason_code] || b.blocker_reason_code;
 }

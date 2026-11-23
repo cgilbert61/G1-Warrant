@@ -7,6 +7,7 @@ default effective_ttl_seconds := 0
 
 autonomous_readonly_actions := {
 	"EXTRACT_SARIF_2_1_0",
+	"EXTRACT_ESTATE_FINDINGS",
 	"EXTRACT_CISA_KEV_CATALOG",
 	"EXTRACT_OSV_BATCH",
 	"EXTRACT_SECRET_EXPOSURE",
