@@ -1,6 +1,7 @@
 import React, { useRef, useState } from 'react';
-import { Shield, AlertOctagon, Inbox, CreditCard, Lock, Unlock, X, Radio } from 'lucide-react';
+import { Shield, AlertOctagon, Inbox, CreditCard, Lock, Unlock, X, Radio, Sun, Moon } from 'lucide-react';
 import type { DSSEEnvelope, GlobalScoreboard, LiveFeedStatus, Principal, TestSmartcardPersona } from '../types';
+import type { ThemeMode } from '../lib/theme';
 import { formatDurationSeconds } from '../lib/templates';
 import { DualKeyCeremonyPanel } from './DualKeyCeremonyPanel';
 
@@ -10,6 +11,8 @@ interface CommandBarProps {
   testPersonas: TestSmartcardPersona[];
   principals: Principal[];
   rpId: string;
+  theme: ThemeMode;
+  onToggleTheme: () => void;
   smartcardBarEnabled: boolean;
   onToggleSmartcardBar: () => void;
   onOpenLiveFeeds: () => void;
@@ -25,6 +28,8 @@ export const CommandBar: React.FC<CommandBarProps> = ({
   testPersonas,
   principals,
   rpId,
+  theme,
+  onToggleTheme,
   smartcardBarEnabled,
   onToggleSmartcardBar,
   onOpenLiveFeeds,
@@ -226,6 +231,27 @@ export const CommandBar: React.FC<CommandBarProps> = ({
           >
             <CreditCard className="w-3.5 h-3.5" />
             <span>FIPS Smartcard Bar: {smartcardBarEnabled ? 'ON' : 'OFF'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={onToggleTheme}
+            aria-pressed={theme === 'dark'}
+            aria-label={theme === 'dark' ? 'Switch Console to Light Mode' : 'Switch Console to Dark Mode'}
+            title={theme === 'dark' ? 'Switch Console to Light Mode' : 'Switch Console to Dark Mode'}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-mono font-semibold transition"
+          >
+            {theme === 'dark' ? (
+              <>
+                <Sun className="w-3.5 h-3.5 text-amber-400" />
+                <span>Light</span>
+              </>
+            ) : (
+              <>
+                <Moon className="w-3.5 h-3.5 text-slate-600" />
+                <span>Dark</span>
+              </>
+            )}
           </button>
 
           <button

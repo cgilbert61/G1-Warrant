@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { ShieldCheck, Lock, CheckCircle2, AlertOctagon } from 'lucide-react';
+import { ShieldCheck, Lock, CheckCircle2, AlertOctagon, Sun, Moon } from 'lucide-react';
 import type { AttestationRecord, LedgerVerificationReport } from '../types';
 import { verifyDSSEEnvelopeInBrowser, type BrowserDSSEVerificationResult } from '../lib/crypto';
+import { useTheme } from '../lib/theme';
 
 export const AuditorPortal: React.FC = () => {
+  const { theme, toggleTheme } = useTheme();
   const params = new URLSearchParams(window.location.search);
   const token = params.get('token') || '';
 
@@ -71,11 +73,33 @@ export const AuditorPortal: React.FC = () => {
               </div>
             </div>
           </div>
-          {expiresAt && (
-            <span className="text-xs font-mono px-2.5 py-1 rounded bg-slate-800 border border-slate-700 text-emerald-300">
-              Scope: {label} · Expires {new Date(expiresAt).toLocaleString()}
-            </span>
-          )}
+          <div className="flex items-center gap-2">
+            {expiresAt && (
+              <span className="text-xs font-mono px-2.5 py-1 rounded bg-slate-800 border border-slate-700 text-emerald-300">
+                Scope: {label} · Expires {new Date(expiresAt).toLocaleString()}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={toggleTheme}
+              aria-pressed={theme === 'dark'}
+              aria-label={theme === 'dark' ? 'Switch Auditor Vault to Light Mode' : 'Switch Auditor Vault to Dark Mode'}
+              title={theme === 'dark' ? 'Switch Auditor Vault to Light Mode' : 'Switch Auditor Vault to Dark Mode'}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-mono font-semibold transition"
+            >
+              {theme === 'dark' ? (
+                <>
+                  <Sun className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Light</span>
+                </>
+              ) : (
+                <>
+                  <Moon className="w-3.5 h-3.5 text-slate-300" />
+                  <span>Dark</span>
+                </>
+              )}
+            </button>
+          </div>
         </div>
       </header>
 

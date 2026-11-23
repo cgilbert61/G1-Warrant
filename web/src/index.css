@@ -5,9 +5,287 @@
 @layer base {
   body {
     font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    transition: background-color 150ms ease, color 150ms ease;
   }
 }
 
 .tabular-nums {
   font-variant-numeric: tabular-nums;
+}
+
+/* ==========================================================================
+   G1-Warrant Institutional Dark Mode Palette (`html.dark`)
+   WCAG 2.1 Level AA / Section 508 High-Contrast Surface & Semantic Token Map
+   ========================================================================== */
+
+html.dark {
+  color-scheme: dark;
+}
+
+/* 1. Root & Card Surfaces */
+html.dark body,
+html.dark #root > div.bg-slate-50 {
+  background-color: #020617;
+  color: #f1f5f9;
+}
+
+html.dark .bg-white:not(img) {
+  background-color: #0f172a;
+}
+
+html.dark .bg-slate-50:not(body):not(#root > div),
+html.dark .bg-slate-50\/70 {
+  background-color: #131c31;
+}
+
+html.dark .bg-slate-100,
+html.dark .bg-slate-100\/80 {
+  background-color: #1e293b;
+}
+
+html.dark .bg-slate-200 {
+  background-color: #334155;
+}
+
+/* Keep terminal <pre> & dark banners distinct against slate-900 cards */
+html.dark pre.bg-slate-900,
+html.dark div.bg-slate-900:not(.fixed) {
+  background-color: #020617;
+  border-color: #334155;
+}
+
+html.dark .fixed.bg-slate-900\/50,
+html.dark .fixed.bg-slate-900\/60 {
+  background-color: rgba(2, 6, 23, 0.78);
+  backdrop-filter: blur(2px);
+}
+
+/* Primary & active toggle buttons using bg-slate-900 become crisp high-contrast light buttons in dark mode */
+html.dark button.bg-slate-900 {
+  background-color: #e2e8f0;
+  color: #0f172a;
+  border-color: #f8fafc;
+}
+
+html.dark button.bg-slate-900:hover:not(:disabled) {
+  background-color: #ffffff;
+  color: #020617;
+}
+
+/* 2. Neutral Typography */
+html.dark .text-slate-950:not(.bg-amber-500),
+html.dark .text-slate-900 {
+  color: #f8fafc;
+}
+
+html.dark .text-slate-800,
+html.dark .text-slate-700 {
+  color: #e2e8f0;
+}
+
+html.dark .text-slate-600,
+html.dark .text-slate-500 {
+  color: #94a3b8;
+}
+
+html.dark .bg-amber-500.text-slate-950 {
+  color: #020617;
+}
+
+/* 3. Borders, Dividers & Active Navigation */
+html.dark .border-slate-100,
+html.dark .border-slate-200,
+html.dark .border-slate-200\/80 {
+  border-color: #1e293b;
+}
+
+html.dark .border-slate-300,
+html.dark .border-slate-400 {
+  border-color: #334155;
+}
+
+html.dark .divide-slate-200 > :not([hidden]) ~ :not([hidden]) {
+  border-color: #1e293b;
+}
+
+html.dark nav button.border-slate-900 {
+  border-bottom-color: #38bdf8;
+  color: #f8fafc;
+  background-color: rgba(30, 41, 59, 0.7);
+}
+
+/* 4. Neutral Hover States */
+html.dark .hover\:bg-slate-50:hover,
+html.dark .hover\:bg-slate-50\/50:hover,
+html.dark .hover\:bg-slate-100:hover {
+  background-color: #1e293b;
+}
+
+html.dark .hover\:bg-slate-200:hover {
+  background-color: #334155;
+}
+
+html.dark .hover\:text-slate-950:hover,
+html.dark .hover\:text-slate-900:hover,
+html.dark .hover\:text-slate-800:hover {
+  color: #ffffff;
+}
+
+/* 5. Form Controls (Inputs, Selects, Textareas) */
+html.dark input:not([type='checkbox']):not([type='radio']),
+html.dark select,
+html.dark textarea {
+  background-color: #020617;
+  color: #f8fafc;
+  border-color: #475569;
+}
+
+html.dark input::placeholder,
+html.dark textarea::placeholder {
+  color: #64748b;
+}
+
+html.dark input:focus,
+html.dark select:focus,
+html.dark textarea:focus {
+  border-color: #38bdf8;
+  outline-color: #38bdf8;
+}
+
+html.dark input[type='file']::file-selector-button {
+  background-color: #1e293b;
+  color: #e2e8f0;
+  border: 1px solid #475569;
+  border-radius: 0.25rem;
+  padding: 0.2rem 0.6rem;
+  margin-right: 0.5rem;
+  cursor: pointer;
+}
+
+html.dark input[type='file']::file-selector-button:hover {
+  background-color: #334155;
+}
+
+/* 6. Semantic Status Surfaces & Text (Emerald, Amber, Orange, Red, Rose, Indigo, Sky) */
+
+/* Emerald (Operational / Attested / Verified) */
+html.dark .bg-emerald-50,
+html.dark .bg-emerald-50\/30,
+html.dark .bg-emerald-100 {
+  background-color: rgba(6, 78, 59, 0.42);
+}
+html.dark .hover\:bg-emerald-100:hover {
+  background-color: rgba(6, 95, 70, 0.58);
+}
+html.dark .border-emerald-200,
+html.dark .border-emerald-300,
+html.dark .border-emerald-400 {
+  border-color: #059669;
+}
+html.dark .text-emerald-950,
+html.dark .text-emerald-900,
+html.dark .text-emerald-800,
+html.dark .text-emerald-700,
+html.dark .text-emerald-600 {
+  color: #6ee7b7;
+}
+
+/* Amber (Bridged / Warning / Pending Quorum) */
+html.dark .bg-amber-50,
+html.dark .bg-amber-50\/30,
+html.dark .bg-amber-100 {
+  background-color: rgba(120, 53, 15, 0.42);
+}
+html.dark .hover\:bg-amber-100:hover {
+  background-color: rgba(146, 64, 14, 0.58);
+}
+html.dark .border-amber-300,
+html.dark .border-amber-400 {
+  border-color: #d97706;
+}
+html.dark .text-amber-950,
+html.dark .text-amber-900,
+html.dark .text-amber-800,
+html.dark .text-amber-700,
+html.dark .text-amber-600 {
+  color: #fcd34d;
+}
+
+/* Orange (Aging Containment) */
+html.dark .bg-orange-100 {
+  background-color: rgba(124, 45, 18, 0.48);
+}
+html.dark .border-orange-400 {
+  border-color: #ea580c;
+}
+html.dark .text-orange-950 {
+  color: #fdba74;
+}
+
+/* Red (Drift / Critical / Blocked / Rollback) */
+html.dark .bg-red-50,
+html.dark .bg-red-50\/40,
+html.dark .bg-red-50\/50,
+html.dark .bg-red-50\/60,
+html.dark .bg-red-100 {
+  background-color: rgba(127, 29, 29, 0.45);
+}
+html.dark .hover\:bg-red-50:hover,
+html.dark .hover\:bg-red-100:hover {
+  background-color: rgba(153, 27, 27, 0.6);
+}
+html.dark .border-red-200,
+html.dark .border-red-300,
+html.dark .border-red-400,
+html.dark .border-red-500 {
+  border-color: #dc2626;
+}
+html.dark .text-red-950,
+html.dark .text-red-900,
+html.dark .text-red-800,
+html.dark .text-red-700,
+html.dark .text-red-600 {
+  color: #fca5a5;
+}
+
+/* Rose (Ripening SLA) */
+html.dark .bg-rose-50,
+html.dark .bg-rose-100 {
+  background-color: rgba(136, 19, 55, 0.45);
+}
+html.dark .hover\:bg-rose-100:hover {
+  background-color: rgba(159, 18, 57, 0.6);
+}
+html.dark .border-rose-300,
+html.dark .border-rose-400 {
+  border-color: #e11d48;
+}
+html.dark .text-rose-950,
+html.dark .text-rose-900 {
+  color: #fda4af;
+}
+
+/* Indigo & Sky (Agent Lineage / Informational Panels) */
+html.dark .bg-indigo-50 {
+  background-color: rgba(49, 46, 129, 0.42);
+}
+html.dark .hover\:bg-indigo-100:hover {
+  background-color: rgba(55, 48, 163, 0.58);
+}
+html.dark .border-indigo-300 {
+  border-color: #6366f1;
+}
+html.dark .text-indigo-950,
+html.dark .text-indigo-700 {
+  color: #c7d2fe;
+}
+
+html.dark .bg-sky-50 {
+  background-color: rgba(12, 74, 110, 0.42);
+}
+html.dark .border-sky-400 {
+  border-color: #0284c7;
+}
+html.dark .text-sky-950 {
+  color: #bae6fd;
 }

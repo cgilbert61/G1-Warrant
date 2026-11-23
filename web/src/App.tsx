@@ -19,11 +19,13 @@ import { View4ContainmentLockout } from './components/View4ContainmentLockout';
 import { View5AuditorLedger } from './components/View5AuditorLedger';
 import { AuditorPortal } from './components/AuditorPortal';
 import { LiveFeedsModal } from './components/LiveFeedsModal';
+import { useTheme } from './lib/theme';
 
 type ViewKey = 'VIEW1_RACE' | 'VIEW2_WARRANTS' | 'VIEW3_SHADOW' | 'VIEW4_CONTAINMENT' | 'VIEW5_AUDITOR';
 
 export const App: React.FC = () => {
   const isAuditorRoute = window.location.pathname.startsWith('/auditor');
+  const { theme, toggleTheme } = useTheme();
 
   const [snapshot, setSnapshot] = useState<BootstrapSnapshot | null>(null);
   const [activeView, setActiveView] = useState<ViewKey>('VIEW1_RACE');
@@ -208,6 +210,8 @@ export const App: React.FC = () => {
         testPersonas={snapshot.test_personas}
         principals={snapshot.principals}
         rpId={snapshot.webauthn?.rp_id || 'localhost'}
+        theme={theme}
+        onToggleTheme={toggleTheme}
         smartcardBarEnabled={smartcardBarEnabled}
         onToggleSmartcardBar={() => setSmartcardBarEnabled((v) => !v)}
         onOpenLiveFeeds={() => setShowFeedsModal(true)}
@@ -264,7 +268,7 @@ export const App: React.FC = () => {
             })}
           </div>
 
-          <div className="hidden md:flex items-center gap-2 text-[11px] font-mono text-slate-500 py-2">
+          <div className="hidden xl:flex items-center gap-2 text-[11px] font-mono text-slate-500 py-2 whitespace-nowrap shrink-0">
             <span className={`w-2 h-2 rounded-full ${sseConnected ? 'bg-emerald-600' : 'bg-amber-500'}`} />
             <span>SSE: {sseConnected ? 'LIVE STREAM' : 'RECONNECTING'}</span>
             <span>·</span>

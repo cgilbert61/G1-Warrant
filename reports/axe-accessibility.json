@@ -13,7 +13,7 @@
     "compliance": "Section 508 Federal Accessibility",
     "liveEndpointVerified": true
   },
-  "timestamp": "2026-11-23T07:50:21.631526+00:00",
+  "timestamp": "2026-11-23T16:24:14.144100+00:00",
   "filesAudited": 13,
   "violations": [],
   "passes": [
@@ -140,6 +140,17 @@
       "file": "web/src/components/AuditorPortal.tsx"
     },
     {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/AuditorPortal.tsx"
+    },
+    {
       "id": "label",
       "impact": "critical",
       "description": "Form control <input id='freeze-actor-input'> has programmatic label association",
@@ -170,6 +181,17 @@
       "tags": [
         "wcag2a",
         "wcag111",
+        "section508"
+      ],
+      "file": "web/src/components/CommandBar.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
         "section508"
       ],
       "file": "web/src/components/CommandBar.tsx"
@@ -1137,8 +1159,8 @@
     }
   ],
   "summary": {
-    "totalChecks": 99,
-    "passedChecks": 99,
+    "totalChecks": 101,
+    "passedChecks": 101,
     "violationsCount": 0,
     "status": "PASS"
   }
