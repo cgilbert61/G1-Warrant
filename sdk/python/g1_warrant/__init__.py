@@ -11,6 +11,9 @@ from .crypto import (
     PAYLOAD_TYPE_WARRANT,
     ROLE_AUTHORIZING_OFFICIAL,
     ROLE_SERVICE_OWNER,
+    TRUST_BASIS_EMBEDDED_KEYRING_OPT_IN,
+    TRUST_BASIS_EXTERNAL_KEYRING,
+    TRUST_BASIS_EXTERNAL_PINNED_PUBKEY,
     AgentKeyBundle,
     PublicIdentityBundle,
     SignerKeyBundle,
@@ -38,7 +41,7 @@ from .crypto import (
     write_split_keypair_files,
 )
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 __all__ = [
     "__version__",
@@ -77,6 +80,9 @@ __all__ = [
     "draft_principal_enroll_envelope",
     "draft_principal_revoke_envelope",
     "draft_principal_rotate_and_revoke_envelope",
+    "TRUST_BASIS_EXTERNAL_PINNED_PUBKEY",
+    "TRUST_BASIS_EXTERNAL_KEYRING",
+    "TRUST_BASIS_EMBEDDED_KEYRING_OPT_IN",
     "verify_oscal_bundle_offline",
     "verify_oscal_bundle_with_keyring",
 ]

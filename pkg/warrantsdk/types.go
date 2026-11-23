@@ -10,7 +10,14 @@ import (
 )
 
 // Version is the semantic version of the G1-Warrant Go SDK.
-const Version = "1.2.0"
+const Version = "1.2.1"
+
+// Trust-basis identifiers emitted by offline OSCAL bundle verifiers (WN-4).
+const (
+	TrustBasisExternalPinnedPubKey = "EXTERNAL_PINNED_PUBKEY"
+	TrustBasisExternalKeyRing      = "EXTERNAL_KEYRING"
+	TrustBasisEmbeddedKeyRingOptIn = "EMBEDDED_BUNDLE_KEYRING_UNTRUSTED_OPT_IN"
+)
 
 // Re-exported protocol constants for callers outside internal/.
 const (

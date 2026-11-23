@@ -1113,6 +1113,39 @@ func (o *ControlPlaneOrchestrator) ApproveOrRejectException(ctx context.Context,
 	if err != nil {
 		return ex, rem, err
 	}
+	if hasProv, _ := o.N3Verify.DeriveVerifiedArtifactProvenance(ctx, rem); !hasProv {
+		signedArt, rErr := o.FixProvider.ResolveSignedPatch(ctx, models.ExtractedFinding{
+			CVEID:            rem.CVEID,
+			CWEID:            rem.CWEID,
+			CVSSScore:        rem.CVSSScore,
+			TargetServiceID:  svc.ServiceID,
+			VulnerableDigest: rem.VulnerableDigest,
+			PatchedDigest:    rem.PatchedDigest,
+			VulnerableSymbol: rem.VulnerableSymbol,
+			ExploitVector:    rem.ExploitVector,
+		}, "STATELESS_CLEAN")
+		if rErr != nil {
+			return ex, rem, rErr
+		}
+		if vErr := o.FixProvider.VerifyProvenance(*signedArt); vErr != nil {
+			return ex, rem, vErr
+		}
+		rem.PatchedDigest = signedArt.PatchedDigest
+		_ = o.Store.AppendTrace(ctx, models.TraceEvent{
+			TraceID:       "trc-" + uuid.NewString()[:8],
+			RemediationID: rem.RemediationID,
+			Engine:        "N4",
+			StepCode:      "ARTIFACT_PROVENANCE_VERIFIED",
+			Outcome:       "PASS",
+			ActorOrToken:  signedArt.PublisherKeyID,
+			EvidenceHash:  crypto.SHA256Hex([]byte(signedArt.ProvenanceSigB64)),
+			Fields: map[string]string{
+				"patched_digest": signedArt.PatchedDigest,
+				"publisher_id":   signedArt.PublisherID,
+			},
+			OccurredAt: time.Now().UTC(),
+		})
+	}
 	patchMeta := rem.PatchMetadata
 	if patchMeta == nil {
 		patchMeta = &models.ExtractedPatchMetadata{

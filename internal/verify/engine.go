@@ -22,6 +22,9 @@ import (
 type VerificationBundle struct {
 	TwinTranscriptSHA256      string
 	UnpatchedTwinStatus       string
+	HasSignedProbe            bool
+	ProvenanceVerified        bool
+	ProvenanceEvidenceHash    string
 	AssuranceTier             string
 	ExposedSecretSHA256       string
 	RotatedSecretSHA256       string
@@ -202,11 +205,12 @@ func (e *Engine) VerifyLockAndRetireBridge(ctx context.Context, item *models.Rem
 	})
 
 	// Step 4: Evaluate OPA Verify Policy before retiring the active Shield containment bridge
+	provVerified, provEvidenceHash := e.DeriveVerifiedArtifactProvenance(ctx, item)
 	verDec, err := e.policy.EvalVerify(ctx, policy.VerifyInput{
 		HasSignedProbe:            hasSignedProbe,
 		UnpatchedTwinStatus:       twinResp.UnpatchedStatus,
 		TwinReplayStatus:          twinResp.Status,
-		ProvenanceVerified:        true,
+		ProvenanceVerified:        provVerified,
 		VulnerablePkgAbsentInSBOM: vulnPkgAbsentInSBOM,
 		AttestedPods:              matchedPods,
 		TotalPods:                 len(wl.Pods),
@@ -248,11 +252,35 @@ func (e *Engine) VerifyLockAndRetireBridge(ctx context.Context, item *models.Rem
 	return &VerificationBundle{
 		TwinTranscriptSHA256:      twinResp.TranscriptSHA256,
 		UnpatchedTwinStatus:       twinResp.UnpatchedStatus,
+		HasSignedProbe:            hasSignedProbe,
+		ProvenanceVerified:        provVerified,
+		ProvenanceEvidenceHash:    provEvidenceHash,
 		AssuranceTier:             verDec.AssuranceTier,
 		VulnerablePkgAbsentInSBOM: vulnPkgAbsentInSBOM,
 		PodManifest:               podManifest,
 		Lockout:                   *lockout,
 	}, nil
+}
+
+// DeriveVerifiedArtifactProvenance inspects recorded remediation_traces for a cryptographic publisher provenance
+// verification record matching item.PatchedDigest (replacing any hardcoded ProvenanceVerified=true assumption).
+func (e *Engine) DeriveVerifiedArtifactProvenance(ctx context.Context, item *models.RemediationItem) (bool, string) {
+	if e == nil || e.store == nil || item == nil || strings.TrimSpace(item.RemediationID) == "" || strings.TrimSpace(item.PatchedDigest) == "" {
+		return false, ""
+	}
+	traces, err := e.store.ListTraces(ctx, item.RemediationID)
+	if err != nil {
+		return false, ""
+	}
+	for _, tr := range traces {
+		if tr.StepCode == "ARTIFACT_PROVENANCE_VERIFIED" &&
+			tr.Outcome == "PASS" &&
+			strings.TrimSpace(tr.EvidenceHash) != "" &&
+			tr.Fields["patched_digest"] == item.PatchedDigest {
+			return true, tr.EvidenceHash
+		}
+	}
+	return false, ""
 }
 
 func sbomStillReferencesDigest(sbomPURLs []string, vulnDigest string) bool {

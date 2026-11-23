@@ -142,9 +142,16 @@ def main(argv: list[str] | None = None) -> int:
     p_oscal_exp.add_argument("id")
     p_oscal_exp.add_argument("--out", type=Path, default=None)
 
-    p_oscal_ver = sub.add_parser("oscal-verify", help="Offline cryptographic verification of an OSCAL POA&M bundle")
+    p_oscal_ver = sub.add_parser("oscal-verify", help="Offline cryptographic verification of an OSCAL POA&M bundle (zero network calls)")
     p_oscal_ver.add_argument("bundle_file", type=Path)
-    p_oscal_ver.add_argument("--pubkey", default=None, help="Base64 Ed25519 kernel public key (auto-fetched if omitted)")
+    p_oscal_ver.add_argument("--pubkey", default=None, help="Pinned Base64 Ed25519 kernel public key")
+    p_oscal_ver.add_argument("--pubkey-file", type=Path, default=None, help="Path to pinned Base64 Ed25519 kernel public key file")
+    p_oscal_ver.add_argument("--keyring-file", type=Path, default=None, help="Path to pinned kernel_public_keys JSON array file")
+    p_oscal_ver.add_argument(
+        "--trust-embedded-keyring",
+        action="store_true",
+        help="Explicitly opt in to untrusted self-contained bundle keyring inspection",
+    )
 
     sub.add_parser("ledger-verify", help="Verify SHA-256 hash chains across all 6 immutable PostgreSQL tables")
 
@@ -180,6 +187,23 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  Public Identity   (0644): {pub_p}")
             else:
                 _dump(bundle.to_public_identity().to_dict())
+            return 0
+
+        if args.command == "oscal-verify":
+            raw_text = args.bundle_file.read_text(encoding="utf-8")
+            if args.pubkey:
+                res = verify_oscal_bundle_offline(raw_text, args.pubkey.strip())
+            elif args.pubkey_file:
+                res = verify_oscal_bundle_offline(raw_text, args.pubkey_file.read_text(encoding="utf-8").strip())
+            elif args.keyring_file:
+                ring_obj = json.loads(args.keyring_file.read_text(encoding="utf-8"))
+                ring_list = ring_obj.get("kernel_public_keys", ring_obj) if isinstance(ring_obj, dict) else ring_obj
+                res = verify_oscal_bundle_with_keyring(raw_text, ring_list)
+            elif args.trust_embedded_keyring:
+                res = verify_oscal_bundle_with_keyring(raw_text, None, allow_embedded_keyring_opt_in=True)
+            else:
+                res = verify_oscal_bundle_with_keyring(raw_text, None)
+            _dump(res)
             return 0
 
         global_signer = _load_priv_key(args.signer_key)
@@ -333,15 +357,6 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Exported signed NIST OSCAL 1.1.2 POA&M bundle -> {args.out}")
             else:
                 _dump(bundle)
-            return 0
-
-        if args.command == "oscal-verify":
-            raw_text = args.bundle_file.read_text(encoding="utf-8")
-            if args.pubkey:
-                res = verify_oscal_bundle_offline(raw_text, args.pubkey)
-            else:
-                res = verify_oscal_bundle_with_keyring(raw_text, cli.kernel_public_key_ring())
-            _dump(res)
             return 0
 
         if args.command == "ledger-verify":

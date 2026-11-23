@@ -109,7 +109,8 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 		return nil, err
 	}
 
-	hasProbe := bundle.AssuranceTier == models.AssuranceTier2DifferentialTwin ||
+	hasProbe := bundle.HasSignedProbe ||
+		bundle.AssuranceTier == models.AssuranceTier2DifferentialTwin ||
 		(item.TwinReplayStatus == "EXPLOIT_BLOCKED" && bundle.UnpatchedTwinStatus == "EXPLOIT_SUCCEEDED")
 	attestedPods := len(bundle.PodManifest)
 	totalPods := svc.Replicas
@@ -117,6 +118,8 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 		attestedPods = bundle.LandedAssetCount
 		totalPods = bundle.TargetedAssetCount
 	}
+
+	provenanceOK, provenanceHash := e.deriveVerifiedArtifactProvenance(ctx, item, bundle)
 
 	verDec, err := e.policy.EvalVerify(ctx, policy.VerifyInput{
 		RemediationKind:           actionKind,
@@ -126,7 +129,7 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 		HasSignedProbe:            hasProbe,
 		UnpatchedTwinStatus:       bundle.UnpatchedTwinStatus,
 		TwinReplayStatus:          item.TwinReplayStatus,
-		ProvenanceVerified:        true,
+		ProvenanceVerified:        provenanceOK,
 		VulnerablePkgAbsentInSBOM: bundle.VulnerablePkgAbsentInSBOM || actionKind == models.RemediationKindSecretRotation,
 		AttestedPods:              attestedPods,
 		TotalPods:                 totalPods,
@@ -268,17 +271,7 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 						{"name": "act-delegation-lineage", "value": actLineage},
 					},
 				},
-				{
-					"uuid":        obsTwinUUID,
-					"title":       "N3 Isolated Ephemeral Twin Exploit Replay",
-					"description": "Deterministic exploit reproduction executed against isolated ephemeral twin; exit proof EXPLOIT_BLOCKED.",
-					"methods":     []string{"TEST"},
-					"collected":   now.Format(time.RFC3339),
-					"props": []map[string]string{
-						{"name": "twin-replay-status", "value": item.TwinReplayStatus},
-						{"name": "twin-transcript-sha256", "value": bundle.TwinTranscriptSHA256},
-					},
-				},
+				buildN3ProofObservation(obsTwinUUID, now, actionKind, hasProbe, provenanceOK, provenanceHash, item, bundle),
 				{
 					"uuid":        obsFleetUUID,
 					"title":       "N3 Passive Fleet & WN-8 Distributor Per-Asset Landing Manifest",
@@ -317,7 +310,7 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 					"uuid":        riskUUID,
 					"title":       fmt.Sprintf("%s Remediation Closure (%s — %s)", item.CVEID, svc.ServiceID, closureCompleteness),
 					"description": fmt.Sprintf("Deterministic remediation record for %s (CISA_KEV=%t, CVSS=%.1f, completeness=%s).", item.CVEID, item.IsKEV, item.CVSSScore, closureCompleteness),
-					"statement":   "Exploit vector contained via Cilium bridge, patched via governed distributor rollout, verified in isolated twin, and recorded with honest per-asset landing telemetry.",
+					"statement":   buildTierHonestRiskStatement(actionKind, hasProbe, verDec.AssuranceTier, closureCompleteness),
 					"status":      map[bool]string{true: "closed", false: "open"}[closureCompleteness == models.ClosureCompletenessFull],
 					"props": []map[string]string{
 						{"name": "cve-id", "value": item.CVEID},
@@ -569,4 +562,107 @@ func buildPodEvidenceList(pods []models.PodDigestEntry) []map[string]any {
 		})
 	}
 	return out
+}
+
+func (e *Engine) deriveVerifiedArtifactProvenance(
+	ctx context.Context,
+	item *models.RemediationItem,
+	bundle *verify.VerificationBundle,
+) (bool, string) {
+	if item == nil || bundle == nil {
+		return false, ""
+	}
+	if item.RemediationKind == models.RemediationKindSecretRotation || bundle.AssuranceTier == models.AssuranceTierSecretRotated {
+		return false, ""
+	}
+	if e != nil && e.store != nil && strings.TrimSpace(item.RemediationID) != "" && strings.TrimSpace(item.PatchedDigest) != "" {
+		if traces, err := e.store.ListTraces(ctx, item.RemediationID); err == nil {
+			for _, tr := range traces {
+				if tr.StepCode == "ARTIFACT_PROVENANCE_VERIFIED" &&
+					tr.Outcome == "PASS" &&
+					strings.TrimSpace(tr.EvidenceHash) != "" &&
+					tr.Fields["patched_digest"] == item.PatchedDigest {
+					return true, tr.EvidenceHash
+				}
+			}
+		}
+	}
+	if bundle.ProvenanceVerified && strings.TrimSpace(bundle.ProvenanceEvidenceHash) != "" {
+		return true, bundle.ProvenanceEvidenceHash
+	}
+	return false, ""
+}
+
+func buildN3ProofObservation(
+	obsUUID string,
+	now time.Time,
+	actionKind string,
+	hasProbe bool,
+	provenanceOK bool,
+	provenanceHash string,
+	item *models.RemediationItem,
+	bundle *verify.VerificationBundle,
+) map[string]any {
+	if actionKind == models.RemediationKindSecretRotation || bundle.AssuranceTier == models.AssuranceTierSecretRotated {
+		return map[string]any{
+			"uuid":        obsUUID,
+			"title":       "N3 Autonomous Secret Rotation & Cryptographic Non-Equivalence Proof",
+			"description": "Workload credential rotated and prior token revoked; verified non-empty cryptographic non-equivalence (rotated SHA-256 != exposed SHA-256).",
+			"methods":     []string{"EXAMINE", "TEST"},
+			"collected":   now.Format(time.RFC3339),
+			"props": []map[string]string{
+				{"name": "has-signed-probe", "value": "false"},
+				{"name": "secret-rotated-and-revoked", "value": "true"},
+				{"name": "exposed-secret-sha256", "value": bundle.ExposedSecretSHA256},
+				{"name": "rotated-secret-sha256", "value": bundle.RotatedSecretSHA256},
+			},
+		}
+	}
+	if hasProbe {
+		return map[string]any{
+			"uuid":        obsUUID,
+			"title":       "N3 Isolated Ephemeral Twin Exploit Replay",
+			"description": "Deterministic differential exploit probe executed against isolated ephemeral twin; positive control EXPLOIT_SUCCEEDED on unpatched baseline and EXPLOIT_BLOCKED on patched candidate.",
+			"methods":     []string{"TEST"},
+			"collected":   now.Format(time.RFC3339),
+			"props": []map[string]string{
+				{"name": "has-signed-probe", "value": "true"},
+				{"name": "unpatched-twin-status", "value": bundle.UnpatchedTwinStatus},
+				{"name": "twin-replay-status", "value": item.TwinReplayStatus},
+				{"name": "twin-transcript-sha256", "value": bundle.TwinTranscriptSHA256},
+				{"name": "provenance-verified", "value": fmt.Sprintf("%t", provenanceOK)},
+				{"name": "provenance-evidence-sha256", "value": provenanceHash},
+			},
+		}
+	}
+	return map[string]any{
+		"uuid":        obsUUID,
+		"title":       "N3 Passive Artifact Provenance & SBOM Absence Verification",
+		"description": "No signed exploit probe registered for finding (NO_PROBE_PASSIVE_ONLY); verified cryptographic publisher provenance signature and vulnerable package absence in patched SBOM.",
+		"methods":     []string{"EXAMINE", "INSPECT"},
+		"collected":   now.Format(time.RFC3339),
+		"props": []map[string]string{
+			{"name": "has-signed-probe", "value": "false"},
+			{"name": "twin-replay-status", "value": item.TwinReplayStatus},
+			{"name": "provenance-verified", "value": fmt.Sprintf("%t", provenanceOK)},
+			{"name": "provenance-evidence-sha256", "value": provenanceHash},
+			{"name": "vulnerable-pkg-absent-in-sbom", "value": fmt.Sprintf("%t", bundle.VulnerablePkgAbsentInSBOM)},
+		},
+	}
+}
+
+func buildTierHonestRiskStatement(actionKind string, hasProbe bool, assuranceTier string, closureCompleteness string) string {
+	if actionKind == models.RemediationKindSecretRotation || assuranceTier == models.AssuranceTierSecretRotated {
+		return "Exposed credential contained via egress and metadata quarantine, rotated and revoked with verified cryptographic non-equivalence, and attested across live workload pods."
+	}
+	if assuranceTier == models.AssuranceTier0DistributorDispatchOnly || closureCompleteness == models.ClosureCompletenessDispatchOnly {
+		if hasProbe {
+			return "Exploit vector contained via Cilium bridge, candidate patch verified via differential exploit replay in isolated twin, and dispatched to distributor lacking per-asset confirmation (containment bridge held active)."
+		}
+		return "Advisory contained via Cilium bridge, candidate patch verified via cryptographic publisher provenance and SBOM package absence (no active exploit probe executed), and dispatched to distributor lacking per-asset confirmation (containment bridge held active)."
+	}
+	if hasProbe {
+		return fmt.Sprintf("Exploit vector contained via Cilium bridge, patched with verified publisher provenance, verified via differential exploit replay in isolated twin, and recorded with honest per-asset landing telemetry (completeness=%s).", closureCompleteness)
+	}
+	return fmt.Sprintf("Advisory contained via Cilium bridge, patched with verified publisher provenance and SBOM package absence (no active exploit probe executed), and recorded with honest per-asset landing telemetry (completeness=%s).", closureCompleteness)
 }

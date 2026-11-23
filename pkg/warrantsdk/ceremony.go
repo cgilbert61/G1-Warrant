@@ -450,6 +450,7 @@ func DraftPrincipalRotateAndRevokeEnvelope(
 // OfflineVerificationResult summarizes standalone air-gapped verification of a signed OSCAL POA&M bundle.
 type OfflineVerificationResult struct {
 	Valid             bool   `json:"valid"`
+	TrustBasis        string `json:"trust_basis"`
 	AttestationID     string `json:"attestation_id"`
 	CVEID             string `json:"cve_id"`
 	ServiceID         string `json:"service_id"`
@@ -461,9 +462,28 @@ type OfflineVerificationResult struct {
 	EntryHash         string `json:"entry_hash"`
 }
 
-// VerifyOSCALBundleWithKeyRing verifies an exported NIST OSCAL 1.1.2 POA&M bundle against an append-only
-// ring of historical and active Kernel Ed25519 public keys (preventing restart key-rotation invalidation).
+// KeyRingVerificationOptions configures trust-anchor behavior for VerifyOSCALBundleWithKeyRingOpts (WN-4).
+type KeyRingVerificationOptions struct {
+	// AllowEmbeddedKeyRingOptIn explicitly opts into inspecting a bundle's self-contained
+	// kernel_public_key_ring when no external keyRing is supplied. Never enabled by default.
+	AllowEmbeddedKeyRingOptIn bool
+}
+
+// VerifyOSCALBundleWithKeyRing verifies an exported NIST OSCAL 1.1.2 POA&M bundle against an explicit
+// caller-supplied append-only ring of Kernel Ed25519 public keys. Fails closed if keyRing is empty (WN-4).
 func VerifyOSCALBundleWithKeyRing(bundleJSON []byte, keyRing []KernelPublicKeyRecord) (*OfflineVerificationResult, error) {
+	return VerifyOSCALBundleWithKeyRingOpts(bundleJSON, keyRing, KeyRingVerificationOptions{
+		AllowEmbeddedKeyRingOptIn: false,
+	})
+}
+
+// VerifyOSCALBundleWithKeyRingOpts verifies an exported NIST OSCAL 1.1.2 POA&M bundle against keyRing,
+// allowing embedded-ring fallback strictly when opts.AllowEmbeddedKeyRingOptIn is true and naming the trust basis.
+func VerifyOSCALBundleWithKeyRingOpts(
+	bundleJSON []byte,
+	keyRing []KernelPublicKeyRecord,
+	opts KeyRingVerificationOptions,
+) (*OfflineVerificationResult, error) {
 	var header struct {
 		DSSEEnvelope        Envelope                `json:"dsse_envelope"`
 		KernelPublicKeyRing []KernelPublicKeyRecord `json:"kernel_public_key_ring"`
@@ -475,20 +495,36 @@ func VerifyOSCALBundleWithKeyRing(bundleJSON []byte, keyRing []KernelPublicKeyRe
 		return nil, errors.New("DSSE envelope contains zero signatures")
 	}
 	targetKeyID := header.DSSEEnvelope.Signatures[0].KeyID
+
 	candidates := keyRing
+	trustBasis := TrustBasisExternalKeyRing
 	if len(candidates) == 0 {
+		if !opts.AllowEmbeddedKeyRingOptIn {
+			return nil, errors.New("UNTRUSTED_KEYRING_EMPTY: external keyRing is required; embedded bundle kernel_public_key_ring is untrusted unless AllowEmbeddedKeyRingOptIn is explicitly set")
+		}
+		if len(header.KernelPublicKeyRing) == 0 {
+			return nil, errors.New("UNTRUSTED_KEYRING_EMPTY: AllowEmbeddedKeyRingOptIn enabled, but bundle contains no embedded kernel_public_key_ring")
+		}
 		candidates = header.KernelPublicKeyRing
+		trustBasis = TrustBasisEmbeddedKeyRingOptIn
 	}
+
 	for _, rec := range candidates {
 		if rec.KeyID == targetKeyID {
-			return VerifyOSCALBundleOffline(bundleJSON, rec.PublicKeyB64)
+			res, err := VerifyOSCALBundleOffline(bundleJSON, rec.PublicKeyB64)
+			if err != nil {
+				return nil, err
+			}
+			res.TrustBasis = trustBasis
+			return res, nil
 		}
 	}
-	return nil, fmt.Errorf("kernel signing key %q not found in verification public-key ring (%d keys)", targetKeyID, len(candidates))
+	return nil, fmt.Errorf("kernel signing key %q not found in verification public-key ring (%d keys, trust_basis=%s)", targetKeyID, len(candidates), trustBasis)
 }
 
 // VerifyOSCALBundleOffline cryptographically verifies an exported NIST OSCAL 1.1.2 POA&M bundle
-// against the G1-Warrant Kernel Ed25519 public key with zero network calls.
+// against a pinned G1-Warrant Kernel Ed25519 public key with zero network calls, extracting identity
+// claims strictly from the signed DSSE payload and failing closed on any outer-wrapper mismatch (WN-3).
 func VerifyOSCALBundleOffline(bundleJSON []byte, kernelPublicKeyB64 string) (*OfflineVerificationResult, error) {
 	var bundle struct {
 		AttestationID string   `json:"attestation_id"`
@@ -501,7 +537,7 @@ func VerifyOSCALBundleOffline(bundleJSON []byte, kernelPublicKeyB64 string) (*Of
 	if err := json.Unmarshal(bundleJSON, &bundle); err != nil {
 		return nil, fmt.Errorf("decode OSCAL bundle JSON: %w", err)
 	}
-	pubBytes, err := base64.StdEncoding.DecodeString(kernelPublicKeyB64)
+	pubBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(kernelPublicKeyB64))
 	if err != nil {
 		return nil, fmt.Errorf("decode kernel public key base64: %w", err)
 	}
@@ -535,16 +571,132 @@ func VerifyOSCALBundleOffline(bundleJSON []byte, kernelPublicKeyB64 string) (*Of
 		return nil, errors.New("Ed25519 signature verification FAILED over DSSEv1 PAE")
 	}
 
+	signedAttID, signedCVE, signedSvc, signedWarrant, err := extractAndReconcileSignedAttestationIdentity(
+		rawPayload,
+		bundle.AttestationID,
+		bundle.CVEID,
+		bundle.ServiceID,
+		bundle.WarrantID,
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	return &OfflineVerificationResult{
 		Valid:             true,
-		AttestationID:     bundle.AttestationID,
-		CVEID:             bundle.CVEID,
-		ServiceID:         bundle.ServiceID,
-		WarrantID:         bundle.WarrantID,
+		TrustBasis:        TrustBasisExternalPinnedPubKey,
+		AttestationID:     signedAttID,
+		CVEID:             signedCVE,
+		ServiceID:         signedSvc,
+		WarrantID:         signedWarrant,
 		JCSCanonicalMatch: true,
 		PayloadSHA256:     crypto.SHA256Hex(rawPayload),
 		PAESHA256:         crypto.SHA256Hex(pae),
 		SignerKeyID:       sigEntry.KeyID,
 		EntryHash:         bundle.EntryHash,
 	}, nil
+}
+
+func extractAndReconcileSignedAttestationIdentity(
+	rawPayload []byte,
+	outerAttID, outerCVE, outerSvc, outerWarrant string,
+) (attID, cveID, svcID, warrantID string, err error) {
+	var doc map[string]any
+	if err := json.Unmarshal(rawPayload, &doc); err != nil {
+		return "", "", "", "", fmt.Errorf("decode signed attestation payload JSON: %w", err)
+	}
+
+	findProp := func(obj any, propName string) string {
+		m, ok := obj.(map[string]any)
+		if !ok {
+			return ""
+		}
+		props, ok := m["props"].([]any)
+		if !ok {
+			return ""
+		}
+		for _, p := range props {
+			pm, ok := p.(map[string]any)
+			if !ok {
+				continue
+			}
+			n, _ := pm["name"].(string)
+			v, _ := pm["value"].(string)
+			if n == propName && strings.TrimSpace(v) != "" {
+				return strings.TrimSpace(v)
+			}
+		}
+		return ""
+	}
+
+	if poam, ok := doc["plan-of-action-and-milestones"].(map[string]any); ok {
+		attID = findProp(poam["metadata"], "attestation-id")
+		if ld, ok := poam["local-definitions"].(map[string]any); ok {
+			if inv, ok := ld["inventory-items"].([]any); ok {
+				for _, it := range inv {
+					if v := findProp(it, "service-id"); v != "" {
+						svcID = v
+						break
+					}
+				}
+			}
+		}
+		if obsList, ok := poam["observations"].([]any); ok {
+			for _, obs := range obsList {
+				if v := findProp(obs, "warrant-id"); v != "" {
+					warrantID = v
+					break
+				}
+			}
+		}
+		if risks, ok := poam["risks"].([]any); ok {
+			for _, rk := range risks {
+				if v := findProp(rk, "cve-id"); v != "" {
+					cveID = v
+					break
+				}
+			}
+		}
+	} else {
+		if s, ok := doc["attestation_id"].(string); ok {
+			attID = strings.TrimSpace(s)
+		}
+		if s, ok := doc["cve_id"].(string); ok {
+			cveID = strings.TrimSpace(s)
+		}
+		if s, ok := doc["service_id"].(string); ok {
+			svcID = strings.TrimSpace(s)
+		}
+		if s, ok := doc["warrant_id"].(string); ok {
+			warrantID = strings.TrimSpace(s)
+		}
+	}
+
+	if attID == "" || cveID == "" || svcID == "" {
+		return "", "", "", "", fmt.Errorf(
+			"SIGNED_PAYLOAD_MISSING_IDENTITY_CLAIMS: signed payload must declare attestation_id (%q), cve_id (%q), and service_id (%q)",
+			attID, cveID, svcID,
+		)
+	}
+
+	checkField := func(fieldName, outerVal, signedVal string) error {
+		o := strings.TrimSpace(outerVal)
+		if o != "" && o != signedVal {
+			return fmt.Errorf("UNSIGNED_WRAPPER_MISMATCH: outer %s %q does not match signed payload %q", fieldName, o, signedVal)
+		}
+		return nil
+	}
+	if err := checkField("attestation_id", outerAttID, attID); err != nil {
+		return "", "", "", "", err
+	}
+	if err := checkField("cve_id", outerCVE, cveID); err != nil {
+		return "", "", "", "", err
+	}
+	if err := checkField("service_id", outerSvc, svcID); err != nil {
+		return "", "", "", "", err
+	}
+	if err := checkField("warrant_id", outerWarrant, warrantID); err != nil {
+		return "", "", "", "", err
+	}
+	return attID, cveID, svcID, warrantID, nil
 }

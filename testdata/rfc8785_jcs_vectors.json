@@ -1,0 +1,67 @@
+{
+  "schema": "g1-warrant.rfc8785-jcs-vectors.v1",
+  "jcs_vectors": [
+    {
+      "name": "ieee754_small_fixed_1e_minus_6",
+      "input_json": "[1e-6, -1e-6, 1e-5, 2.5e-6, 0.00000100]",
+      "expected_canonical_json": "[0.000001,-0.000001,0.00001,0.0000025,0.000001]",
+      "expected_sha256": "8a176e9d22ea0fb936b98fb0cbb5b66a1d27f9869cfc35255feb29550343ca94"
+    },
+    {
+      "name": "ieee754_exp_boundary_below_1e_minus_6",
+      "input_json": "[1e-7, -1e-7, 9.999999999999999e-7, 1e-27]",
+      "expected_canonical_json": "[1e-7,-1e-7,0.000001,1e-27]",
+      "expected_sha256": "7b8d778c72c40c5ecfa7509f26ca5925d14a5a8b4ac7b7ea003a86aa46320ff9"
+    },
+    {
+      "name": "ieee754_large_fixed_vs_exp_1e20_1e21",
+      "input_json": "[1e20, -1e20, 9.999999999999999e20, 1e21, -1e21, 1E30]",
+      "expected_canonical_json": "[100000000000000000000,-100000000000000000000,999999999999999900000,1e+21,-1e+21,1e+30]",
+      "expected_sha256": "3f0110d9c4569e93ca0a61470558d5487207651af04acfc9b3fc4d37d40f5664"
+    },
+    {
+      "name": "ieee754_negative_zero_and_rounding",
+      "input_json": "[-0.0, 0.0, -0, 4.50, 333333333.33333329, 9007199254740991]",
+      "expected_canonical_json": "[0,0,0,4.5,333333333.3333333,9007199254740991]",
+      "expected_sha256": "ea9cfa59774dfcc2e12c356fa0346c799153b1a3522e3ce2b03f0e420b65266e"
+    },
+    {
+      "name": "rfc8785_utf16_surrogate_key_sorting",
+      "input_json": "{\"דּ\": \"hebrew_dagesh_u_fb33\", \"😀\": \"emoji_u_1f600_utf16_d83d_de00\", \"€\": \"euro_u_20ac\", \"\\r\": \"cr_u_000d\", \"10\": \"ten\", \"2\": \"two\"}",
+      "expected_canonical_json": "{\"\\r\":\"cr_u_000d\",\"10\":\"ten\",\"2\":\"two\",\"€\":\"euro_u_20ac\",\"😀\":\"emoji_u_1f600_utf16_d83d_de00\",\"דּ\":\"hebrew_dagesh_u_fb33\"}",
+      "expected_sha256": "10d3eb83634736e0a30bbb37af5ef9e86b92b3b56b120a3e2c81645601342c3c"
+    },
+    {
+      "name": "rfc8785_control_char_escaping",
+      "input_json": "{\"ctrl\": \"\\u0000\\u0001\\b\\t\\n\\f\\r\\u001f\\\"\\\\/ok\"}",
+      "expected_canonical_json": "{\"ctrl\":\"\\u0000\\u0001\\b\\t\\n\\f\\r\\u001f\\\"\\\\/ok\"}",
+      "expected_sha256": "0247a5b04839d675585f163b2af2dee36fbfb4c5d0e6b207ad105c7a8524360c"
+    }
+  ],
+  "cross_language_dsse_vector": {
+    "public_key_b64": "ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ=",
+    "key_id": "kernel-wn2-vector-v1",
+    "key_fingerprint": "65b60673d6ed884bf01c2c222d82ada0740f29ac3355d6a925c81f17f47a27b8",
+    "payload_type": "application/vnd.g1163rt.oscal-attestation.v1+json",
+    "input_payload_json": "{\"attestation_id\": \"att-wn2-shared-001\", \"cve_id\": \"CVE-2026-41001\", \"service_id\": \"payments-ledger-api\", \"warrant_id\": \"wrt-wn2-shared-001\", \"metrics\": {\"p_false_negative\": 1e-06, \"drift_eps\": 1e-07, \"scale_bound\": 1e+20, \"overflow_probe\": 1e+21, \"delta_zero\": -0.0}, \"utf16_probe\": {\"דּ\": 2, \"😀\": 1}}",
+    "expected_canonical_payload": "{\"attestation_id\":\"att-wn2-shared-001\",\"cve_id\":\"CVE-2026-41001\",\"metrics\":{\"delta_zero\":0,\"drift_eps\":1e-7,\"overflow_probe\":1e+21,\"p_false_negative\":0.000001,\"scale_bound\":100000000000000000000},\"service_id\":\"payments-ledger-api\",\"utf16_probe\":{\"😀\":1,\"דּ\":2},\"warrant_id\":\"wrt-wn2-shared-001\"}",
+    "expected_payload_sha256": "18d2208a903641d4bd3cbd585c30afe6232f6dce97df58a894843a17a63960b7",
+    "expected_pae_sha256": "18ce6710dbfb2c35a479e2355b77f8f5168adede26739026d16c11f03a890e94",
+    "dsse_envelope": {
+      "payloadType": "application/vnd.g1163rt.oscal-attestation.v1+json",
+      "payload": "eyJhdHRlc3RhdGlvbl9pZCI6ImF0dC13bjItc2hhcmVkLTAwMSIsImN2ZV9pZCI6IkNWRS0yMDI2LTQxMDAxIiwibWV0cmljcyI6eyJkZWx0YV96ZXJvIjowLCJkcmlmdF9lcHMiOjFlLTcsIm92ZXJmbG93X3Byb2JlIjoxZSsyMSwicF9mYWxzZV9uZWdhdGl2ZSI6MC4wMDAwMDEsInNjYWxlX2JvdW5kIjoxMDAwMDAwMDAwMDAwMDAwMDAwMDB9LCJzZXJ2aWNlX2lkIjoicGF5bWVudHMtbGVkZ2VyLWFwaSIsInV0ZjE2X3Byb2JlIjp7IvCfmIAiOjEsIu+ssyI6Mn0sIndhcnJhbnRfaWQiOiJ3cnQtd24yLXNoYXJlZC0wMDEifQ==",
+      "signatures": [
+        {
+          "slot": 1,
+          "keyid": "kernel-wn2-vector-v1",
+          "alg": "Ed25519",
+          "role": "ATTESTATION_KERNEL",
+          "principal_id": "sys-warrantd-kernel",
+          "principal_email": "kernel@g1163rt.sec",
+          "key_fingerprint": "65b60673d6ed884bf01c2c222d82ada0740f29ac3355d6a925c81f17f47a27b8",
+          "sig": "CJcQNOhJQWXNJxsKDKSMfOVuh/z1ScitAAkxyOHteMJ0Wy/Tms8FPoZmSuhjQJ02YS4/HiWfG1pRy6GSri97BQ=="
+        }
+      ]
+    }
+  }
+}

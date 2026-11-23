@@ -103,12 +103,14 @@ func (e *Engine) EvaluateDistributorClosureAndBridge(
 	_ = e.store.UpsertLockout(ctx, *lockout)
 	item.LockoutPolicyID = lockout.PolicyName
 
+	provVerified, provEvidenceHash := e.DeriveVerifiedArtifactProvenance(ctx, item)
+
 	verDec, err := e.policy.EvalVerify(ctx, policy.VerifyInput{
 		RemediationKind:           item.RemediationKind,
 		HasSignedProbe:            hasSignedProbe,
 		UnpatchedTwinStatus:       twinResp.UnpatchedStatus,
 		TwinReplayStatus:          twinResp.Status,
-		ProvenanceVerified:        true,
+		ProvenanceVerified:        provVerified,
 		VulnerablePkgAbsentInSBOM: true,
 		AttestedPods:              distRes.LandedCount,
 		TotalPods:                 distRes.TargetedCount,
@@ -186,6 +188,9 @@ func (e *Engine) EvaluateDistributorClosureAndBridge(
 	bundle := &VerificationBundle{
 		TwinTranscriptSHA256:      twinResp.TranscriptSHA256,
 		UnpatchedTwinStatus:       twinResp.UnpatchedStatus,
+		HasSignedProbe:            hasSignedProbe,
+		ProvenanceVerified:        provVerified,
+		ProvenanceEvidenceHash:    provEvidenceHash,
 		AssuranceTier:             verDec.AssuranceTier,
 		VulnerablePkgAbsentInSBOM: true,
 		PodManifest:               podManifest,

@@ -11,6 +11,7 @@ pip install -e sdk/python
 ## Quick Python Usage
 
 ```python
+from pathlib import Path
 from g1_warrant import (
     WarrantClient,
     draft_warrant_envelope,
@@ -26,12 +27,11 @@ print(f"Posture: {sb['freeze_state']['mode']} | Median TTVR: {sb['fleet_median_t
 # 2. Submit a Trivy / Semgrep SARIF 2.1.0 report (sanitized via zero-egress warrant-extractor)
 items = client.ingest_sarif("./trivy-scan.sarif", target_service="payments-ledger-api")
 
-# 3. Export a closed NIST OSCAL 1.1.2 POA&M bundle & verify DSSE + JCS offline
-atts = client.list_attestations()
-if atts:
-    bundle = client.export_oscal_bundle(atts[0]["attestation_id"])
-    proof = verify_oscal_bundle_offline(bundle, client.kernel_public_key_b64())
-    print("Offline DSSE + RFC 8785 JCS Verified:", proof["valid"], proof["pae_sha256"])
+# 3. Genuine air-gapped offline DSSE + RFC 8785 JCS verification using a locally pinned kernel public key file
+pinned_pubkey_b64 = Path("./kernel-seal.pub").read_text(encoding="utf-8").strip()
+bundle_raw = Path("./poam-bundle.json").read_text(encoding="utf-8")
+proof = verify_oscal_bundle_offline(bundle_raw, pinned_pubkey_b64)
+print("Offline DSSE + RFC 8785 JCS Verified:", proof["valid"], proof["trust_basis"], proof["pae_sha256"])
 ```
 
 ## CLI Usage (`g1-warrant`)
@@ -45,5 +45,5 @@ g1-warrant intake-sarif ./reports/trivy-fs.sarif --service payments-ledger-api
 g1-warrant feeds status
 g1-warrant ledger-verify
 g1-warrant oscal-export <attestation-id> --out poam-bundle.json
-g1-warrant oscal-verify poam-bundle.json
+g1-warrant oscal-verify poam-bundle.json --pubkey-file ./kernel-seal.pub
 ```

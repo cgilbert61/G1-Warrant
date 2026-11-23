@@ -475,6 +475,20 @@ func (o *ControlPlaneOrchestrator) ExecuteGovernedDistributorDispatch(
 		return nil, fmt.Errorf("NO_PROOF_NO_DEPLOYMENT_ORDER (provenance failed): %w", err)
 	}
 	item.PatchedDigest = signedArt.PatchedDigest
+	_ = o.Store.AppendTrace(ctx, models.TraceEvent{
+		TraceID:       "trc-" + uuid.NewString()[:8],
+		RemediationID: item.RemediationID,
+		Engine:        "N4",
+		StepCode:      "ARTIFACT_PROVENANCE_VERIFIED",
+		Outcome:       "PASS",
+		ActorOrToken:  signedArt.PublisherKeyID,
+		EvidenceHash:  crypto.SHA256Hex([]byte(signedArt.ProvenanceSigB64)),
+		Fields: map[string]string{
+			"patched_digest": signedArt.PatchedDigest,
+			"publisher_id":   signedArt.PublisherID,
+		},
+		OccurredAt: time.Now().UTC(),
+	})
 
 	// Register patched digest profile in simulator so K8s/Twin runner has clean baseline metrics when needed
 	_ = o.Deploy.RegisterImageProfile(ctx, serverCleanImageProfile(svc, signedArt.PatchedDigest))

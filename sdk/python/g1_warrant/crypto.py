@@ -35,19 +35,67 @@ def canonicalize_jcs(obj: Any) -> bytes:
     return _jcs_str(obj).encode("utf-8")
 
 
+def _format_jcs_float(val: float) -> str:
+    """Format an IEEE-754 binary64 number strictly per RFC 8785 Section 3.2.2.3 (ECMA-262 Number::toString)."""
+    import math
+
+    if math.isnan(val) or math.isinf(val):
+        raise ValueError("RFC 8785 JCS prohibits NaN or Infinity")
+    if val == 0.0:
+        return "0"
+    if val < 0.0:
+        return "-" + _format_jcs_float(-val)
+
+    raw = repr(float(val)).lower()
+    if "e" in raw:
+        mant_str, exp_str = raw.split("e", 1)
+        exp = int(exp_str)
+    else:
+        mant_str, exp = raw, 0
+
+    if "." in mant_str:
+        int_part, frac_part = mant_str.split(".", 1)
+        digits = int_part + frac_part
+        dec_exp = exp - len(frac_part)
+    else:
+        digits = mant_str
+        dec_exp = exp
+
+    digits = digits.lstrip("0")
+    stripped_right = len(digits) - len(digits.rstrip("0"))
+    if stripped_right > 0:
+        digits = digits.rstrip("0")
+        dec_exp += stripped_right
+
+    k = len(digits)
+    n = dec_exp + k
+
+    if k <= n <= 21:
+        return digits + ("0" * (n - k))
+    if 0 < n <= 21:
+        return digits[:n] + "." + digits[n:]
+    if -6 < n <= 0:
+        return "0." + ("0" * (-n)) + digits
+
+    exp_val = n - 1
+    sign = "+" if exp_val >= 0 else "-"
+    exp_digits = str(abs(exp_val))
+    if k == 1:
+        return f"{digits}e{sign}{exp_digits}"
+    return f"{digits[0]}.{digits[1:]}e{sign}{exp_digits}"
+
+
 def _jcs_str(val: Any) -> str:
     if val is None:
         return "null"
     if isinstance(val, bool):
         return "true" if val else "false"
     if isinstance(val, int):
-        return str(val)
+        if -9007199254740991 <= val <= 9007199254740991:
+            return str(val)
+        return _format_jcs_float(float(val))
     if isinstance(val, float):
-        if val == 0.0:
-            return "0"
-        if val.is_integer() and abs(val) < 1e15:
-            return str(int(val))
-        return json.dumps(val, allow_nan=False)
+        return _format_jcs_float(val)
     if isinstance(val, str):
         return json.dumps(val, ensure_ascii=False)
     if isinstance(val, (list, tuple)):
@@ -470,8 +518,85 @@ def draft_exception_envelope(exception_record: dict[str, Any], ttl_seconds: int 
     )
 
 
+TRUST_BASIS_EXTERNAL_PINNED_PUBKEY = "EXTERNAL_PINNED_PUBKEY"
+TRUST_BASIS_EXTERNAL_KEYRING = "EXTERNAL_KEYRING"
+TRUST_BASIS_EMBEDDED_KEYRING_OPT_IN = "EMBEDDED_BUNDLE_KEYRING_UNTRUSTED_OPT_IN"
+
+
+def _extract_and_reconcile_signed_attestation_identity(
+    parsed_payload: Any,
+    outer_doc: dict[str, Any],
+) -> tuple[str, str, str, str]:
+    if not isinstance(parsed_payload, dict):
+        raise ValueError("SIGNED_PAYLOAD_MISSING_IDENTITY_CLAIMS: signed payload must be a JSON object")
+
+    def _find_prop(obj: Any, prop_name: str) -> str:
+        if not isinstance(obj, dict):
+            return ""
+        props = obj.get("props")
+        if not isinstance(props, list):
+            return ""
+        for item in props:
+            if isinstance(item, dict) and item.get("name") == prop_name:
+                val = str(item.get("value", "")).strip()
+                if val:
+                    return val
+        return ""
+
+    att_id = ""
+    cve_id = ""
+    svc_id = ""
+    warrant_id = ""
+
+    poam = parsed_payload.get("plan-of-action-and-milestones")
+    if isinstance(poam, dict):
+        att_id = _find_prop(poam.get("metadata"), "attestation-id")
+        ld = poam.get("local-definitions")
+        if isinstance(ld, dict):
+            for inv_item in ld.get("inventory-items") or []:
+                found = _find_prop(inv_item, "service-id")
+                if found:
+                    svc_id = found
+                    break
+        for obs in poam.get("observations") or []:
+            found = _find_prop(obs, "warrant-id")
+            if found:
+                warrant_id = found
+                break
+        for risk in poam.get("risks") or []:
+            found = _find_prop(risk, "cve-id")
+            if found:
+                cve_id = found
+                break
+    else:
+        att_id = str(parsed_payload.get("attestation_id", "")).strip()
+        cve_id = str(parsed_payload.get("cve_id", "")).strip()
+        svc_id = str(parsed_payload.get("service_id", "")).strip()
+        warrant_id = str(parsed_payload.get("warrant_id", "")).strip()
+
+    if not att_id or not cve_id or not svc_id:
+        raise ValueError(
+            f"SIGNED_PAYLOAD_MISSING_IDENTITY_CLAIMS: signed payload must declare attestation_id ({att_id!r}), "
+            f"cve_id ({cve_id!r}), and service_id ({svc_id!r})"
+        )
+
+    for field_name, signed_val in (
+        ("attestation_id", att_id),
+        ("cve_id", cve_id),
+        ("service_id", svc_id),
+        ("warrant_id", warrant_id),
+    ):
+        outer_val = str(outer_doc.get(field_name, "") or "").strip()
+        if outer_val and outer_val != signed_val:
+            raise ValueError(
+                f"UNSIGNED_WRAPPER_MISMATCH: outer {field_name} {outer_val!r} does not match signed payload {signed_val!r}"
+            )
+
+    return att_id, cve_id, svc_id, warrant_id
+
+
 def verify_oscal_bundle_offline(bundle: bytes | str | dict[str, Any], kernel_public_key_b64: str) -> dict[str, Any]:
-    """Verify a signed NIST OSCAL 1.1.2 POA&M bundle offline against the Kernel Ed25519 public key."""
+    """Verify a signed NIST OSCAL 1.1.2 POA&M bundle offline against a pinned Kernel Ed25519 public key (WN-3/WN-4)."""
     from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
@@ -496,12 +621,17 @@ def verify_oscal_bundle_offline(bundle: bytes | str | dict[str, Any], kernel_pub
     except InvalidSignature as exc:
         raise ValueError("Ed25519 signature verification FAILED over DSSEv1 PAE") from exc
 
+    signed_att_id, signed_cve_id, signed_svc_id, signed_warrant_id = _extract_and_reconcile_signed_attestation_identity(
+        parsed_payload, doc
+    )
+
     return {
         "valid": True,
-        "attestation_id": doc.get("attestation_id", ""),
-        "cve_id": doc.get("cve_id", ""),
-        "service_id": doc.get("service_id", ""),
-        "warrant_id": doc.get("warrant_id", ""),
+        "trust_basis": TRUST_BASIS_EXTERNAL_PINNED_PUBKEY,
+        "attestation_id": signed_att_id,
+        "cve_id": signed_cve_id,
+        "service_id": signed_svc_id,
+        "warrant_id": signed_warrant_id,
         "jcs_canonical_match": True,
         "payload_sha256": sha256_hex(raw_payload),
         "pae_sha256": sha256_hex(pae),
@@ -513,18 +643,44 @@ def verify_oscal_bundle_offline(bundle: bytes | str | dict[str, Any], kernel_pub
 def verify_oscal_bundle_with_keyring(
     bundle: bytes | str | dict[str, Any],
     key_ring: list[dict[str, Any]] | None = None,
+    *,
+    allow_embedded_keyring_opt_in: bool = False,
 ) -> dict[str, Any]:
-    """Verify a signed NIST OSCAL 1.1.2 POA&M bundle against an append-only Kernel Ed25519 public-key ring."""
+    """Verify a signed NIST OSCAL 1.1.2 POA&M bundle against an explicit Kernel Ed25519 public-key ring.
+
+    Fails closed when key_ring is omitted or empty unless allow_embedded_keyring_opt_in=True is explicitly passed (WN-4).
+    """
     doc = json.loads(bundle) if isinstance(bundle, (bytes, str)) else bundle
     sigs = (doc.get("dsse_envelope") or {}).get("signatures") or []
     if not sigs:
         raise ValueError("DSSE envelope contains zero signatures")
     target_kid = sigs[0].get("keyid", "")
-    candidates = key_ring if key_ring else (doc.get("kernel_public_key_ring") or [])
+
+    if key_ring and len(key_ring) > 0:
+        candidates = key_ring
+        trust_basis = TRUST_BASIS_EXTERNAL_KEYRING
+    else:
+        if not allow_embedded_keyring_opt_in:
+            raise ValueError(
+                "UNTRUSTED_KEYRING_EMPTY: external key_ring is required; embedded bundle kernel_public_key_ring is "
+                "untrusted unless allow_embedded_keyring_opt_in=True is explicitly enabled"
+            )
+        embedded = doc.get("kernel_public_key_ring") or []
+        if not embedded:
+            raise ValueError(
+                "UNTRUSTED_KEYRING_EMPTY: allow_embedded_keyring_opt_in=True enabled, but bundle contains no embedded kernel_public_key_ring"
+            )
+        candidates = embedded
+        trust_basis = TRUST_BASIS_EMBEDDED_KEYRING_OPT_IN
+
     for entry in candidates:
         if entry.get("key_id") == target_kid:
-            return verify_oscal_bundle_offline(doc, str(entry["public_key_b64"]))
-    raise ValueError(f"Kernel signing key {target_kid!r} not found in verification public-key ring ({len(candidates)} keys)")
+            res = verify_oscal_bundle_offline(doc, str(entry["public_key_b64"]))
+            res["trust_basis"] = trust_basis
+            return res
+    raise ValueError(
+        f"Kernel signing key {target_kid!r} not found in verification public-key ring ({len(candidates)} keys, trust_basis={trust_basis})"
+    )
 
 
 @dataclasses.dataclass

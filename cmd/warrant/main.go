@@ -771,24 +771,43 @@ func main() {
 
 		case "verify-offline":
 			if len(args) < 3 {
-				fatalf("usage: warrant oscal verify-offline <bundle.json> [--pubkey <base64>]")
+				fatalf("usage: warrant oscal verify-offline <bundle.json> (--pubkey-file <kernel.pub> | --keyring-file <keyring.json> | --pubkey <base64> | --trust-embedded-keyring)")
 			}
 			bundlePath := args[2]
 			fs := flag.NewFlagSet("oscal verify-offline", flag.ExitOnError)
-			pubKey := fs.String("pubkey", "", "Base64 Ed25519 kernel public key (auto-fetched from warrantd if omitted)")
+			pubKey := fs.String("pubkey", "", "Pinned Base64 Ed25519 kernel public key")
+			pubKeyFile := fs.String("pubkey-file", "", "Path to pinned Base64 Ed25519 kernel public key file (air-gapped)")
+			keyRingFile := fs.String("keyring-file", "", "Path to pinned kernel_public_keys JSON array file (air-gapped)")
+			trustEmbedded := fs.Bool("trust-embedded-keyring", false, "Explicitly opt in to untrusted self-contained bundle keyring inspection")
 			if len(args) > 3 {
 				_ = fs.Parse(args[3:])
 			}
-			pkB64 := strings.TrimSpace(*pubKey)
 			rawBundle, err := os.ReadFile(bundlePath)
 			must(err)
-			var res *warrantsdk.OfflineVerificationResult
-			if pkB64 != "" {
-				res, err = warrantsdk.VerifyOSCALBundleOffline(rawBundle, pkB64)
-			} else {
-				ring, rErr := cli.KernelPublicKeyRing(ctx)
+
+			pkB64 := strings.TrimSpace(*pubKey)
+			if pkB64 == "" && strings.TrimSpace(*pubKeyFile) != "" {
+				kb, rErr := os.ReadFile(strings.TrimSpace(*pubKeyFile))
 				must(rErr)
+				pkB64 = strings.TrimSpace(string(kb))
+			}
+
+			var res *warrantsdk.OfflineVerificationResult
+			switch {
+			case pkB64 != "":
+				res, err = warrantsdk.VerifyOSCALBundleOffline(rawBundle, pkB64)
+			case strings.TrimSpace(*keyRingFile) != "":
+				rb, rErr := os.ReadFile(strings.TrimSpace(*keyRingFile))
+				must(rErr)
+				var ring []warrantsdk.KernelPublicKeyRecord
+				must(json.Unmarshal(rb, &ring))
 				res, err = warrantsdk.VerifyOSCALBundleWithKeyRing(rawBundle, ring)
+			case *trustEmbedded:
+				res, err = warrantsdk.VerifyOSCALBundleWithKeyRingOpts(rawBundle, nil, warrantsdk.KeyRingVerificationOptions{
+					AllowEmbeddedKeyRingOptIn: true,
+				})
+			default:
+				fatalf("UNTRUSTED_KEYRING_EMPTY: offline verification requires --pubkey-file <kernel.pub>, --keyring-file <keyring.json>, --pubkey <base64>, or explicit --trust-embedded-keyring")
 			}
 			must(err)
 			printJSON(res)
@@ -991,7 +1010,7 @@ Commands:
   warrant freeze [hold | rollback] --key <active.priv.json> [--reason <code>]
   warrant freeze thaw --slot1-key <so.priv.json> --slot2-key <ao.priv.json>
   warrant attestations
-  warrant oscal [export <id> [out.json] | verify-offline <bundle.json> [--pubkey <b64>]]
+  warrant oscal [export <id> [out.json] | verify-offline <bundle.json> (--pubkey <b64> | --pubkey-file <kernel.pub> | --keyring-file <keyring.json> | --trust-embedded-keyring)]
   warrant auditor [mint-token --key <active.priv.json> --label <str> --ttl-hours <n> | inspect --token <g1aud_...>]
   warrant ledger [verify | actions | checkpoints | anchor]
   warrant events

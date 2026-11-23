@@ -200,7 +200,7 @@ WARRANT_FEED_MODE=live WARRANT_TRIVY_ENABLED=true WARRANT_INTAKE_TOKEN="$(openss
 
 ## Official SDKs & Command-Line Interfaces (`Go` & `Python`)
 
-G1-Warrant provides both a **Pure-Go Client SDK (`pkg/warrantsdk`) + `warrant` CLI** and a **Standalone Python Client SDK (`sdk/python` / `g1-warrant-sdk`) + `g1-warrant` CLI**. Full API and ceremony documentation is available in [`docs/sdk_and_cli_guide.md`](docs/sdk_and_cli_guide.md).
+G1-Warrant provides both a **Pure-Go Client SDK (`pkg/warrantsdk`) + `warrant` CLI** and a **Standalone Python Client SDK (`sdk/python` / `g1-warrant-sdk`) + `g1-warrant` CLI**. Full API and ceremony documentation is available in [`docs/sdk_and_cli_guide.md`](docs/sdk_and_cli_guide.md), and complete vendor API configuration details for all **18** `WN-7` Finder and `WN-8` Distributor integrations are documented in [`docs/vendor_integration_reference.md`](docs/vendor_integration_reference.md).
 
 ### 1. Native `warrant` CLI (`cmd/warrant`)
 
@@ -242,11 +242,12 @@ go build -o warrant ./cmd/warrant
 ./warrant distributors list
 ./warrant distributors orders
 
-# Verify all 9 immutable hash chains + External Merkle Checkpoints & verify OSCAL 1.1.2 POA&M via kernel key ring
+# Verify all 9 immutable hash chains + External Merkle Checkpoints & verify OSCAL 1.1.2 POA&M air-gapped (zero network calls)
+# (kernel-seal.pub is exported out-of-band via WARRANT_KERNEL_PUBLIC_KEY_EXPORT_PATH or an offline 3PAO keyring file)
 ./warrant ledger verify
 ./warrant ledger checkpoints
 ./warrant oscal export <attestation-id> poam-bundle.json
-./warrant oscal verify-offline poam-bundle.json
+./warrant oscal verify-offline poam-bundle.json --pubkey-file ./kernel-seal.pub
 ```
 
 ### 2. Python Client SDK & CLI (`sdk/python` — `g1-warrant-sdk`)
@@ -255,17 +256,19 @@ go build -o warrant ./cmd/warrant
 pip install -e sdk/python
 g1-warrant status
 g1-warrant ledger-verify
+g1-warrant oscal-verify poam-bundle.json --pubkey-file ./kernel-seal.pub
 ```
 
 ```python
 import os
+from pathlib import Path
 from g1_warrant import (
     ROLE_AUTHORIZING_OFFICIAL,
     ROLE_SERVICE_OWNER,
     WarrantClient,
     draft_warrant_envelope,
     generate_ed25519_signer_bundle,
-    verify_oscal_bundle_with_keyring,
+    verify_oscal_bundle_offline,
 )
 
 client = WarrantClient("http://localhost:8080")
@@ -284,18 +287,16 @@ ao.sign_envelope(2, env)
 warrant = client.create_warrant(env)
 print("Minted Standing Warrant (bootstrap auto-sealed):", warrant["warrant_id"], warrant["live_status"])
 
-# 2. Export a closed NIST OSCAL 1.1.2 POA&M bundle & verify against the append-only kernel public-key ring
-atts = client.list_attestations()
-if atts:
-    bundle = client.export_oscal_bundle(atts[0]["attestation_id"])
-    proof = verify_oscal_bundle_with_keyring(bundle, client.kernel_public_key_ring())
-    print("Offline OSCAL DSSE Verified:", proof["valid"], "KeyID:", proof["signer_key_id"])
+# 2. Genuine air-gapped offline verification using a locally pinned kernel Ed25519 public key file (zero network calls)
+pinned_kernel_pub = Path("./kernel-seal.pub").read_text(encoding="utf-8").strip()
+proof = verify_oscal_bundle_offline(Path("./poam-bundle.json").read_text(encoding="utf-8"), pinned_kernel_pub)
+print("Offline OSCAL DSSE Verified:", proof["valid"], "TrustBasis:", proof["trust_basis"], "CVE:", proof["cve_id"])
 ```
 
 ### 3. Go Client SDK (`pkg/warrantsdk`)
 
 ```bash
-go get github.com/cgilbert61/G1-Warrant/pkg/warrantsdk@v1.2.0
+go get github.com/cgilbert61/G1-Warrant/pkg/warrantsdk@v1.2.1
 ```
 
 ```go

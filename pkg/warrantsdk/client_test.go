@@ -69,6 +69,7 @@ func TestDualKeyCeremonyAndOfflineOSCALVerification(t *testing.T) {
 		"attestation_id": "att-test-001",
 		"cve_id":         "CVE-2026-41001",
 		"service_id":     "payments-ledger-api",
+		"warrant_id":     payload.WarrantID,
 		"ttvr_seconds":   12,
 	})
 	if err != nil {
@@ -78,6 +79,7 @@ func TestDualKeyCeremonyAndOfflineOSCALVerification(t *testing.T) {
 		t.Fatalf("sign attestation env: %v", err)
 	}
 
+	pubB64 := base64.StdEncoding.EncodeToString(kernelPub)
 	bundleBytes, _ := json.Marshal(map[string]any{
 		"attestation_id": "att-test-001",
 		"cve_id":         "CVE-2026-41001",
@@ -85,12 +87,68 @@ func TestDualKeyCeremonyAndOfflineOSCALVerification(t *testing.T) {
 		"warrant_id":     payload.WarrantID,
 		"dsse_envelope":  attEnv,
 		"entry_hash":     strings.Repeat("a", 64),
+		"kernel_public_key_ring": []warrantsdk.KernelPublicKeyRecord{
+			{
+				KeyID:          kernelPK.KeyID,
+				Alg:            "Ed25519",
+				PublicKeyB64:   pubB64,
+				KeyFingerprint: kernelPK.KeyFingerprint,
+			},
+		},
 	})
 
-	pubB64 := base64.StdEncoding.EncodeToString(kernelPub)
 	res, err := warrantsdk.VerifyOSCALBundleOffline(bundleBytes, pubB64)
 	if err != nil || !res.Valid || !res.JCSCanonicalMatch {
 		t.Fatalf("expected valid offline OSCAL verification, got res=%+v err=%v", res, err)
+	}
+	if res.TrustBasis != warrantsdk.TrustBasisExternalPinnedPubKey {
+		t.Fatalf("expected TrustBasis=%s, got %s", warrantsdk.TrustBasisExternalPinnedPubKey, res.TrustBasis)
+	}
+	if res.AttestationID != "att-test-001" || res.CVEID != "CVE-2026-41001" || res.ServiceID != "payments-ledger-api" || res.WarrantID != payload.WarrantID {
+		t.Fatalf("expected identity fields extracted from signed payload, got %+v", res)
+	}
+
+	// WN-3a: Stripping unsigned outer wrapper fields still populates identity from signed DSSE payload
+	strippedWrapperBytes, _ := json.Marshal(map[string]any{
+		"dsse_envelope": attEnv,
+		"entry_hash":    strings.Repeat("a", 64),
+	})
+	strippedRes, err := warrantsdk.VerifyOSCALBundleOffline(strippedWrapperBytes, pubB64)
+	if err != nil || strippedRes.CVEID != "CVE-2026-41001" || strippedRes.ServiceID != "payments-ledger-api" || strippedRes.WarrantID != payload.WarrantID {
+		t.Fatalf("expected stripped wrapper to derive identity from signed payload, got %+v err=%v", strippedRes, err)
+	}
+
+	// WN-3b: Tampering with unsigned outer wrapper field MUST fail closed with UNSIGNED_WRAPPER_MISMATCH
+	tamperedWrapperBytes, _ := json.Marshal(map[string]any{
+		"attestation_id": "att-test-001",
+		"cve_id":         "CVE-2099-99999",
+		"service_id":     "payments-ledger-api",
+		"warrant_id":     payload.WarrantID,
+		"dsse_envelope":  attEnv,
+	})
+	if _, err := warrantsdk.VerifyOSCALBundleOffline(tamperedWrapperBytes, pubB64); err == nil || !strings.Contains(err.Error(), "UNSIGNED_WRAPPER_MISMATCH") {
+		t.Fatalf("expected UNSIGNED_WRAPPER_MISMATCH when outer wrapper cve_id is spoofed, got: %v", err)
+	}
+
+	// WN-4a: VerifyOSCALBundleWithKeyRing with nil/empty keyring MUST fail closed even when embedded ring exists!
+	if _, err := warrantsdk.VerifyOSCALBundleWithKeyRing(bundleBytes, nil); err == nil || !strings.Contains(err.Error(), "UNTRUSTED_KEYRING_EMPTY") {
+		t.Fatalf("expected UNTRUSTED_KEYRING_EMPTY when external keyring is empty, got: %v", err)
+	}
+
+	// WN-4b: External keyring verification reports TrustBasisExternalKeyRing
+	extRes, err := warrantsdk.VerifyOSCALBundleWithKeyRing(bundleBytes, []warrantsdk.KernelPublicKeyRecord{
+		{KeyID: kernelPK.KeyID, Alg: "Ed25519", PublicKeyB64: pubB64, KeyFingerprint: kernelPK.KeyFingerprint},
+	})
+	if err != nil || extRes.TrustBasis != warrantsdk.TrustBasisExternalKeyRing {
+		t.Fatalf("expected TrustBasisExternalKeyRing, got res=%+v err=%v", extRes, err)
+	}
+
+	// WN-4c: Explicit opt-in embedded keyring succeeds and names EMBEDDED_BUNDLE_KEYRING_UNTRUSTED_OPT_IN
+	optInRes, err := warrantsdk.VerifyOSCALBundleWithKeyRingOpts(bundleBytes, nil, warrantsdk.KeyRingVerificationOptions{
+		AllowEmbeddedKeyRingOptIn: true,
+	})
+	if err != nil || optInRes.TrustBasis != warrantsdk.TrustBasisEmbeddedKeyRingOptIn {
+		t.Fatalf("expected TrustBasisEmbeddedKeyRingOptIn, got res=%+v err=%v", optInRes, err)
 	}
 
 	// Tamper with kernel key -> must fail closed
@@ -178,8 +236,8 @@ func TestSplitKeygenHygieneAndPrivateKeyClientRejection(t *testing.T) {
 }
 
 func TestRequestScopedGovernanceHeadersAndEpochThawDrafts(t *testing.T) {
-	if warrantsdk.Version != "1.2.0" {
-		t.Fatalf("expected warrantsdk.Version == 1.2.0, got %s", warrantsdk.Version)
+	if warrantsdk.Version != "1.2.1" {
+		t.Fatalf("expected warrantsdk.Version == 1.2.1, got %s", warrantsdk.Version)
 	}
 	so, err := warrantsdk.GenerateEd25519SignerBundle("usr-so-scope", "so-scope@agency.gov", "Scope SO", warrantsdk.RoleServiceOwner)
 	if err != nil {
@@ -246,8 +304,8 @@ func TestRequestScopedGovernanceHeadersAndEpochThawDrafts(t *testing.T) {
 }
 
 func TestAgentProvenanceTokenExchangeAndWirePoPHeaders(t *testing.T) {
-	if warrantsdk.Version != "1.2.0" {
-		t.Fatalf("expected Go SDK Version 1.2.0, got %s", warrantsdk.Version)
+	if warrantsdk.Version != "1.2.1" {
+		t.Fatalf("expected Go SDK Version 1.2.1, got %s", warrantsdk.Version)
 	}
 	builder, err := warrantsdk.GenerateAgentKeyBundle("bld-test", "Builder")
 	if err != nil {

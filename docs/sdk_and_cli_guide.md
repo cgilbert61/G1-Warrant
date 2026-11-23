@@ -12,7 +12,7 @@ G1-Warrant ships with two first-class client SDKs and two command-line interface
 ### Installation
 
 ```bash
-go get github.com/cgilbert61/G1-Warrant/pkg/warrantsdk@v1.2.0
+go get github.com/cgilbert61/G1-Warrant/pkg/warrantsdk@v1.2.1
 ```
 
 ### Programmatic Go Example
@@ -51,18 +51,19 @@ func main() {
 		fmt.Printf("Ingested %d remediation items\n", len(items))
 	}
 
-	// 3. Export a closed NIST OSCAL 1.1.2 POA&M bundle & verify offline
-	atts, err := cli.ListAttestations(ctx)
-	if err == nil && len(atts) > 0 {
-		bundle, _ := cli.ExportOSCALBundle(ctx, atts[0].AttestationID)
-		_, pubB64, _, _ := cli.KernelPublicKey(ctx)
-
-		proof, err := warrantsdk.VerifyOSCALBundleOffline(bundle, pubB64)
+	// 3. Genuine air-gapped offline OSCAL 1.1.2 POA&M verification using a locally pinned public-key file (zero network calls)
+	bundleBytes, err := os.ReadFile("./poam-bundle.json")
+	if err == nil {
+		pinnedPubRaw, err := os.ReadFile("./kernel-seal.pub") // exported via WARRANT_KERNEL_PUBLIC_KEY_EXPORT_PATH
+		if err != nil {
+			log.Fatalf("read pinned kernel.pub: %v", err)
+		}
+		proof, err := warrantsdk.VerifyOSCALBundleOffline(bundleBytes, string(pinnedPubRaw))
 		if err != nil {
 			log.Fatalf("Offline verification failed: %v", err)
 		}
-		fmt.Printf("Offline OSCAL Verified: valid=%t jcs_match=%t pae_sha256=%s\n",
-			proof.Valid, proof.JCSCanonicalMatch, proof.PAESHA256)
+		fmt.Printf("Offline OSCAL Verified: valid=%t trust_basis=%s cve=%s pae_sha256=%s\n",
+			proof.Valid, proof.TrustBasis, proof.CVEID, proof.PAESHA256)
 	}
 }
 ```
@@ -141,7 +142,7 @@ Production SDKs and CLIs ship **zero built-in demo signers**. Operators generate
 | `warrant distributors [list \| orders \| results \| aliases \| dispatch \| rollback <order-id>]` | Inspect all 15 `WN-8` patch distributors, WORM pre-recorded `DeploymentOrder` / `NativeRollbackSpec` records, per-asset `DeploymentResult` closure counts, or trigger symmetric native rollback (`v1.2.0`). |
 | `warrant feeds [status \| mode \| sync-kev \| sync-osv \| ingest-osv] [--automation-token <tok>]` | Toggle `offline` vs `live` feeds and sync real CISA KEV & Google OSV.dev advisories (`WARRANT_AUTOMATION_TOKEN` or `1-of-2` DSSE). |
 | `warrant freeze [hold \| rollback --key <k.priv.json> \| thaw --slot1-key <so> --slot2-key <ao>]` | Trigger request-scoped `1-of-2` emergency freeze/rollback or `freeze_epoch`-bound `2-of-2` DSSE fleet thaw. |
-| `warrant oscal [export <id> \| verify-offline <bundle.json>]` | Export DSSE-signed NIST OSCAL `1.1.2` POA&M packages and verify signatures air-gapped. |
+| `warrant oscal [export <id> \| verify-offline <bundle.json> (--pubkey-file <kernel.pub> \| --keyring-file <ring.json>)]` | Export DSSE-signed NIST OSCAL `1.1.2` POA&M packages and verify signatures air-gapped against a locally pinned public key or keyring (`--trust-embedded-keyring` explicitly opts into untrusted self-contained inspection). |
 | `warrant auditor [mint-token --key <k.priv.json> \| inspect]` | Mint (request-scoped `1-of-2` DSSE) or test a scoped read-only `g1aud_*` external 3PAO auditor bearer link. |
 | `warrant ledger [verify \| actions \| checkpoints \| anchor]` | Verify SHA-256 hash chains + Authority Lineage Attestations + External Merkle Checkpoints (`MerkleVersion=3`) across all 9 immutable WORM tables (`6` core + `3` agent authority chains). |
 | `warrant events` | Stream real-time Server-Sent Events (`SSE`) from `warrantd` in the terminal. |
@@ -195,10 +196,14 @@ try:
 except AuditorScopeViolationError as exc:
     print("Operational isolation enforced:", exc)
 
-# 3. Verify exported NIST OSCAL 1.1.2 POA&M bundle offline against append-only kernel public-key ring
+# 3. Genuine air-gapped offline verification against a locally pinned keyring JSON file (zero network calls)
+import json
+from pathlib import Path
+
 if vault["attestations"]:
     att_id = vault["attestations"][0]["attestation_id"]
     bundle = cli.export_oscal_bundle(att_id)
-    proof = verify_oscal_bundle_with_keyring(bundle, cli.kernel_public_key_ring())
-    assert proof["valid"] and proof["jcs_canonical_match"]
+    pinned_keyring = json.loads(Path("./kernel-keyring.json").read_text(encoding="utf-8"))
+    proof = verify_oscal_bundle_with_keyring(bundle, pinned_keyring)
+    assert proof["valid"] and proof["jcs_canonical_match"] and proof["trust_basis"] == "EXTERNAL_KEYRING"
 ```

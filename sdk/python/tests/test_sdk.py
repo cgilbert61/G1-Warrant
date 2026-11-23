@@ -12,6 +12,9 @@ from g1_warrant import (
     PAYLOAD_TYPE_ATTESTATION,
     ROLE_AUTHORIZING_OFFICIAL,
     ROLE_SERVICE_OWNER,
+    TRUST_BASIS_EMBEDDED_KEYRING_OPT_IN,
+    TRUST_BASIS_EXTERNAL_KEYRING,
+    TRUST_BASIS_EXTERNAL_PINNED_PUBKEY,
     WarrantAPIError,
     WarrantClient,
     __version__,
@@ -24,6 +27,7 @@ from g1_warrant import (
     draft_principal_rotate_and_revoke_envelope,
     draft_thaw_envelope,
     draft_warrant_envelope,
+    dsse_pae,
     generate_agent_key_bundle,
     generate_ed25519_signer_bundle,
     load_public_identity_file,
@@ -45,8 +49,32 @@ class TestG1WarrantCryptoAndSDK(unittest.TestCase):
             '{"a_key":true,"m_float":10,"nested":{"a":null,"b":"ok"},"z_key":[3,1,2]}',
         )
 
+    def test_shared_rfc8785_jcs_and_cross_language_dsse_vectors_wn2(self) -> None:
+        import hashlib
+
+        repo_root = Path(__file__).resolve().parents[3]
+        vec_file = repo_root / "testdata" / "rfc8785_jcs_vectors.json"
+        suite = json.loads(vec_file.read_text(encoding="utf-8"))
+        self.assertGreater(len(suite["jcs_vectors"]), 0)
+        for vec in suite["jcs_vectors"]:
+            parsed = json.loads(vec["input_json"])
+            got = canonicalize_jcs(parsed)
+            self.assertEqual(got.decode("utf-8"), vec["expected_canonical_json"], msg=vec["name"])
+            self.assertEqual(hashlib.sha256(got).hexdigest(), vec["expected_sha256"], msg=vec["name"])
+
+        dsse = suite["cross_language_dsse_vector"]
+        got_payload = canonicalize_jcs(json.loads(dsse["input_payload_json"]))
+        self.assertEqual(got_payload.decode("utf-8"), dsse["expected_canonical_payload"])
+        self.assertEqual(hashlib.sha256(got_payload).hexdigest(), dsse["expected_payload_sha256"])
+        pae = dsse_pae(dsse["payload_type"], got_payload)
+        self.assertEqual(hashlib.sha256(pae).hexdigest(), dsse["expected_pae_sha256"])
+        verified = verify_oscal_bundle_offline({"dsse_envelope": dsse["dsse_envelope"]}, dsse["public_key_b64"])
+        self.assertTrue(verified["valid"])
+        self.assertEqual(verified["cve_id"], "CVE-2026-41001")
+        self.assertEqual(verified["trust_basis"], TRUST_BASIS_EXTERNAL_PINNED_PUBKEY)
+
     def test_split_keygen_hygiene_and_governance_envelopes(self) -> None:
-        self.assertEqual(__version__, "1.2.0")
+        self.assertEqual(__version__, "1.2.1")
         so = generate_ed25519_signer_bundle("usr-so", "so@agency.gov", "Alice SO", ROLE_SERVICE_OWNER)
         ao = generate_ed25519_signer_bundle("usr-ao", "ao@agency.gov", "Bob AO", ROLE_AUTHORIZING_OFFICIAL)
         so2 = generate_ed25519_signer_bundle("usr-so2", "so2@agency.gov", "Carol SO2", ROLE_SERVICE_OWNER)
@@ -100,7 +128,12 @@ class TestG1WarrantCryptoAndSDK(unittest.TestCase):
         kernel = generate_ed25519_signer_bundle("sys-kernel", "kernel@g1163rt.sec", "Kernel Seal", ROLE_SERVICE_OWNER)
         att_env = draft_unsigned_envelope(
             PAYLOAD_TYPE_ATTESTATION,
-            {"attestation_id": "att-py-001", "cve_id": "CVE-2026-41001", "service_id": "payments-ledger-api"},
+            {
+                "attestation_id": "att-py-001",
+                "cve_id": "CVE-2026-41001",
+                "service_id": "payments-ledger-api",
+                "warrant_id": "wrt-py-001",
+            },
         )
         kernel.sign_envelope(1, att_env)
         bundle = {
@@ -110,15 +143,43 @@ class TestG1WarrantCryptoAndSDK(unittest.TestCase):
             "warrant_id": "wrt-py-001",
             "dsse_envelope": att_env,
             "entry_hash": "f" * 64,
+            "kernel_public_key_ring": [{"key_id": kernel.key_id, "public_key_b64": kernel.public_key_b64}],
         }
         verified = verify_oscal_bundle_offline(bundle, kernel.public_key_b64)
         self.assertTrue(verified["valid"])
         self.assertTrue(verified["jcs_canonical_match"])
+        self.assertEqual(verified["trust_basis"], TRUST_BASIS_EXTERNAL_PINNED_PUBKEY)
+        self.assertEqual(verified["warrant_id"], "wrt-py-001")
 
+        # WN-3a: Stripping unsigned outer wrapper still extracts identity from signed DSSE payload
+        stripped = verify_oscal_bundle_offline({"dsse_envelope": att_env}, kernel.public_key_b64)
+        self.assertEqual(stripped["attestation_id"], "att-py-001")
+        self.assertEqual(stripped["cve_id"], "CVE-2026-41001")
+        self.assertEqual(stripped["service_id"], "payments-ledger-api")
+        self.assertEqual(stripped["warrant_id"], "wrt-py-001")
+
+        # WN-3b: Tampering unsigned outer wrapper field MUST fail closed with UNSIGNED_WRAPPER_MISMATCH
+        tampered = dict(bundle, cve_id="CVE-2099-99999")
+        with self.assertRaisesRegex(ValueError, "UNSIGNED_WRAPPER_MISMATCH"):
+            verify_oscal_bundle_offline(tampered, kernel.public_key_b64)
+
+        # WN-4a: verify_oscal_bundle_with_keyring with None/empty ring MUST fail closed even when embedded ring exists!
+        with self.assertRaisesRegex(ValueError, "UNTRUSTED_KEYRING_EMPTY"):
+            verify_oscal_bundle_with_keyring(bundle, None)
+        with self.assertRaisesRegex(ValueError, "UNTRUSTED_KEYRING_EMPTY"):
+            verify_oscal_bundle_with_keyring(bundle, [])
+
+        # WN-4b: External keyring succeeds with TRUST_BASIS_EXTERNAL_KEYRING
         ring_verified = verify_oscal_bundle_with_keyring(
             bundle, [{"key_id": kernel.key_id, "public_key_b64": kernel.public_key_b64}]
         )
         self.assertTrue(ring_verified["valid"])
+        self.assertEqual(ring_verified["trust_basis"], TRUST_BASIS_EXTERNAL_KEYRING)
+
+        # WN-4c: Explicit opt-in embedded keyring succeeds with TRUST_BASIS_EMBEDDED_KEYRING_OPT_IN
+        opt_in_verified = verify_oscal_bundle_with_keyring(bundle, None, allow_embedded_keyring_opt_in=True)
+        self.assertTrue(opt_in_verified["valid"])
+        self.assertEqual(opt_in_verified["trust_basis"], TRUST_BASIS_EMBEDDED_KEYRING_OPT_IN)
 
         other = generate_ed25519_signer_bundle("usr-other", "other@agency.gov", "Other", ROLE_AUTHORIZING_OFFICIAL)
         with self.assertRaises(ValueError):

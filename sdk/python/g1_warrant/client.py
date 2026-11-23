@@ -77,7 +77,7 @@ class WarrantClient:
         full_path = f"{self._base_path}{path}"
         conn_cls = http.client.HTTPSConnection if self._scheme == "https" else http.client.HTTPConnection
         conn = conn_cls(self._host, self._port, timeout=self.timeout)
-        headers: dict[str, str] = {"User-Agent": "g1-warrant-python-sdk/1.2.0"}
+        headers: dict[str, str] = {"User-Agent": "g1-warrant-python-sdk/1.2.1"}
         if content_type:
             headers["Content-Type"] = content_type
         tok = (bearer_override if bearer_override is not None else self.auditor_token).strip()

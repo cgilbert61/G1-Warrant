@@ -2,10 +2,13 @@ package crypto
 
 import (
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -25,6 +28,79 @@ func TestCanonicalizeJSON_RFC8785(t *testing.T) {
 	want := `{"a_str":"line1\nline2\t\"quoted\"","b":{"1":"one","10":"ten","2":"two"},"numbers":[333333333.3333333,1e+30,4.5,0.002,1e-27,0],"z":true}`
 	if string(canon) != want {
 		t.Fatalf("JCS mismatch:\ngot:  %s\nwant: %s", string(canon), want)
+	}
+}
+
+func TestSharedRFC8785JCSAndCrossLanguageDSSEVectors_WN2(t *testing.T) {
+	rawFile, err := os.ReadFile(filepath.Join("..", "..", "testdata", "rfc8785_jcs_vectors.json"))
+	if err != nil {
+		t.Fatalf("read shared rfc8785_jcs_vectors.json: %v", err)
+	}
+	var suite struct {
+		Schema       string `json:"schema"`
+		JCSVectors   []struct {
+			Name                  string `json:"name"`
+			InputJSON             string `json:"input_json"`
+			ExpectedCanonicalJSON string `json:"expected_canonical_json"`
+			ExpectedSHA256        string `json:"expected_sha256"`
+		} `json:"jcs_vectors"`
+		CrossLanguageDSSE struct {
+			PublicKeyB64             string   `json:"public_key_b64"`
+			KeyID                    string   `json:"key_id"`
+			KeyFingerprint           string   `json:"key_fingerprint"`
+			PayloadType              string   `json:"payload_type"`
+			InputPayloadJSON         string   `json:"input_payload_json"`
+			ExpectedCanonicalPayload string   `json:"expected_canonical_payload"`
+			ExpectedPayloadSHA256    string   `json:"expected_payload_sha256"`
+			ExpectedPAESHA256        string   `json:"expected_pae_sha256"`
+			DSSEEnvelope             Envelope `json:"dsse_envelope"`
+		} `json:"cross_language_dsse_vector"`
+	}
+	if err := json.Unmarshal(rawFile, &suite); err != nil {
+		t.Fatalf("unmarshal shared vectors: %v", err)
+	}
+	if len(suite.JCSVectors) == 0 {
+		t.Fatal("expected non-empty jcs_vectors")
+	}
+	for _, vec := range suite.JCSVectors {
+		gotCanon, err := CanonicalizeJSON([]byte(vec.InputJSON))
+		if err != nil {
+			t.Fatalf("vector %s CanonicalizeJSON failed: %v", vec.Name, err)
+		}
+		if string(gotCanon) != vec.ExpectedCanonicalJSON {
+			t.Fatalf("vector %s canonical mismatch:\ngot:  %s\nwant: %s", vec.Name, string(gotCanon), vec.ExpectedCanonicalJSON)
+		}
+		if gotHash := SHA256Hex(gotCanon); gotHash != vec.ExpectedSHA256 {
+			t.Fatalf("vector %s sha256 mismatch: got %s want %s", vec.Name, gotHash, vec.ExpectedSHA256)
+		}
+	}
+
+	// Cross-language Python -> Go DSSE signature & JCS verification
+	dsse := suite.CrossLanguageDSSE
+	gotPayloadCanon, err := CanonicalizeJSON([]byte(dsse.InputPayloadJSON))
+	if err != nil {
+		t.Fatalf("cross-language payload CanonicalizeJSON: %v", err)
+	}
+	if string(gotPayloadCanon) != dsse.ExpectedCanonicalPayload {
+		t.Fatalf("cross-language payload mismatch:\ngot:  %s\nwant: %s", string(gotPayloadCanon), dsse.ExpectedCanonicalPayload)
+	}
+	if SHA256Hex(gotPayloadCanon) != dsse.ExpectedPayloadSHA256 {
+		t.Fatalf("cross-language payload sha256 mismatch")
+	}
+	pae := PAE(dsse.PayloadType, gotPayloadCanon)
+	if SHA256Hex(pae) != dsse.ExpectedPAESHA256 {
+		t.Fatalf("cross-language PAE sha256 mismatch")
+	}
+	pubBytes, err := base64.StdEncoding.DecodeString(dsse.PublicKeyB64)
+	if err != nil || len(pubBytes) != ed25519.PublicKeySize {
+		t.Fatalf("decode vector pubkey: %v", err)
+	}
+	sigBytes, err := base64.StdEncoding.DecodeString(dsse.DSSEEnvelope.Signatures[0].Sig)
+	if err != nil {
+		t.Fatalf("decode vector sig: %v", err)
+	}
+	if !ed25519.Verify(ed25519.PublicKey(pubBytes), pae, sigBytes) {
+		t.Fatal("cross-language Python-minted Ed25519 DSSE signature failed verification in Go")
 	}
 }
 
