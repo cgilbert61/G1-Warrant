@@ -137,6 +137,32 @@ Configure `WARRANT_VM_TWIN_DRIVER` (`hyperv` | `aws-ec2` | `azure-vm` | `gcp-gce
 | **`azure-vm`** (`internal/adapters/vmtwins/azure_vm.go`) | **Entra ID OAuth2** (`/{tenant}/oauth2/v2.0/token`, Commercial & US Gov) + ARM `2024-03-01` | `PUT .../networkInterfaces` (`2023-11-01`) + `PUT .../virtualMachines` (`deleteOption=Delete`) + `202` `Azure-AsyncOperation` LRO poll | Zero `publicIPAddress` + deny-all outbound `NSG` (`WARRANT_AZURE_TWIN_NSG_ID`) | `POST .../runCommand` (stage) + `POST .../restart` + `POST .../runCommand` (post-reboot `value[0].message`) + `DELETE ?forceDeletion=true` |
 | **`gcp-gce`** (`internal/adapters/vmtwins/gcp_gce.go`) | **Service Account RS256 JWT** (`jwt-bearer`) or GCE Metadata Server + Compute Engine v1 | `POST .../zones/{zone}/instances` (`sourceMachineImage` / `sourceImage`) + Zone `operations` poll | `accessConfigs=[]` (zero external IP) + isolated VPC firewall tag (`WARRANT_GCP_TWIN_ISOLATED_TAG`) | Two-phase boot-persistent `startup-script` / `windows-startup-script-ps1` + `GET .../serialPort?port=1` (`G1_CLONE_RESULT=`) + `DELETE .../instances/{vm}` |
 
+### One-Command AWS Proving Enclave Stack (`deploy/aws/vm_twin_proving_enclave.cfn.yaml`)
+
+Because `aws-ec2` clones launch with `AssociatePublicIpAddress=false` and zero internet/NAT egress, `amazon-ssm-agent` inside the clones communicates exclusively over **AWS PrivateLink VPC Interface Endpoints** (`ssm`, `ssmmessages`, `ec2messages`) plus an optional regional **S3 Gateway Endpoint** for offline OS package mirrors. Deploy the complete isolated proving enclave + guest SSM Instance Profile + least-privilege `warrantd` IAM policy in one command:
+
+```bash
+export AWS_REGION="us-east-1"   # or us-gov-west-1
+S3_PL=$(aws ec2 describe-prefix-lists --region "$AWS_REGION" \
+  --filters "Name=prefix-list-name,Values=com.amazonaws.${AWS_REGION}.s3" \
+  --query "PrefixLists[0].PrefixListId" --output text)
+
+aws cloudformation deploy \
+  --region "$AWS_REGION" \
+  --stack-name g1-warrant-vm-twin-enclave \
+  --template-file deploy/aws/vm_twin_proving_enclave.cfn.yaml \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides S3ManagedPrefixListId="$S3_PL"
+
+# Print exact WARRANT_AWS_* values from CloudFormation stack outputs:
+aws cloudformation describe-stacks \
+  --region "$AWS_REGION" \
+  --stack-name g1-warrant-vm-twin-enclave \
+  --query "Stacks[0].Outputs" --output table
+```
+
+Attach the output `WarrantControllerPolicyArn` to an IAM Role (recommended: assume via short-lived STS `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`) and pass `WARRANT_VM_TWIN_DRIVER=aws-ec2` plus the 4 output IDs (`WARRANT_AWS_REGION`, `WARRANT_AWS_TWIN_AMI_ID`, `WARRANT_AWS_TWIN_SUBNET_ID`, `WARRANT_AWS_TWIN_ISOLATED_SG_ID`, `WARRANT_AWS_TWIN_IAM_INSTANCE_PROFILE`) to `warrantd`.
+
 ### Granting Local Windows Hyper-V Rights (No Full Admin Needed After One-Time Grant)
 
 ```powershell

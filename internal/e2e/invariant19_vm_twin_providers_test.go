@@ -56,7 +56,7 @@ func TestInvariant19_NonDockerVMTwinProvidersHyperVAWSGCPAzure(t *testing.T) {
 
 	var mu sync.Mutex
 	hypervCreated, hypervDeleted := 0, 0
-	awsLaunched, awsDescribed, awsTerminated := 0, 0, 0
+	awsLaunched, awsDescribed, awsTerminated, awsSendWarmup := 0, 0, 0, 0
 	ssmPollCount := map[string]int{}
 	azureOAuthCalls, azureNICsCreated, azureVMsCreated, azureRestarts, azureVMsDeleted, azureLROPolls := 0, 0, 0, 0, 0, 0
 	azureRunCmdCount := map[string]int{}
@@ -95,6 +95,18 @@ func TestInvariant19_NonDockerVMTwinProvidersHyperVAWSGCPAzure(t *testing.T) {
 				w.Header().Set("Content-Type", "application/x-amz-json-1.1")
 				switch amzTarget {
 				case "AmazonSSM.SendCommand":
+					mu.Lock()
+					awsSendWarmup++
+					wc := awsSendWarmup
+					mu.Unlock()
+					if wc == 1 {
+						w.WriteHeader(http.StatusBadRequest)
+						_ = json.NewEncoder(w).Encode(map[string]any{
+							"__type":  "InvalidInstanceId",
+							"message": "Instances [[i-0aa111]] not yet registered in SSM Fleet Manager",
+						})
+						return
+					}
 					_ = json.NewEncoder(w).Encode(map[string]any{
 						"Command": map[string]any{"CommandId": "cmd-sigv4-001"},
 					})
@@ -129,6 +141,10 @@ func TestInvariant19_NonDockerVMTwinProvidersHyperVAWSGCPAzure(t *testing.T) {
 			case "RunInstances":
 				if vals.Get("NetworkInterface.1.AssociatePublicIpAddress") != "false" {
 					http.Error(w, "expected AssociatePublicIpAddress=false", http.StatusBadRequest)
+					return
+				}
+				if vals.Get("InstanceInitiatedShutdownBehavior") != "terminate" {
+					http.Error(w, "expected InstanceInitiatedShutdownBehavior=terminate", http.StatusBadRequest)
 					return
 				}
 				mu.Lock()

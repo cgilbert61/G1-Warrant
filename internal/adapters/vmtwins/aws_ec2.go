@@ -279,6 +279,7 @@ func (a *AWSEC2VMTwinProvider) RunVMTwinProving(ctx context.Context, req adapter
 	q.Set("NetworkInterface.1.SubnetId", a.cfg.SubnetID)
 	q.Set("NetworkInterface.1.SecurityGroupId.1", a.cfg.IsolatedSGID)
 	q.Set("NetworkInterface.1.AssociatePublicIpAddress", "false")
+	q.Set("InstanceInitiatedShutdownBehavior", "terminate")
 	q.Set("TagSpecification.1.ResourceType", "instance")
 	q.Set("TagSpecification.1.Tag.1.Key", "g1.warrant/proving-ground")
 	q.Set("TagSpecification.1.Tag.1.Value", "true")
@@ -364,16 +365,31 @@ func (a *AWSEC2VMTwinProvider) RunVMTwinProving(ctx context.Context, req adapter
 		commands = []string{buildLinuxGuestProvingScript(req, a.cfg.SmokeCommand, a.cfg.AcceptanceCommand, true)}
 	}
 
-	rawSend, err := a.doSSMJSON(ctx, "SendCommand", map[string]any{
-		"DocumentName":   docName,
-		"InstanceIds":    instIDs,
-		"TimeoutSeconds": 600,
-		"Parameters": map[string][]string{
-			"commands": commands,
-		},
-	})
-	if err != nil {
-		return nil, err
+	// 3a. Dispatch SSM SendCommand, retrying transient InvalidInstanceId while amazon-ssm-agent registers post-boot
+	var rawSend []byte
+	var sendErr error
+	for ssmWarmup := 0; ssmWarmup < 45; ssmWarmup++ {
+		rawSend, sendErr = a.doSSMJSON(ctx, "SendCommand", map[string]any{
+			"DocumentName":   docName,
+			"InstanceIds":    instIDs,
+			"TimeoutSeconds": 600,
+			"Parameters": map[string][]string{
+				"commands": commands,
+			},
+		})
+		if sendErr == nil {
+			break
+		}
+		if strings.Contains(sendErr.Error(), "InvalidInstanceId") {
+			if err := sleepWithContext(ctx, a.cfg.PollInterval); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		return nil, sendErr
+	}
+	if sendErr != nil {
+		return nil, sendErr
 	}
 	var sendResp struct {
 		Command struct {

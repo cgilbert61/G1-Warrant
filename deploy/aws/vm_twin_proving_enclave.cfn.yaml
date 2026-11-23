@@ -1,0 +1,296 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  G1-Warrant AWS VM_TWIN Isolated QA Clone Proving Enclave (Zero-IGW, Zero-NAT,
+  AWS PrivateLink SSM Interface Endpoints + S3 Gateway Endpoint + Scoped IAM).
+  Compatible with AWS Commercial (aws) and AWS GovCloud (aws-us-gov).
+
+Parameters:
+  EnclaveName:
+    Type: String
+    Default: g1-warrant-twin-enclave
+    Description: Prefix for VPC, isolated subnet, security groups, and IAM resources.
+  VpcCidr:
+    Type: String
+    Default: 10.254.0.0/16
+    Description: Non-routable CIDR block dedicated to ephemeral VM_TWIN proving clones.
+  SubnetCidr:
+    Type: String
+    Default: 10.254.1.0/24
+    Description: Isolated private subnet CIDR (no Internet Gateway, no NAT Gateway).
+  DefaultGoldenAmiParameter:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    Description: >
+      Default QA AMI ID (defaults to latest Amazon Linux 2023 x86_64 via public SSM parameter;
+      override with your own golden RHEL/Ubuntu/Windows QA AMI ID in WARRANT_AWS_TWIN_AMI_ID).
+  S3ManagedPrefixListId:
+    Type: String
+    Default: ""
+    Description: >
+      Optional AWS-managed S3 Prefix List ID (e.g. pl-63a5400a from describe-prefix-lists for
+      com.amazonaws.<region>.s3) to allow offline RPM/DEB repo pulls via the S3 Gateway Endpoint.
+
+Conditions:
+  HasS3PrefixList: !Not [!Equals [!Ref S3ManagedPrefixListId, ""]]
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # 1. Zero-Egress Isolated Proving VPC & Subnet (No IGW, No NAT, No Peering)
+  # ---------------------------------------------------------------------------
+  ProvingVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnclaveName}-vpc"
+        - Key: g1.warrant/proving-ground
+          Value: "true"
+
+  IsolatedRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref ProvingVPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnclaveName}-isolated-rt"
+
+  IsolatedProvingSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref ProvingVPC
+      CidrBlock: !Ref SubnetCidr
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnclaveName}-isolated-subnet"
+        - Key: g1.warrant/proving-ground
+          Value: "true"
+
+  IsolatedSubnetRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref IsolatedProvingSubnet
+      RouteTableId: !Ref IsolatedRouteTable
+
+  # ---------------------------------------------------------------------------
+  # 2. Strict Mutual Security Groups (Clones <-> VPC Endpoints ONLY, 0.0.0.0/0 Blocked)
+  # ---------------------------------------------------------------------------
+  IsolatedTwinSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Zero-production-egress security group for G1-Warrant VM_TWIN EC2 clones
+      VpcId: !Ref ProvingVPC
+      # Zero SecurityGroupIngress rules -> no inbound network traffic permitted to clones
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnclaveName}-isolated-twin-sg"
+        - Key: g1.warrant/proving-ground
+          Value: "true"
+
+  VPCEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Accepts HTTPS (443) solely from G1-Warrant isolated VM_TWIN clones
+      VpcId: !Ref ProvingVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref IsolatedTwinSecurityGroup
+          Description: Allow SSM PrivateLink HTTPS from isolated VM_TWIN clones
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref SubnetCidr
+          Description: Return path inside proving subnet only
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnclaveName}-vpce-sg"
+
+  AllowTwinToVPCEndpointsEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref IsolatedTwinSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      DestinationSecurityGroupId: !Ref VPCEndpointSecurityGroup
+      Description: Allow guest SSM agent HTTPS only to PrivateLink VPC Endpoints
+
+  AllowTwinToS3GatewayEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Condition: HasS3PrefixList
+    Properties:
+      GroupId: !Ref IsolatedTwinSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      DestinationPrefixListId: !Ref S3ManagedPrefixListId
+      Description: Allow offline OS package repository pulls over regional S3 Gateway Endpoint
+
+  # ---------------------------------------------------------------------------
+  # 3. PrivateLink SSM Interface Endpoints + S3 Gateway Endpoint (Zero Internet)
+  # ---------------------------------------------------------------------------
+  SSMEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref ProvingVPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssm"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref IsolatedProvingSubnet
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+
+  SSMMessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref ProvingVPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssmmessages"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref IsolatedProvingSubnet
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+
+  EC2MessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref ProvingVPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ec2messages"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref IsolatedProvingSubnet
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref ProvingVPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
+      VpcEndpointType: Gateway
+      RouteTableIds:
+        - !Ref IsolatedRouteTable
+
+  # ---------------------------------------------------------------------------
+  # 4. Guest EC2 IAM Role & Instance Profile (SSM Core Only — Zero App Secrets)
+  # ---------------------------------------------------------------------------
+  WarrantTwinGuestRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${EnclaveName}-guest-ssm-role-${AWS::Region}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
+
+  WarrantTwinGuestInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "${EnclaveName}-guest-profile-${AWS::Region}"
+      Roles:
+        - !Ref WarrantTwinGuestRole
+
+  # ---------------------------------------------------------------------------
+  # 5. Least-Privilege Controller IAM Policy for warrantd (Attach to Role/User)
+  # ---------------------------------------------------------------------------
+  WarrantControllerManagedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${EnclaveName}-controller-policy-${AWS::Region}"
+      Description: Least-privilege policy allowing warrantd to boot, SSM-prove, and terminate isolated VM_TWIN clones
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: LaunchClonesInIsolatedSubnetAndSGOnly
+            Effect: Allow
+            Action:
+              - ec2:RunInstances
+            Resource:
+              - !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${IsolatedProvingSubnet}"
+              - !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/${IsolatedTwinSecurityGroup}"
+          - Sid: LaunchCloneInstancesVolumesAndNICsWithMandatoryTag
+            Effect: Allow
+            Action:
+              - ec2:RunInstances
+              - ec2:CreateTags
+            Resource:
+              - !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*"
+              - !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*"
+              - !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*"
+              - !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:*:image/*"
+          - Sid: PassGuestSSMRoleOnlyToEC2
+            Effect: Allow
+            Action:
+              - iam:PassRole
+            Resource: !GetAtt WarrantTwinGuestRole.Arn
+            Condition:
+              StringEquals:
+                iam:PassedToService: ec2.amazonaws.com
+          - Sid: DescribeAndTerminateTaggedProvingClonesOnly
+            Effect: Allow
+            Action:
+              - ec2:DescribeInstances
+            Resource: "*"
+          - Sid: TerminateOnlyProvingGroundClones
+            Effect: Allow
+            Action:
+              - ec2:TerminateInstances
+            Resource: !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*"
+            Condition:
+              StringEquals:
+                aws:ResourceTag/g1.warrant/proving-ground: "true"
+          - Sid: DispatchSSMProvingScriptsToTaggedClonesOnly
+            Effect: Allow
+            Action:
+              - ssm:SendCommand
+            Resource:
+              - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunShellScript"
+              - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunPowerShellScript"
+          - Sid: DispatchSSMToTaggedCloneInstances
+            Effect: Allow
+            Action:
+              - ssm:SendCommand
+            Resource: !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*"
+            Condition:
+              StringEquals:
+                ssm:resourceTag/g1.warrant/proving-ground: "true"
+          - Sid: PollSSMCommandInvocations
+            Effect: Allow
+            Action:
+              - ssm:GetCommandInvocation
+            Resource: "*"
+
+Outputs:
+  WarrantAwsRegion:
+    Description: Set as WARRANT_AWS_REGION
+    Value: !Ref AWS::Region
+  WarrantAwsTwinSubnetId:
+    Description: Set as WARRANT_AWS_TWIN_SUBNET_ID
+    Value: !Ref IsolatedProvingSubnet
+  WarrantAwsTwinIsolatedSgId:
+    Description: Set as WARRANT_AWS_TWIN_ISOLATED_SG_ID
+    Value: !Ref IsolatedTwinSecurityGroup
+  WarrantAwsTwinIamInstanceProfile:
+    Description: Set as WARRANT_AWS_TWIN_IAM_INSTANCE_PROFILE
+    Value: !Ref WarrantTwinGuestInstanceProfile
+  WarrantAwsDefaultAl2023AmiId:
+    Description: Ready-to-test Amazon Linux 2023 AMI ID (or substitute your own golden QA AMI ID for WARRANT_AWS_TWIN_AMI_ID)
+    Value: !Ref DefaultGoldenAmiParameter
+  WarrantControllerPolicyArn:
+    Description: Attach this least-privilege Managed Policy ARN to the IAM Role or User whose STS credentials you pass to warrantd
+    Value: !Ref WarrantControllerManagedPolicy
