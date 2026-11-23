@@ -15,7 +15,7 @@
 [![Federal Compliance](https://img.shields.io/badge/9--Gate%20DevSecOps-100%25%20COMPLIANT-success.svg)](docs/federal_devsecops_compliance_report.md)
 [![Section 508](https://img.shields.io/badge/Section%20508%20%2F%20WCAG%202.1%20AA-PASS-success.svg)](reports/axe-accessibility.json)
 
-**Deterministic Autonomous Remediation, Virtual Containment & NIST OSCAL 1.1.2 Attestation Control Plane (`v1.0`) — G1163RT Security Labs, Inc.**
+**Deterministic Autonomous Remediation, Virtual Containment & NIST OSCAL 1.1.2 Attestation Control Plane (`v1.2.0`) — G1163RT Security Labs, Inc.**
 
 > **Core Operational Principle:** **Contain in seconds; verify and roll out safely in minutes.**
 
@@ -27,7 +27,7 @@
 
 > **Threat Context:** Standard perimeter and IAM controls fail when compromised workloads or autonomous agents inherit ambient credentials and unrestricted metadata/egress paths. G1-Warrant exists to enforce hard, fail-closed execution boundaries against active exploitation patterns—specifically addressing the attack primitives detailed in **FBI Flash Advisory `FLASH-20261113-001` (`ARTEX`)**—without relying on probabilistic detection.
 
-Modern vulnerability scanners (`Wiz`, `Trivy`, `Semgrep`, `Snyk`) and threat feeds (`CISA KEV`, `Google OSV.dev`) detect critical vulnerabilities in **seconds**, and upstream build pipelines or automated fix generators can produce signed candidate patches in **minutes**. Yet across enterprise and federal production estates, the median time to remediate a Known Exploited Vulnerability (`KEV`) remains **43 days**.
+Modern vulnerability scanners (`Qualys VMDR`, `Tenable.io` / `Tenable.sc`, `Rapid7 InsightVM`, `Wiz`, `Trivy`, `Semgrep`, `Snyk`) and threat feeds (`CISA KEV`, `Google OSV.dev`) detect critical vulnerabilities in **seconds**, and upstream build pipelines or automated fix generators can produce signed candidate patches in **minutes**. Yet across enterprise and federal production estates, the median time to remediate a Known Exploited Vulnerability (`KEV`) remains **43 days**.
 
 Remediation stalls in that merge-to-production gap for four structural reasons:
 
@@ -36,7 +36,7 @@ Remediation stalls in that merge-to-production gap for four structural reasons:
 3. **Blind Virtual Patching vs. Unprotected Exposure:** Guessing application HTTP routes from stripped CVE prose causes self-inflicted L7 outages, while doing nothing leaves unpatched pods exposed to reverse shells, cloud metadata harvesting, and callback exploitation during review.
 4. **Unverified "Paper" Closures & Broken PoC Traps:** Closing tickets when a PR merges—or when an unverified exploit script fails against an unpatched target—creates false assurance without proving live pod SHA-256 digest convergence, enforcing cluster admission lockouts, or sealing **NIST OSCAL 1.1.2 POA&M** evidence for 3PAO auditors.
 
-**G1-Warrant** (`warrantd` server, `warrant` Go CLI, `pkg/warrantsdk` Go SDK, `g1-warrant-sdk` Python SDK/CLI, `warrant-extractor`, and the 5-View G1-Warrant Console) sits between upstream scanners/patch-providers and production Kubernetes/Cilium clusters—**containing active exposure in seconds and verifying autonomous rollouts safely in minutes**, with **zero LLM inference inside the safety kernel**.
+**G1-Warrant** (`warrantd` server, `warrant` Go CLI, `pkg/warrantsdk` Go SDK, `g1-warrant-sdk` Python SDK/CLI, `warrant-extractor`, and the 5-View G1-Warrant Console) sits between incumbent enterprise scanners/feeds (`WN-7` Finders) and heterogeneous production deployment systems (`WN-8` Distributors across Kubernetes/Cilium, GitOps, Windows, Linux, macOS, and Cloud)—**containing active exposure in seconds and verifying governed rollouts safely in minutes**, with **zero LLM inference inside the safety kernel**.
 
 ---
 
@@ -73,13 +73,14 @@ Seals every verified closure into a DSSE-signed **NIST OSCAL `1.1.2` POA&M** bun
 
 ```mermaid
 flowchart LR
-    Feeds["Scanners & Live Feeds\n(SARIF 2.1.0, CISA KEV,\nGoogle OSV.dev, Trivy)"] --> Extractor["warrant-extractor\n(Zero-Egress Network,\nStrips Prose -> Typed JSON)"]
+    Feeds["WN-7 Finders & Live Feeds\n(Qualys VMDR, Tenable io/sc,\nRapid7 InsightVM, SARIF, KEV, OSV)"] --> Extractor["warrant-extractor\n(Zero-Egress + Wire PoP,\nStrips Prose -> Typed JSON)"]
     Extractor --> N1["N1: Standing Warrants\n(2-of-2 DSSE + WebAuthn,\nOPA AC-5 & Freeze Gate)"]
-    N1 -->|Tier 3 or Stateful DDL| Bridge["N3: Immediate Containment\n(Zero-Prose Egress Quarantine\nor Signed Rulepack L7 Shield)"]
-    N1 -->|Tier 1 Shadow / Tier 2 Guarded| N2["N2: Statistical Canary Gate\n(Order-Sensitive JSON Diff, p99,\neBPF Syscall/File/Egress Gate)"]
-    N2 -->|Regression Detected| Rollback["Instant Canary Rollback\n+ Containment Bridge Armed"]
-    N2 -->|100% Converged| N3["N3: Dual-Tier Verification\n(Positive-Control Twin Replay,\n100% Pod Digest & VAP Lockout)"]
-    N3 --> N5["N5: Attestation & External Anchor\n(KMS-Signed OSCAL 1.1.2 POA&M\n+ External Merkle Checkpoint)"]
+    N1 -->|Unmapped Advisory / Tier 3 / DDL| Bridge["N3: Immediate Containment\n(Zero-Prose Egress Quarantine\nor Signed Rulepack L7 Shield)"]
+    N1 -->|Tier 1 Shadow / Tier 2 Guarded| N2["N2: Canary & Wave Sequencer\n(Order-Sensitive Diff, p99,\n5% -> 25% -> 100% Waves)"]
+    N2 <-->|DeploymentOrder / Result| Dist["WN-8 Distributors (15)\n(K8s/Cilium, GitOps, Intune/MECM/WSUS,\nAWX/Satellite, Jamf, Cloud, Multi-OS)"]
+    N2 -->|Regression / Wave Failure| Rollback["Symmetric Native Rollback\n+ Containment Bridge Held/Armed"]
+    N2 -->|Proof + Fleet Landing| N3["N3: Honest Closure Tiering\n(Twin Replay, FULL vs PARTIAL\nvs DISPATCH_ONLY Gate)"]
+    N3 --> N5["N5: Attestation & External Anchor\n(KMS-Signed OSCAL 1.1.2 POA&M\n+ 9-Chain Merkle Checkpoint)"]
 ```
 
 ### Non-Negotiable Architectural & Production SRE Invariants
@@ -114,6 +115,48 @@ flowchart LR
    - **Default Cloud Metadata (`169.254.169.254`) & Callback Quarantine (`N3`):** Every `N3` Cilium/NetworkPolicy containment bridge automatically blocks cloud instance metadata (`169.254.169.254/32`, `169.254.170.2/32`, `fd00:ec2::254/128`), `kube-apiserver` (unless explicitly declared), and external callbacks (`toEntities: ["world"]`), restricting egress strictly to pre-declared internal cluster services while keeping production ingress online.
    - **Mandatory Immutable RootFS Gate (`N2`) & Authenticated Tetragon In-Pod Drift Quarantine (`N3`):** Enforces `readOnlyRootFilesystem: true` + `noexec /tmp` (`IMMUTABLE_ROOTFS_NOEXEC_TMP`) as a **mandatory 5th gate** on the `N2` Estate Readiness Scorecard, and requires dedicated sensor authentication (`WARRANT_TETRAGON_SENSOR_TOKEN` / `WARRANT_TETRAGON_HMAC_SECRET`, distinct from operator and `g1aud_*` auditor tokens) on `POST /api/v1/telemetry/tetragon` to catch container filesystem writes and untracked processes on valid-digest pods—re-arming quarantine, cordoning the compromised pod, and recycling a clean replica without exposing a pod-eviction DoS vector.
    - **Attack-Path Chained CWE Weighting (`N1`) & Internal Patch-Pipeline Supply-Chain Hygiene (`N4`):** Elevates chained CWEs (`CWE-209`, `CWE-918`, `CWE-434`) via `auto_remediate_cwes` even below CVSS 7.0 floors. For internal patch-pipeline supply-chain hygiene against untrusted upstream fix-generator diffs, `N4` normalizes every diff path (`path.Clean`, rejecting `..` traversal and git `120000` symlinks) and blocks mutations to protected build and coding-agent files (`Dockerfile*`, `Makefile`, `GNUmakefile`, `AGENTS.md`, `CLAUDE.md`, `.github/`, `.gitlab-ci*`, `.cursor/`, `.gemini/`) at **any** directory depth (`SECURITY_VIOLATION: FORBIDDEN_BUILD_OR_AGENT_CONFIG_MUTATION`).
+9. **Agent Workload Identity, Commissioning Function Governance, IGA Orphan Quarantine & RFC 8693 Wire PoP (`N1` & `N4` — `v1.1.0`):**
+   - Enforces **3-Way `Builder != Commissioner` Separation of Duties** (`G1_AGENT_PROVENANCE_V1` signed by build attestors, commissioned separately by `SERVICE_OWNER` + `AUTHORIZING_OFFICIAL` under a `CommissioningFunction`), backup-sponsor continuity on HR transfers/reorgs with bounded orphan grace windows and `0s` `KEY_COMPROMISE` cutoff, `OPA` wire-level permission intersection (`StandingWarrantScope ∩ AgentCapabilityCeiling ∩ ParentTaskScope ∩ RequestedTask`), holder-of-key `cnf` + nested `act` `EphemeralTaskWarrant` token exchange (`X-Warrant-Task-DSSE` + `X-Warrant-Agent-PoP`), and **9-Chain Combined Merkle Root (`v3`)** anchoring.
+10. **Two-Contract Incumbent Integration & Honest Per-Asset Closure (`WN-7` & `WN-8` — `v1.2.0`):**
+    - *"The ends belong to incumbents; the middle is the product."* Every external scanner terminates inside zero-egress `warrant-extractor` into canonical `ExtractedFindingSet` (`WN-7`), surfacing unmapped vendor advisories fail-visibly (`UNMAPPED_FINDING_REQUIRES_CLASS_BINDING`) behind armed containment rather than dropping them silently. Every patch deployment tool translates between WORM-protected `DeploymentOrder` (persisting `NativeRollbackSpec` **before Wave 1 fires** and refusing execution without both a scoped `2-of-2` Standing Warrant and passing `N3` proof — `NO_PROOF_NO_DEPLOYMENT_ORDER`) and per-asset `DeploymentResult` (`WN-8`), enforcing honest `FULL` vs. `PARTIAL` (bridge held armed) vs. `DISPATCH_ONLY` (`ASSURANCE_TIER_0_DISTRIBUTOR_DISPATCH_ONLY`, bridge held armed) OSCAL closure.
+
+---
+
+## Incumbent Integration Architecture (`v1.2.0` — 18 Vendor Translators)
+
+> **Proof Tier & Verification Fence:** The 3 `WN-7` Finder translators and all 15 `WN-8` Distributor translators are verified against deterministic invariant tests (`TestInvariant15`, `TestInvariant16`), wire-PoP mock HTTP servers, and recorded/sandbox sessions; **none has yet run against a live vendor API**. They stand behind the same proof fence as `LiveKubernetesAdapter`: **built and wired behind the typed contracts, not yet vendor-proven**. Output from `/warrant distributors list` (and `GET /api/v1/distributors`) confirms translator registration in the control-plane registry; it does **not** confirm an authenticated conversation with a live vendor API.
+
+### Inbound Finders (`WN-7` — 3 Vendor Translators + Open Standards)
+
+All inbound scan exports terminate inside zero-egress `warrant-extractor` (`POST /extract/{qualys,tenable,rapid7,sarif,secrets}` under `X-Warrant-Task-DSSE` + `X-Warrant-Agent-PoP`), stripping 100% of scanner prose, HTML, markdown, and prompt-injection payloads before crossing into `warrantd`:
+
+1. **Qualys VMDR (`qualys_vmdr`)** — XXE-hardened Host Detection XML (`<HOST_LIST_VM_DETECTION_OUTPUT>`) and JSON v2 (`QID-*` detections, severity/CVSSv3, `CVE-*` / `CWE-*`, `KB` / package hints, and fail-visible `UNMAPPED-QID-*` routing).
+2. **Tenable (`tenable` — `Tenable.io` & `Tenable.sc`)** — Vulnerability Export JSON & `Tenable.sc` analysis payloads (`PLUGIN-*` IDs, asset UUID / EC2 instance / FQDN alias resolution, VPR/CVSSv3, and fail-visible `UNMAPPED-PLUGIN-*` routing).
+3. **Rapid7 InsightVM (`rapid7_insightvm`)** — InsightVM v3 Asset-Vulnerability JSON (`R7-*` check normalization, CVSSv3/v2 + bounded risk-score fallback, and fail-visible unmapped check routing).
+
+*(Plus built-in open-schema parsers for `SARIF 2.1.0` [`Wiz`, `Trivy`, `Semgrep`, `Snyk`], `CISA KEV`, `Google OSV.dev`, and `Gitleaks` / `GitGuardian` secret scans.)*
+
+### Outbound / Inbound Mirror Distributors (`WN-8` — 15 Registered Translators Across 6 Families)
+
+Every distributor implements `DistributorTranslator` (`DispatchOrder`, `PollResult`, `ExecuteRollback`), translating canonical `DeploymentOrder` and `DeploymentResult` records under `agt-distributor-gateway` wire PoP:
+
+| Family | Distributor (`distributor_id`) | Ring Sequencing | Evidence & Default Symmetric Rollback |
+| :--- | :--- | :--- | :--- |
+| **Containers & GitOps** | **1. Kubernetes with Cilium** (`k8s-cilium-native`) *(adapter predates `v1.2.0`; now registered as a `DistributorTranslator` like the rest)* | Native progressive canary | Per-pod digest verified · Pin previous OCI digest |
+| **Containers & GitOps** | **2. Argo CD** (`argocd`) | Native sync waves | Per-resource health · Application history rollback |
+| **Containers & GitOps** | **3. Flux** (`flux`) | Warrant-sequenced (`5% → 25% → 100%`) | `DISPATCH_ACK_ONLY` (`Tier 0`) · Git revert commit |
+| **Microsoft Estate** | **4. Microsoft Intune** (`ms-intune`) | Native Windows Update rings | Per-device Graph state (`LANDED` / `REBOOT_WAITING`) · Expedited KB uninstall |
+| **Microsoft Estate** | **5. Microsoft Configuration Manager** (`ms-mecm`) | Native phased deployments | Per-device compliance · `wusa.exe /uninstall` deployment |
+| **Microsoft Estate** | **6. Microsoft WSUS** (`ms-wsus`) | Warrant-sequenced (`5% → 25% → 100%`) | Per-computer target group report · WSUS decline + `wusa /uninstall` |
+| **Linux Automation** | **7. Ansible (`AWX`)** (`ansible-awx`) | Warrant-sequenced (`5% → 25% → 100%`) | Per-host `/job_events/` (`runner_on_ok` / `reboot_required`) · Playbook NEVRA downgrade |
+| **Linux Automation** | **8. Red Hat Satellite** (`redhat-satellite`) | Warrant-sequenced (`5% → 25% → 100%`) | Per-host Katello remote execution · `dnf history undo` / content-view revert |
+| **Apple Estate** | **9. Jamf Pro** (`jamf-pro`) | Warrant-sequenced (`5% → 25% → 100%`) | Per-macOS computer policy log · Policy disable + previous `.pkg` revert |
+| **Cloud Patchers** | **10. AWS Systems Manager** (`aws-ssm`) | Native `MaxConcurrency` / `MaxErrors` | Per-instance `AWS-RunPatchBaseline` status · SSM rollback document |
+| **Cloud Patchers** | **11. Azure Update Manager** (`azure-update-manager`) | Native maintenance configurations | Per-VM assessment/install result · Azure VM Run Command rollback |
+| **Cloud Patchers** | **12. Google Cloud OS Config** (`gcp-os-config`) | Native rolling zone/percent disruption budget | Per-instance OS patch job compliance · OS Config exec-step rollback |
+| **Multi-Platform Patch** | **13. Tanium Patch** (`tanium-patch`) | Native deployment rings | Per-endpoint patch status · Tanium uninstall action |
+| **Multi-Platform Patch** | **14. Ivanti Neurons** (`ivanti-neurons`) | Native staged rings | Per-device deployment telemetry · Ivanti rollback package bundle |
+| **Multi-Platform Patch** | **15. Automox** (`automox`) | Warrant-sequenced (`5% → 25% → 100%`) | Per-device policy execution event · Remediation worklet revert |
 
 ---
 
@@ -194,7 +237,12 @@ go build -o warrant ./cmd/warrant
 ./warrant principals revoke --principal usr-so-01 --key so-key.priv.json --reason LAPTOP_COMPROMISED_SELF_REVOKE
 ./warrant principals rotate-and-revoke --pub ao-replacement.pub.json --principal usr-ao-01 --slot1-key so-backup.priv.json --slot2-key ao-key.priv.json
 
-# Verify all 6 immutable hash chains + External Merkle Checkpoints & verify OSCAL 1.1.2 POA&M via kernel key ring
+# Submit scanner exports via WN-7 & inspect the 15 registered WN-8 distributor translators
+./warrant intake qualys ./reports/qualys-vmdr.xml --service payments-ledger-api --distributor ms-intune
+./warrant distributors list
+./warrant distributors orders
+
+# Verify all 9 immutable hash chains + External Merkle Checkpoints & verify OSCAL 1.1.2 POA&M via kernel key ring
 ./warrant ledger verify
 ./warrant ledger checkpoints
 ./warrant oscal export <attestation-id> poam-bundle.json
@@ -247,7 +295,7 @@ if atts:
 ### 3. Go Client SDK (`pkg/warrantsdk`)
 
 ```bash
-go get github.com/cgilbert61/G1-Warrant/pkg/warrantsdk@v1.0.3
+go get github.com/cgilbert61/G1-Warrant/pkg/warrantsdk@v1.2.0
 ```
 
 ```go
@@ -265,11 +313,11 @@ rep, err := cli.VerifyLedgerChains(ctx)
 | Console View | Operational Surface |
 | :--- | :--- |
 | **Global Command Bar** | Live fleet KPIs, `/warrant` deterministic command bar, `Feeds: OFFLINE / LIVE` modal, 1-click Asymmetric Emergency Freeze (`FREEZE_HOLD` / `FREEZE_ROLLBACK`), and `2-of-2` Thaw ceremony. |
-| **View 1 — Race Pipeline** | 5-stage autonomous Kanban (`INTAKE_REPRO -> BRIDGED_CONTAINED -> SHADOW_CANARY -> VERIFYING_LOCKING -> ATTESTED_CLOSED`), live SLA timers, 4 interactive drill triggers, and millisecond Execution Trace Drawer. |
-| **View 2 — Warrant Desk** | `N1` Approval Pressure Analytics, Four-Eyes Ceiling Exception Cockpit, `2-of-2` Standing Warrant DSSE Composer, W3C WebAuthn hardware key enrollment, and live signer key revocation. |
+| **View 1 — Race Pipeline** | 5-stage autonomous Kanban (`INTAKE_REPRO -> BRIDGED_CONTAINED -> SHADOW_CANARY -> VERIFYING_LOCKING -> ATTESTED_CLOSED`), `WN-7` Finder source & unmapped badges, `WN-8` wave landing progress, live SLA timers, 4 interactive drill triggers, and millisecond Execution Trace Drawer. |
+| **View 2 — Warrant Desk** | `N1` Approval Pressure Analytics, Four-Eyes Ceiling Exception Cockpit, `2-of-2` Standing Warrant DSSE Composer, Commissioning Function & Agent Identity governance (`v1.1.0`), W3C WebAuthn hardware key enrollment, and live signer key revocation. |
 | **View 3 — Shadow & Estate** | Split-pane Differential Shadow Inspector (order-sensitive JSON diff with per-service `unordered_array_paths` opt-ins, `p50/p95/p99` latency bars, eBPF syscall/file/egress diff) and 5-Gate 3-Tier Graduated Autonomy Scorecard. |
-| **View 4 — Containment & Drift** | Active `ZERO_PROSE_EGRESS_MESH_QUARANTINE` & `SIGNED_RULEPACK_L7_SHIELD` bridges, YAML/Rego inspector, `ValidatingAdmissionPolicy` digest lockouts, and streaming runtime drift monitor. |
-| **View 5 — OSCAL Vault & Ledger** | Dual-tier DSSE-signed NIST OSCAL `1.1.2` POA&M Vault with in-browser verification, Scoped 3PAO `/auditor` bearer link generator, and 6-table SHA-256 + External Merkle Checkpoint verifier. |
+| **View 4 — Containment & Drift** | Active `ZERO_PROSE_EGRESS_MESH_QUARANTINE` & `SIGNED_RULEPACK_L7_SHIELD` bridges, `WN-8` WORM `DeploymentOrder` & pre-recorded `NativeRollbackSpec` table, YAML/Rego inspector, `ValidatingAdmissionPolicy` digest lockouts, and streaming runtime drift monitor. |
+| **View 5 — OSCAL Vault & Ledger** | Honest `FULL` / `PARTIAL` / `DISPATCH_ONLY` DSSE-signed NIST OSCAL `1.1.2` POA&M Vault with in-browser verification, Scoped 3PAO `/auditor` bearer link generator, `N4` `act` delegation lineage, and 9-table SHA-256 + External Merkle Checkpoint verifier. |
 
 ---
 
@@ -285,7 +333,7 @@ G1-Warrant (`FISMA ID: G1-WARRANT-001`) is continuously verified against a **9-G
 | **4. SBOM & SPDX Licenses** | Syft (`CycloneDX 1.5`) + SPDX | EO 14028 / NIST SP 800-53 Rev 5 SR-3 | **PASS** | `48/48` SPDX Permissive (`0` Copyleft) | [`reports/sbom.cdx.json`](reports/sbom.cdx.json) |
 | **5. SCA & Containers** | Trivy | DISA STIG / NIST SP 800-53 Rev 5 SI-2 & RA-5 | **PASS** | `0` Critical/High CVEs | [`reports/trivy-fs.sarif`](reports/trivy-fs.sarif) |
 | **6. DAST Dynamic Scan** | OWASP ZAP Baseline | NIST SP 800-53 Rev 5 RA-5 / OWASP Top 10 | **PASS** | `0` Active Injection Alerts | [`reports/zap_warrantd_report.json`](reports/zap_warrantd_report.json) |
-| **7. Section 508 A11y** | `axe-core` / WCAG 2.1 AA | Section 508 / WCAG 2.1 Level AA | **PASS** | `79 / 79` Passed (`0` Violations) | [`reports/axe-accessibility.json`](reports/axe-accessibility.json) |
+| **7. Section 508 A11y** | `axe-core` / WCAG 2.1 AA | Section 508 / WCAG 2.1 Level AA | **PASS** | `91 / 91` Passed (`0` Violations) | [`reports/axe-accessibility.json`](reports/axe-accessibility.json) |
 | **8. Load & SLA Testing** | `k6` | Control-Plane API SLA (`p95 <= 35.0ms`) | **PASS** | `< 10 ms` `p95` (`0%` Errors) | [`reports/k6-summary.json`](reports/k6-summary.json) |
 | **9. Federal GRC Platform** | GovReady-Q (Rev 5) | NIST SP 800-53 Rev 5 (`16` Controls) | **PASS** | `16 / 16` Implemented (`OSCAL 1.1.2`) | [`docs/g1_warrant_oscal_component.json`](docs/g1_warrant_oscal_component.json) |
 
@@ -296,7 +344,7 @@ make license-check
 # Run all 9 Federal DevSecOps compliance gates locally
 make compliance-check
 
-# Run embedded OPA Rego policy tests (22/22) + Go -race 12-invariant & live-feed E2E suite
+# Run embedded OPA Rego policy tests (35/35) + Go -race 16-invariant & live-feed E2E suite
 make docker-test
 ```
 
@@ -305,9 +353,9 @@ make docker-test
 ## Repository Layout
 
 - [`cmd/`](cmd/) — `warrantd` control plane, `warrant` native Go CLI, `warrant-extractor` zero-egress parser, and `fleet-sim` simulator
-- [`internal/`](internal/) — Deterministic Pure-Go engines (`warrant`, `gate`, `verify`, `agentcp`, `ledger`, `crypto`, `policy`, `adapters`, `db`, `e2e`)
-- [`policies/`](policies/) — Embedded OPA Rego v1 policies & unit tests (`warrant_ac5.rego`, `gate_eligibility.rego`, `verify_closure.rego`)
-- [`db/migrations/`](db/migrations/) — PostgreSQL 16 schema, `BEFORE UPDATE OR DELETE` immutability triggers, and DSSE authority-lineage schema (`001`–`007`)
+- [`internal/`](internal/) — Deterministic Pure-Go engines (`warrant`, `gate`, `verify`, `agentcp`, `ledger`, `crypto`, `policy`, `extractor/finders`, `adapters/distributors`, `db`, `e2e`)
+- [`policies/`](policies/) — Embedded OPA Rego v1 policies & unit tests (`warrant_ac5.rego`, `gate_eligibility.rego`, `verify_closure.rego`, `agent_intersection.rego`)
+- [`db/migrations/`](db/migrations/) — PostgreSQL 16 schema, `BEFORE UPDATE OR DELETE` immutability triggers, DSSE authority-lineage chains, and `WN-7`/`WN-8` tables (`001`–`009`)
 - [`pkg/warrantsdk/`](pkg/warrantsdk/) & [`sdk/python/`](sdk/python/) — Official Go & Python Client SDKs and offline DSSE/OSCAL verifiers
 - [`k8s/`](k8s/) — Production Kubernetes Deployment, `NetworkPolicy` zero-egress isolation, and RBAC manifests
 - [`web/`](web/) — Embedded React 19 + TypeScript Section 508 / WCAG 2.1 AA 5-View Operator Console
