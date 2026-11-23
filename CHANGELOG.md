@@ -5,6 +5,28 @@ Published Git tags (`v1.0.0`, `v1.0.1`, `v1.0.2`, `v1.0.3`, `v1.0.4`, `v1.1.0`, 
 
 ---
 
+## [v1.4.0] - 2026-11-23
+
+### Estate Loader: Bounded Decision-Time Clone-Source Selection Across All 18 Connected Systems (`TestInvariant20`)
+
+1. **`EstateReader` Across All 18 Connected Systems via 5 Handler Families (`internal/adapters/estatereader/`):**
+   - Implemented `EstateReader` and OCSF Inventory Info (`class_uid = 5001`) / NIST OSCAL `inventory-item` typed `EstateSnapshot` summaries (carrying OS/kernel distributions, CPE 2.3 / SWID / PURL software distributions, candidate clone sources, upstream `source_inventory_freshness_at` age, and RFC 8785 JCS `SnapshotSHA256`) across strictly **5** handler families:
+     - **Family (a) Microsoft (`family_microsoft.go`):** `ms-intune`, `azure-update-manager`, `ms-mecm` (ConfigMgr `AdminService` CIM), `ms-wsus` (`Tier A`).
+     - **Family (b) Cloud Inventory (`family_cloud.go`):** `aws-ssm`, `gcp-os-config` (`Tier A`).
+     - **Family (c) Unified Kubernetes API (`family_kubernetes.go`):** `k8s-cilium-native`, `argocd`, `flux` (`Tier B`).
+     - **Family (d) Declarative REST Endpoint Managers (`family_rest_declarative.go` + `mappings/*.json`):** `tanium-patch`, `ivanti-neurons`, `automox`, `jamf-pro`, `redhat-satellite`, `ansible-awx` (`Tier A`, plus pluggable zero-code `RegisterDeclarativeREST` for additional REST endpoint managers).
+     - **Family (e) Vulnerability Scanners (`family_scanners.go`):** `qualys_vmdr`, `tenable`, `rapid7_insightvm` (`Tier C` corroborating census only via `WN-7` `FinderTranslator`s; `CandidateCloneSources` is unconditionally empty).
+   - *Proof Fence:* `EstateReader` across all 18 systems is verified against deterministic invariant tests (`TestInvariant20`) and wire-accurate doubles; no live customer tenant estate read has yet run.
+2. **Zero Replication Doctrine & Hash-Chained WORM Evidence (`db/migrations/011_v1_4_0_estate_loader_evidence.sql`):**
+   - Stores **only** bounded summary distributions and `snapshot_sha256` digests in append-only WORM `estate_read_evidence` (verified inside `VerifyAllLedgerChains`), with **zero** per-host or shadow asset-inventory mirror tables.
+3. **Strict Read vs. Dispatch Credential Separation (`internal/server/api_estate_loader.go`):**
+   - Enforces separate `WARRANT_<SYSTEM>_READ_TOKEN` / `WARRANT_ESTATE_READ_TOKEN` and dedicated read-only `agt-estate-reader` (`READ_ESTATE_SNAPSHOT`) identity: `WN-8` dispatch credentials are rejected (`HTTP 403`) on `/api/v1/estate-loader/*`, and read-only credentials are rejected (`HTTP 403`) on dispatch, rollback, class-binding, and Standing Warrant signing routes.
+4. **Standing Warrant Clone-Source Binding, Proving-Time Re-Read & Drift Gate (`N1`, `N3`, `N5`, SDKs & Console):**
+   - Extended `WarrantPayload` with `clone_sources[]`, `estate_snapshot_sha256`, `estate_drift_policy` (`RECORD_ONLY` | `FAIL_CLOSED`), and `estate_drift_tolerance_pct`, resolving proving clone sources from `SIGNED_CLASS` -> `SIGNED_CLASS_MANUAL` -> `ENV_BOOTSTRAP_FALLBACK`.
+   - Added proving-time bounded re-read, drift computation, fail-closed availability rules (unavailable-at-signing blocks `ESTATE_LOADER` while permitting explicit `MANUAL` with zero fabricated hash; unavailable-at-proving defaults strictly to `FAIL_CLOSED` on `KERNEL` and `BOOT_LAYER`), extended `CloneTwinProvingManifest` & OSCAL `1.1.2` POA&M observations, updated Go/Python SDKs & CLIs (`1.4.0`, `--propose-from`, `estate-loader`, `warrant-propose`), updated Console View 2 (`Warrant Desk`), and shipped `scripts/run_aws_vmtwin_live_proof.py`.
+
+---
+
 ## [v1.3.1] - 2026-11-23
 
 ### Wire-Accurate `VM_TWIN` Drivers (`Hyper-V`, `AWS`, `Azure`, `GCP`), AWS PrivateLink Enclave Stack & Console Light/Dark Mode

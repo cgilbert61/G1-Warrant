@@ -188,3 +188,30 @@ test_v130_kernel_patch_on_vm_twin_succeeds_and_failed_clone_blocks if {
 	not verify.allow_bridge_retirement with input as failed_clone
 	"CLONE_TWIN_PROVING_FAILED" in verify.blockers with input as failed_clone
 }
+
+test_v140_estate_drift_fail_closed_blocks_and_record_only_allows if {
+	drift_blocked := object.union(verified_input, {
+		"clone_twin_proving_present": true,
+		"patch_target_layer": "USERSPACE_SOFTWARE",
+		"twin_runtime": "CONTAINER_TWIN",
+		"clone_twin_count": 3,
+		"clone_twin_all_passed": true,
+		"estate_drift_policy": "FAIL_CLOSED",
+		"estate_drift_exceeded": true,
+	})
+	not verify.allow_bridge_retirement with input as drift_blocked
+	not verify.allow_attestation_mint with input as drift_blocked
+	"ESTATE_DRIFT_TOLERANCE_EXCEEDED" in verify.blockers with input as drift_blocked
+
+	drift_recorded := object.union(verified_input, {
+		"clone_twin_proving_present": true,
+		"patch_target_layer": "USERSPACE_SOFTWARE",
+		"twin_runtime": "CONTAINER_TWIN",
+		"clone_twin_count": 3,
+		"clone_twin_all_passed": true,
+		"estate_drift_policy": "RECORD_ONLY",
+		"estate_drift_exceeded": true,
+	})
+	verify.allow_bridge_retirement with input as drift_recorded
+	verify.allow_attestation_mint with input as drift_recorded
+}

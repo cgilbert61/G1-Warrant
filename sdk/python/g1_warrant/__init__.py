@@ -41,7 +41,7 @@ from .crypto import (
     write_split_keypair_files,
 )
 
-__version__ = "1.3.1"
+__version__ = "1.4.0"
 
 __all__ = [
     "__version__",

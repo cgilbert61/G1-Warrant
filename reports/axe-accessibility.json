@@ -13,7 +13,7 @@
     "compliance": "Section 508 Federal Accessibility",
     "liveEndpointVerified": true
   },
-  "timestamp": "2026-11-23T16:24:14.144100+00:00",
+  "timestamp": "2026-11-23T20:58:53.064443+00:00",
   "filesAudited": 13,
   "violations": [],
   "passes": [
@@ -833,6 +833,102 @@
     {
       "id": "label",
       "impact": "critical",
+      "description": "Form control <select id='estate-propose-source'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View2WarrantDesk.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <select id='estate-census-scanner'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View2WarrantDesk.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <select id='estate-drift-policy'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View2WarrantDesk.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='estate-drift-tol'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View2WarrantDesk.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='estate-read-token-input'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View2WarrantDesk.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='manual-clone-sys'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View2WarrantDesk.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='manual-clone-img'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View2WarrantDesk.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='wrapped'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View2WarrantDesk.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
       "description": "Form control <input id='webauthn-principal-name'> has programmatic label association",
       "tags": [
         "wcag2a",
@@ -873,6 +969,28 @@
       "tags": [
         "wcag2a",
         "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View2WarrantDesk.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View2WarrantDesk.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
         "wcag412",
         "section508"
       ],
@@ -1159,8 +1277,8 @@
     }
   ],
   "summary": {
-    "totalChecks": 101,
-    "passedChecks": 101,
+    "totalChecks": 111,
+    "passedChecks": 111,
     "violationsCount": 0,
     "status": "PASS"
   }

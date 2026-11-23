@@ -258,6 +258,12 @@ type WarrantDraftOptions struct {
 	TTLDays                    int
 	ScopeAssets                []string
 	AuthorizedVendorDetections []string
+	CloneTwinCount             int
+	CloneSources               []DeclaredCloneSource
+	EstateSnapshotSHA256       string
+	EstateDriftPolicy          string
+	EstateDriftTolerancePct    float64
+	MaxEstateStalenessSec      int64
 }
 
 // DraftWarrantEnvelope builds an unsigned RFC 8785 JCS canonicalized DSSEv1 Standing Warrant envelope.
@@ -311,6 +317,12 @@ func DraftWarrantEnvelope(opts WarrantDraftOptions) (*Envelope, WarrantPayload, 
 		AutoRemediateCWEs:          opts.AutoRemediateCWEs,
 		MinCanarySamples:           opts.MinCanarySamples,
 		StageDwellSeconds:          opts.StageDwellSeconds,
+		CloneTwinCount:             opts.CloneTwinCount,
+		CloneSources:               opts.CloneSources,
+		EstateSnapshotSHA256:       opts.EstateSnapshotSHA256,
+		EstateDriftPolicy:          opts.EstateDriftPolicy,
+		EstateDriftTolerancePct:    opts.EstateDriftTolerancePct,
+		MaxEstateStalenessSec:      opts.MaxEstateStalenessSec,
 		SLABridgeMinutes:           opts.SLABridgeMinutes,
 		MaxP99LatencyMs:            opts.MaxP99LatencyMs,
 		IssuedAt:                   now.Format(time.RFC3339),

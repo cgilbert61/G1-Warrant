@@ -91,12 +91,28 @@ export interface TestSmartcardPersona {
   badge_label: string;
 }
 
+export interface DeclaredCloneSource {
+  source_system: string;
+  image_identity: string;
+  platform_family?: string;
+  snapshot_sha256?: string;
+  query_identity?: string;
+  source_mode: 'ESTATE_LOADER' | 'MANUAL';
+  image_created_at?: string;
+  image_age_seconds_at_sign?: number;
+  declared_at: string;
+}
+
 export interface WarrantRecord {
   warrant_id: string;
   warrant_class: string;
   scope_services: string[];
   scope_assets?: string[];
   authorized_vendor_detections?: string[];
+  clone_sources?: DeclaredCloneSource[];
+  estate_snapshot_sha256?: string;
+  estate_drift_policy?: 'RECORD_ONLY' | 'FAIL_CLOSED';
+  estate_drift_tolerance_pct?: number;
   max_cvss: number;
   kev_eligible: boolean;
   max_blast_radius_replicas: number;
@@ -602,6 +618,7 @@ export interface BootstrapSnapshot {
   agents?: AgentIdentity[];
   pending_sponsor_transfers?: PendingSponsorTransfer[];
   distributors?: DistributorDescriptor[];
+  estate_sources?: EstateSourceDescriptor[];
   deployment_orders?: DeploymentOrder[];
   deployment_results?: DeploymentResult[];
   asset_aliases?: AssetIdentityAlias[];
@@ -700,4 +717,66 @@ export interface DeploymentResult {
   is_rollback?: boolean;
   rollback_reason?: string;
   observed_at: string;
+}
+
+export interface EstateSourceDescriptor {
+  source_system: string;
+  display_name: string;
+  source_tier: 'TIER_A_MACHINE' | 'TIER_B_WORKLOAD' | 'TIER_C_CENSUS';
+  handler_family: string;
+  read_env_prefix: string;
+  read_configured: boolean;
+  can_propose_clone_sources: boolean;
+}
+
+export interface EstateProposalResponse {
+  proposal_id: string;
+  primary_snapshot: {
+    snapshot_id: string;
+    source_system: string;
+    source_tier: string;
+    handler_family: string;
+    query_identity: string;
+    class_membership_count: number;
+    os_build_kernel_distribution: Array<{
+      os_family: string;
+      os_version_or_build: string;
+      kernel_release?: string;
+      cpe23?: string;
+      count: number;
+    }>;
+    software_version_distribution: Array<{
+      component_name: string;
+      version: string;
+      cpe23?: string;
+      swid_tag_id?: string;
+      purl?: string;
+      count: number;
+    }>;
+    candidate_clone_sources: Array<{
+      source_system: string;
+      image_identity: string;
+      platform_family: string;
+      created_at: string;
+      image_age_seconds: number;
+    }>;
+    source_inventory_freshness_at: string;
+    source_freshness_age_seconds: number;
+    observed_at: string;
+    snapshot_sha256: string;
+  };
+  primary_evidence_id: string;
+  census_snapshot?: {
+    source_system: string;
+    class_membership_count: number;
+    source_freshness_age_seconds: number;
+    snapshot_sha256: string;
+  };
+  census_count_delta?: number;
+  census_delta_pct?: number;
+  census_advisory?: string;
+  proposed_clone_sources: DeclaredCloneSource[];
+  proposed_estate_snapshot_sha256: string;
+  recommended_drift_policy: 'RECORD_ONLY' | 'FAIL_CLOSED';
+  recommended_drift_tolerance_pct: number;
 }

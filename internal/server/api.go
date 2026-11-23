@@ -74,6 +74,11 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		if o.Distributors != nil {
 			distDescriptors = o.Distributors.ListDescriptors()
 		}
+		var estateSources []models.EstateSourceDescriptor
+		if o.EstateReaders != nil {
+			estateSources = o.EstateReaders.ListDescriptors()
+		}
+		estateEvidence, _ := o.Store.ListEstateReadEvidence(ctx, "", "")
 		auditorTokens, _ := o.Store.ListAuditorTokens(ctx)
 		checkpoints, _ := o.Store.ListLedgerCheckpoints(ctx)
 		feedStatus, _ := o.Store.GetLiveFeedStatus(ctx)
@@ -111,6 +116,8 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			"agent_lifecycle_events":    agentLifecycleEvents,
 			"pending_sponsor_transfers": pendingSponsorTransfers,
 			"distributors":              distDescriptors,
+			"estate_sources":            estateSources,
+			"estate_evidence":           estateEvidence,
 			"deployment_orders":         distOrders,
 			"deployment_results":        distResults,
 			"asset_aliases":             assetAliases,
@@ -549,6 +556,10 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 	})
 
 	mux.HandleFunc("POST /api/v1/warrants", func(w http.ResponseWriter, r *http.Request) {
+		if code, sepErr := o.RejectEstateReadCredentialOnMutation(r); sepErr != nil {
+			writeAPIError(w, code, sepErr)
+			return
+		}
 		var env crypto.Envelope
 		if err := decodeJSONBody(w, r, &env); err != nil {
 			writeAPIError(w, statusForBodyReadError(err), err)
@@ -1279,6 +1290,7 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 	})
 
 	o.registerFinderAndDistributorRoutes(mux)
+	o.registerEstateLoaderRoutes(mux)
 
 	// Scoped External Auditor Surface (Read-Only, Bearer Token Required)
 	mux.HandleFunc("GET /api/v1/auditor/vault", func(w http.ResponseWriter, r *http.Request) {

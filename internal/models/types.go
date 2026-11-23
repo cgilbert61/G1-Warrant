@@ -48,6 +48,36 @@ const (
 	TwinRuntimeVM        = "VM_TWIN"
 
 	DefaultCloneTwinCount = 3
+
+	// v1.4.0 Estate Loader Source Tiers, Handler Families, Drift Policies & Clone-Source Resolution Paths
+	EstateSourceTierAMachine  = "TIER_A_MACHINE"  // 12 Machine Estate Truth systems
+	EstateSourceTierBWorkload = "TIER_B_WORKLOAD" // 3 Kubernetes-native Workload Estate Truth systems
+	EstateSourceTierCCensus   = "TIER_C_CENSUS"   // 3 Scanner Corroborating Census systems (0 clone sources)
+
+	EstateHandlerFamilyMicrosoft       = "FAMILY_MICROSOFT"
+	EstateHandlerFamilyCloud           = "FAMILY_CLOUD"
+	EstateHandlerFamilyKubernetes      = "FAMILY_KUBERNETES"
+	EstateHandlerFamilyRESTDeclarative = "FAMILY_REST_DECLARATIVE"
+	EstateHandlerFamilyScanners        = "FAMILY_SCANNERS"
+
+	EstateReadPhaseSigningProposal = "SIGNING_PROPOSAL"
+	EstateReadPhaseProvingReread   = "PROVING_REREAD"
+
+	CloneSourceModeEstateLoader = "ESTATE_LOADER"
+	CloneSourceModeManual       = "MANUAL"
+
+	EstateDriftPolicyRecordOnly = "RECORD_ONLY"
+	EstateDriftPolicyFailClosed = "FAIL_CLOSED"
+
+	CloneSourceResolutionSignedClass       = "SIGNED_CLASS"
+	CloneSourceResolutionSignedClassManual = "SIGNED_CLASS_MANUAL"
+	CloneSourceResolutionEnvFallback       = "ENV_BOOTSTRAP_FALLBACK"
+
+	AgentActionReadEstateSnapshot      = "READ_ESTATE_SNAPSHOT"
+	AgentActionDispatchDeploymentOrder = "DISPATCH_DEPLOYMENT_ORDER"
+
+	OCSFInventoryInfoClassUID = 5001
+	DefaultEstateDriftTolPct  = 10.0
 )
 
 // Autonomy Tiers for Brownfield vs. Greenfield Estate Services (N2)
@@ -419,46 +449,69 @@ type KernelKeyRotationPayload struct {
 	IssuedAt          string `json:"issued_at"`
 }
 
+// DeclaredCloneSource binds an estate-read or explicitly manual clone image/template identity into a 2-of-2 Standing Warrant class.
+type DeclaredCloneSource struct {
+	SourceSystem          string `json:"source_system"`
+	ImageIdentity         string `json:"image_identity"`
+	PlatformFamily        string `json:"platform_family,omitempty"`
+	SnapshotSHA256        string `json:"snapshot_sha256,omitempty"`
+	QueryIdentity         string `json:"query_identity,omitempty"`
+	SourceMode            string `json:"source_mode"` // "ESTATE_LOADER" | "MANUAL"
+	ImageCreatedAt        string `json:"image_created_at,omitempty"`
+	ImageAgeSecondsAtSign int64  `json:"image_age_seconds_at_sign,omitempty"`
+	DeclaredAt            string `json:"declared_at"`
+}
+
 // WarrantPayload is the JCS-canonicalized body inside a dual-signed Standing Warrant DSSE envelope.
 type WarrantPayload struct {
-	WarrantID                  string   `json:"warrant_id"`
-	WarrantClass               string   `json:"warrant_class"`
-	ScopeServices              []string `json:"scope_services"`
-	ScopeAssets                []string `json:"scope_assets,omitempty"`
-	AuthorizedVendorDetections []string `json:"authorized_vendor_detections,omitempty"`
-	MaxCVSS                    float64  `json:"max_cvss"`
-	KEVEligible                bool     `json:"kev_eligible"`
-	MaxBlastRadiusReplicas     int      `json:"max_blast_radius_replicas"`
-	AllowStatefulPatches       bool     `json:"allow_stateful_patches"`
-	AllowGuardedCanary         bool     `json:"allow_guarded_canary,omitempty"`
-	AllowSecretRotation        bool     `json:"allow_secret_rotation,omitempty"`
-	AutoRemediateCWEs          []string `json:"auto_remediate_cwes,omitempty"`
-	MinCanarySamples           int      `json:"min_canary_samples,omitempty"`
-	StageDwellSeconds          int      `json:"stage_dwell_seconds,omitempty"`
-	CloneTwinCount             int      `json:"clone_twin_count,omitempty"`
-	SLABridgeMinutes           int      `json:"sla_bridge_minutes"`
-	MaxP99LatencyMs            float64  `json:"max_p99_latency_ms"`
-	IssuedAt                   string   `json:"issued_at"`
-	ExpiresAt                  string   `json:"expires_at"`
+	WarrantID                  string                `json:"warrant_id"`
+	WarrantClass               string                `json:"warrant_class"`
+	ScopeServices              []string              `json:"scope_services"`
+	ScopeAssets                []string              `json:"scope_assets,omitempty"`
+	AuthorizedVendorDetections []string              `json:"authorized_vendor_detections,omitempty"`
+	MaxCVSS                    float64               `json:"max_cvss"`
+	KEVEligible                bool                  `json:"kev_eligible"`
+	MaxBlastRadiusReplicas     int                   `json:"max_blast_radius_replicas"`
+	AllowStatefulPatches       bool                  `json:"allow_stateful_patches"`
+	AllowGuardedCanary         bool                  `json:"allow_guarded_canary,omitempty"`
+	AllowSecretRotation        bool                  `json:"allow_secret_rotation,omitempty"`
+	AutoRemediateCWEs          []string              `json:"auto_remediate_cwes,omitempty"`
+	MinCanarySamples           int                   `json:"min_canary_samples,omitempty"`
+	StageDwellSeconds          int                   `json:"stage_dwell_seconds,omitempty"`
+	CloneTwinCount             int                   `json:"clone_twin_count,omitempty"`
+	CloneSources               []DeclaredCloneSource `json:"clone_sources,omitempty"`
+	EstateSnapshotSHA256       string                `json:"estate_snapshot_sha256,omitempty"`
+	EstateDriftPolicy          string                `json:"estate_drift_policy,omitempty"`
+	EstateDriftTolerancePct    float64               `json:"estate_drift_tolerance_pct,omitempty"`
+	MaxEstateStalenessSec      int64                 `json:"max_estate_staleness_seconds,omitempty"`
+	SLABridgeMinutes           int                   `json:"sla_bridge_minutes"`
+	MaxP99LatencyMs            float64               `json:"max_p99_latency_ms"`
+	IssuedAt                   string                `json:"issued_at"`
+	ExpiresAt                  string                `json:"expires_at"`
 }
 
 // WarrantRecord represents an immutable Standing Warrant row in warrant_envelopes.
 type WarrantRecord struct {
-	WarrantID                  string          `json:"warrant_id"`
-	WarrantClass               string          `json:"warrant_class"`
-	ScopeServices              []string        `json:"scope_services"`
-	ScopeAssets                []string        `json:"scope_assets,omitempty"`
-	AuthorizedVendorDetections []string        `json:"authorized_vendor_detections,omitempty"`
-	MaxCVSS                    float64         `json:"max_cvss"`
-	KEVEligible            bool            `json:"kev_eligible"`
-	MaxBlastRadiusReplicas int             `json:"max_blast_radius_replicas"`
-	AllowStatefulPatches   bool            `json:"allow_stateful_patches"`
-	AllowGuardedCanary     bool            `json:"allow_guarded_canary"`
-	AllowSecretRotation    bool            `json:"allow_secret_rotation"`
-	AutoRemediateCWEs      []string        `json:"auto_remediate_cwes,omitempty"`
-	MinCanarySamples       int             `json:"min_canary_samples"`
-	StageDwellSeconds      int             `json:"stage_dwell_seconds"`
-	CloneTwinCount         int             `json:"clone_twin_count,omitempty"`
+	WarrantID                  string                `json:"warrant_id"`
+	WarrantClass               string                `json:"warrant_class"`
+	ScopeServices              []string              `json:"scope_services"`
+	ScopeAssets                []string              `json:"scope_assets,omitempty"`
+	AuthorizedVendorDetections []string              `json:"authorized_vendor_detections,omitempty"`
+	MaxCVSS                    float64               `json:"max_cvss"`
+	KEVEligible                bool                  `json:"kev_eligible"`
+	MaxBlastRadiusReplicas     int                   `json:"max_blast_radius_replicas"`
+	AllowStatefulPatches       bool                  `json:"allow_stateful_patches"`
+	AllowGuardedCanary         bool                  `json:"allow_guarded_canary"`
+	AllowSecretRotation        bool                  `json:"allow_secret_rotation"`
+	AutoRemediateCWEs          []string              `json:"auto_remediate_cwes,omitempty"`
+	MinCanarySamples           int                   `json:"min_canary_samples"`
+	StageDwellSeconds          int                   `json:"stage_dwell_seconds"`
+	CloneTwinCount             int                   `json:"clone_twin_count,omitempty"`
+	CloneSources               []DeclaredCloneSource `json:"clone_sources,omitempty"`
+	EstateSnapshotSHA256       string                `json:"estate_snapshot_sha256,omitempty"`
+	EstateDriftPolicy          string                `json:"estate_drift_policy,omitempty"`
+	EstateDriftTolerancePct    float64               `json:"estate_drift_tolerance_pct,omitempty"`
+	MaxEstateStalenessSec      int64                 `json:"max_estate_staleness_seconds,omitempty"`
 	SLABridgeMinutes       int             `json:"sla_bridge_minutes"`
 	MaxP99LatencyMs        float64         `json:"max_p99_latency_ms"`
 	IssuedAt               time.Time       `json:"issued_at"`
@@ -1075,6 +1128,7 @@ type LedgerVerificationReport struct {
 	VerifiedAt              time.Time          `json:"verified_at"`
 	Tables                  []ChainTableStatus `json:"tables"`
 	AgentAuthorityTables    []ChainTableStatus `json:"agent_authority_tables,omitempty"`
+	EstateEvidenceTables    []ChainTableStatus `json:"estate_evidence_tables,omitempty"`
 }
 
 // LedgerCheckpoint represents a periodic DSSE-signed Merkle Root receipt shipped to an
@@ -1227,26 +1281,158 @@ type CloneTwinInstanceResult struct {
 	LogSummary            string  `json:"log_summary,omitempty"`
 }
 
+// ResolvedCloneSourceEvidence records each clone source identity and image age used during a proving run.
+type ResolvedCloneSourceEvidence struct {
+	SourceSystem    string `json:"source_system"`
+	ImageIdentity   string `json:"image_identity"`
+	SourceMode      string `json:"source_mode"`
+	ImageCreatedAt  string `json:"image_created_at,omitempty"`
+	ImageAgeSeconds int64  `json:"image_age_seconds"`
+}
+
 // CloneTwinProvingManifest captures the 3-clone isolated proving ground evidence bound into N3, OPA, and OSCAL 1.1.2 POA&M.
 type CloneTwinProvingManifest struct {
-	ProvingRunID          string                    `json:"proving_run_id"`
-	RemediationID         string                    `json:"remediation_id"`
-	ServiceID             string                    `json:"service_id"`
-	WarrantID             string                    `json:"warrant_id"`
-	WarrantClass          string                    `json:"warrant_class"`
-	CVEID                 string                    `json:"cve_id"`
-	CandidateDigest       string                    `json:"candidate_digest"`
-	PatchTargetLayer      string                    `json:"patch_target_layer"` // "USERSPACE_SOFTWARE" | "KERNEL" | "BOOT_LAYER"
-	TwinRuntime           string                    `json:"twin_runtime"`       // "CONTAINER_TWIN" | "VM_TWIN"
-	ProvingNamespace      string                    `json:"proving_namespace"`
-	ZeroProductionEgress  bool                      `json:"zero_production_egress"`
-	CloneCount            int                       `json:"clone_count"`
-	ServicesUpCount       int                       `json:"services_up_count"`
-	SmokePassedCount      int                       `json:"smoke_passed_count"`
-	AcceptancePassedCount int                       `json:"acceptance_passed_count"`
-	AllPassed             bool                      `json:"all_passed"`
-	FailureReasonCode     string                    `json:"failure_reason_code,omitempty"`
-	Clones                []CloneTwinInstanceResult `json:"clones"`
-	TranscriptSHA256      string                    `json:"transcript_sha256"`
-	ProvedAt              time.Time                 `json:"proved_at"`
+	ProvingRunID              string                        `json:"proving_run_id"`
+	RemediationID             string                        `json:"remediation_id"`
+	ServiceID                 string                        `json:"service_id"`
+	WarrantID                 string                        `json:"warrant_id"`
+	WarrantClass              string                        `json:"warrant_class"`
+	CVEID                     string                        `json:"cve_id"`
+	CandidateDigest           string                        `json:"candidate_digest"`
+	PatchTargetLayer          string                        `json:"patch_target_layer"` // "USERSPACE_SOFTWARE" | "KERNEL" | "BOOT_LAYER"
+	TwinRuntime               string                        `json:"twin_runtime"`       // "CONTAINER_TWIN" | "VM_TWIN"
+	ProvingNamespace          string                        `json:"proving_namespace"`
+	ZeroProductionEgress      bool                          `json:"zero_production_egress"`
+	CloneCount                int                           `json:"clone_count"`
+	ServicesUpCount           int                           `json:"services_up_count"`
+	SmokePassedCount          int                           `json:"smoke_passed_count"`
+	AcceptancePassedCount     int                           `json:"acceptance_passed_count"`
+	AllPassed                 bool                          `json:"all_passed"`
+	FailureReasonCode         string                        `json:"failure_reason_code,omitempty"`
+	Clones                    []CloneTwinInstanceResult     `json:"clones"`
+	CloneSourceResolutionPath string                        `json:"clone_source_resolution_path,omitempty"` // "SIGNED_CLASS" | "SIGNED_CLASS_MANUAL" | "ENV_BOOTSTRAP_FALLBACK"
+	EstateSourceSystem        string                        `json:"estate_source_system,omitempty"`
+	EstateQueryIdentity       string                        `json:"estate_query_identity,omitempty"`
+	SigningReadAt             *time.Time                    `json:"signing_read_at,omitempty"`
+	ProvingReadAt             *time.Time                    `json:"proving_read_at,omitempty"`
+	SigningSnapshotSHA256     string                        `json:"signing_snapshot_sha256,omitempty"`
+	ProvingSnapshotSHA256     string                        `json:"proving_snapshot_sha256,omitempty"`
+	EstateDriftPolicy         string                        `json:"estate_drift_policy,omitempty"`
+	EstateDriftTolerancePct   float64                       `json:"estate_drift_tolerance_pct,omitempty"`
+	ObservedDriftPct          float64                       `json:"observed_drift_pct,omitempty"`
+	DriftExceeded             bool                          `json:"drift_exceeded,omitempty"`
+	DriftDeltaSummary         string                        `json:"drift_delta_summary,omitempty"`
+	ResolvedCloneSources      []ResolvedCloneSourceEvidence `json:"resolved_clone_sources,omitempty"`
+	TranscriptSHA256          string                        `json:"transcript_sha256"`
+	ProvedAt                  time.Time                     `json:"proved_at"`
+}
+
+// OSKernelBucket summarizes OS build and kernel release counts inside a bounded EstateSnapshot (OCSF Inventory Info + CPE 2.3).
+type OSKernelBucket struct {
+	OSFamily         string `json:"os_family"`
+	OSVersionOrBuild string `json:"os_version_or_build"`
+	KernelRelease    string `json:"kernel_release,omitempty"`
+	CPE23            string `json:"cpe23,omitempty"`
+	Count            int    `json:"count"`
+}
+
+// SoftwareBucket summarizes installed software/component versions inside a bounded EstateSnapshot (CPE 2.3 / SWID / PURL).
+type SoftwareBucket struct {
+	ComponentName string `json:"component_name"`
+	Version       string `json:"version"`
+	CPE23         string `json:"cpe23,omitempty"`
+	SWIDTagID     string `json:"swid_tag_id,omitempty"`
+	PURL          string `json:"purl,omitempty"`
+	Count         int    `json:"count"`
+}
+
+// CloneSourceCandidate represents a candidate golden image/template/OCI digest proposed by a Tier A or Tier B EstateReader.
+type CloneSourceCandidate struct {
+	SourceSystem      string            `json:"source_system"`
+	ImageIdentity     string            `json:"image_identity"`
+	PlatformFamily    string            `json:"platform_family"`
+	PatchTargetLayers []string          `json:"patch_target_layers"`
+	CreatedAt         string            `json:"created_at"`
+	ImageAgeSeconds   int64             `json:"image_age_seconds"`
+	Tags              map[string]string `json:"tags,omitempty"`
+}
+
+// EstateSnapshot is the bounded, prose-free OCSF Inventory Info (class_uid=5001) & NIST OSCAL inventory-item summary
+// returned by an EstateReader. Warrant stores only summary digests and cryptographic evidence — never per-host tables.
+type EstateSnapshot struct {
+	SnapshotID                  string                 `json:"snapshot_id"`
+	OCSFClassUID                int                    `json:"ocsf_class_uid"`
+	SourceSystem                string                 `json:"source_system"`
+	SourceTier                  string                 `json:"source_tier"` // "TIER_A_MACHINE" | "TIER_B_WORKLOAD" | "TIER_C_CENSUS"
+	HandlerFamily               string                 `json:"handler_family"`
+	QueryIdentity               string                 `json:"query_identity"`
+	ClassScope                  []string               `json:"class_scope"`
+	ClassMembershipCount        int                    `json:"class_membership_count"`
+	OSBuildKernelDistribution   []OSKernelBucket       `json:"os_build_kernel_distribution"`
+	SoftwareVersionDistribution []SoftwareBucket       `json:"software_version_distribution"`
+	CandidateCloneSources       []CloneSourceCandidate `json:"candidate_clone_sources"`
+	SourceInventoryFreshnessAt  time.Time              `json:"source_inventory_freshness_at"`
+	SourceFreshnessAgeSeconds   int64                  `json:"source_freshness_age_seconds"`
+	ObservedAt                  time.Time              `json:"observed_at"`
+	SnapshotSHA256              string                 `json:"snapshot_sha256"`
+}
+
+// EstateReadEvidenceRecord is an append-only, hash-chained WORM evidence row in estate_read_evidence.
+type EstateReadEvidenceRecord struct {
+	EvidenceID            string                 `json:"evidence_id"`
+	SourceSystem          string                 `json:"source_system"`
+	SourceTier            string                 `json:"source_tier"`
+	HandlerFamily         string                 `json:"handler_family"`
+	Phase                 string                 `json:"phase"` // "SIGNING_PROPOSAL" | "PROVING_REREAD"
+	WarrantID             string                 `json:"warrant_id,omitempty"`
+	RemediationID         string                 `json:"remediation_id,omitempty"`
+	QueryIdentity         string                 `json:"query_identity"`
+	ClassMembershipCount  int                    `json:"class_membership_count"`
+	OSDistSummary         []OSKernelBucket       `json:"os_dist_summary"`
+	SWDistSummary         []SoftwareBucket       `json:"sw_dist_summary"`
+	CandidateSources      []CloneSourceCandidate `json:"candidate_sources"`
+	SourceFreshnessAt     time.Time              `json:"source_freshness_at"`
+	SourceFreshnessAgeSec int64                  `json:"source_freshness_age_sec"`
+	ObservedAt            time.Time              `json:"observed_at"`
+	SnapshotSHA256        string                 `json:"snapshot_sha256"`
+	PrevHash              string                 `json:"prev_hash"`
+	EntryHash             string                 `json:"entry_hash"`
+}
+
+// EstateSourceDescriptor describes a registered EstateReader in GET /api/v1/estate-loader/sources.
+type EstateSourceDescriptor struct {
+	SourceSystem           string `json:"source_system"`
+	DisplayName            string `json:"display_name"`
+	SourceTier             string `json:"source_tier"`
+	HandlerFamily          string `json:"handler_family"`
+	ReadEnvPrefix          string `json:"read_env_prefix"`
+	ReadConfigured         bool   `json:"read_configured"`
+	CanProposeCloneSources bool   `json:"can_propose_clone_sources"`
+}
+
+// EstateProposalRequest asks the Estate Loader to read bounded class state at Standing Warrant drafting time.
+type EstateProposalRequest struct {
+	SourceSystem         string   `json:"source_system"`
+	CorroboratingScanner string   `json:"corroborating_scanner,omitempty"`
+	WarrantClass         string   `json:"warrant_class"`
+	ScopeServices        []string `json:"scope_services"`
+	ScopeFilter          string   `json:"scope_filter,omitempty"`
+	EstateDriftPolicy    string   `json:"estate_drift_policy,omitempty"`
+	DriftTolerancePct    float64  `json:"estate_drift_tolerance_pct,omitempty"`
+}
+
+// EstateProposalResponse returns the system's proposed class profile, freshness, Tier C census cross-check, and candidate clone sources.
+type EstateProposalResponse struct {
+	ProposalID                   string                `json:"proposal_id"`
+	PrimarySnapshot              EstateSnapshot        `json:"primary_snapshot"`
+	PrimaryEvidenceID            string                `json:"primary_evidence_id"`
+	CensusSnapshot               *EstateSnapshot       `json:"census_snapshot,omitempty"`
+	CensusEvidenceID             string                `json:"census_evidence_id,omitempty"`
+	CensusCountDelta             int                   `json:"census_count_delta,omitempty"`
+	CensusDeltaPct               float64               `json:"census_delta_pct,omitempty"`
+	CensusAdvisory               string                `json:"census_advisory,omitempty"`
+	ProposedCloneSources         []DeclaredCloneSource `json:"proposed_clone_sources"`
+	ProposedEstateSnapshotSHA256 string                `json:"proposed_estate_snapshot_sha256"`
+	RecommendedDriftPolicy       string                `json:"recommended_drift_policy"`
+	RecommendedDriftTolerancePct float64               `json:"recommended_drift_tolerance_pct"`
 }

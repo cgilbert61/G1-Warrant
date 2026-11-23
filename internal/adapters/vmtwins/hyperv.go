@@ -143,7 +143,7 @@ func (h *HyperVVMTwinProvider) RunVMTwinProving(ctx context.Context, req adapter
 		"run_id":               runID,
 		"service_id":           req.ServiceID,
 		"clone_count":          cloneCount,
-		"parent_vhdx":          h.cfg.QAParentVHDX,
+		"parent_vhdx":          firstNonEmptyStr(req.BaseCloneImageIdentity, h.cfg.QAParentVHDX),
 		"isolated_switch":      h.cfg.IsolatedSwitch,
 		"memory_mb":            h.cfg.VMMemoryMB,
 		"cpu_count":            h.cfg.VMProcessorCount,

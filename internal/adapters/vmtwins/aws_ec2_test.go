@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -142,3 +143,30 @@ func TestAWSEC2VMTwinProviderSigV4WarmupRebootAndTeardown(t *testing.T) {
 		t.Fatalf("expected TerminateInstances teardown call, got %d", terminateCalls.Load())
 	}
 }
+
+func TestLiveAWSEC2VMTwinProofIfConfigured(t *testing.T) {
+	if os.Getenv("WARRANT_LIVE_AWS_PROOF") != "1" {
+		t.Skip("skipping live AWS EC2+SSM VM_TWIN run (set WARRANT_LIVE_AWS_PROOF=1 via scripts/run_aws_vmtwin_live_proof.py)")
+	}
+	prov, err := NewAWSEC2VMTwinProviderFromEnv(nil, os.Getenv)
+	if err != nil {
+		t.Fatalf("NewAWSEC2VMTwinProviderFromEnv: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+	defer cancel()
+	manifest, err := prov.RunVMTwinProving(ctx, adapters.CloneTwinProvingRequest{
+		RemediationID:    "rem-live-aws-proof",
+		ServiceID:        "payments-ledger-api",
+		WarrantID:        "wrt-live-aws-proof",
+		WarrantClass:     "KEV-TIER1-STATELESS",
+		CVEID:            "CVE-2026-41001",
+		PatchTargetLayer: models.PatchTargetLayerKernel,
+		CloneCount:       3,
+	})
+	if err != nil {
+		t.Fatalf("live AWS EC2+SSM RunVMTwinProving failed: %v", err)
+	}
+	b, _ := json.MarshalIndent(manifest, "", "  ")
+	t.Logf("LIVE_AWS_VM_TWIN_MANIFEST=%s", string(b))
+}
+

@@ -74,7 +74,7 @@ class TestG1WarrantCryptoAndSDK(unittest.TestCase):
         self.assertEqual(verified["trust_basis"], TRUST_BASIS_EXTERNAL_PINNED_PUBKEY)
 
     def test_split_keygen_hygiene_and_governance_envelopes(self) -> None:
-        self.assertEqual(__version__, "1.3.1")
+        self.assertEqual(__version__, "1.4.0")
         so = generate_ed25519_signer_bundle("usr-so", "so@agency.gov", "Alice SO", ROLE_SERVICE_OWNER)
         ao = generate_ed25519_signer_bundle("usr-ao", "ao@agency.gov", "Bob AO", ROLE_AUTHORIZING_OFFICIAL)
         so2 = generate_ed25519_signer_bundle("usr-so2", "so2@agency.gov", "Carol SO2", ROLE_SERVICE_OWNER)
@@ -363,6 +363,99 @@ class TestG1WarrantCryptoAndSDK(unittest.TestCase):
             bundle = cli.export_oscal_bundle(atts[0]["attestation_id"])
             verified = verify_oscal_bundle_with_keyring(bundle, cli.kernel_public_key_ring())
             self.assertTrue(verified["valid"])
+
+    def test_v1_4_0_estate_loader_propose_and_warrant_mint_cli(self) -> None:
+        import http.server
+        import threading
+        from g1_warrant.cli import main as cli_main
+
+        captured: dict[str, object] = {}
+
+        class _EstateMockHandler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                length = int(self.headers.get("Content-Length", "0"))
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                if self.path == "/api/v1/estate-loader/propose":
+                    captured["read_header"] = self.headers.get("X-Warrant-Estate-Read-Token", "")
+                    resp = {
+                        "proposal_id": "prp-py-01",
+                        "primary_snapshot": {
+                            "source_system": body["source_system"],
+                            "source_tier": "TIER_A_MACHINE",
+                            "class_membership_count": 42,
+                            "source_freshness_age_seconds": 120,
+                        },
+                        "proposed_clone_sources": [
+                            {
+                                "source_system": body["source_system"],
+                                "image_identity": "wim://mecm-qa-01",
+                                "source_mode": "ESTATE_LOADER",
+                                "snapshot_sha256": "ab" * 32,
+                                "declared_at": "2026-11-23T15:00:00Z",
+                            }
+                        ],
+                        "proposed_estate_snapshot_sha256": "ab" * 32,
+                        "recommended_drift_policy": "FAIL_CLOSED",
+                        "recommended_drift_tolerance_pct": 10.0,
+                    }
+                    raw = json.dumps(resp).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.end_headers()
+                    self.wfile.write(raw)
+                    return
+                if self.path == "/api/v1/warrants":
+                    captured["warrant_env"] = body
+                    raw = json.dumps({"warrant_id": "wrt-py-140", "live_status": "ACTIVE"}).encode("utf-8")
+                    self.send_response(201)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.end_headers()
+                    self.wfile.write(raw)
+                    return
+                self.send_response(404)
+                self.end_headers()
+
+            def log_message(self, fmt: str, *args: object) -> None:
+                return
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), _EstateMockHandler)
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                so = generate_ed25519_signer_bundle("usr-so", "so@sec.gov", "SO", ROLE_SERVICE_OWNER)
+                ao = generate_ed25519_signer_bundle("usr-ao", "ao@sec.gov", "AO", ROLE_AUTHORIZING_OFFICIAL)
+                so_priv, _ = write_split_keypair_files(Path(tmp) / "so", so)
+                ao_priv, _ = write_split_keypair_files(Path(tmp) / "ao", ao)
+                rc = cli_main(
+                    [
+                        "--url",
+                        f"http://127.0.0.1:{srv.server_port}",
+                        "--estate-read-token",
+                        "py-estate-read-secret",
+                        "warrant-mint",
+                        "--slot1-key",
+                        str(so_priv),
+                        "--slot2-key",
+                        str(ao_priv),
+                        "--propose-from",
+                        "ms-mecm",
+                        "--services",
+                        "payments-ledger-api",
+                    ]
+                )
+                self.assertEqual(rc, 0)
+                self.assertEqual(captured.get("read_header"), "py-estate-read-secret")
+                env_obj = captured["warrant_env"]
+                assert isinstance(env_obj, dict)
+                decoded = json.loads(base64.b64decode(env_obj["payload"]).decode("utf-8"))
+                self.assertEqual(decoded["estate_snapshot_sha256"], "ab" * 32)
+                self.assertEqual(decoded["clone_sources"][0]["image_identity"], "wim://mecm-qa-01")
+        finally:
+            srv.shutdown()
+            srv.server_close()
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ import (
 )
 
 // Version is the semantic version of the G1-Warrant Go SDK.
-const Version = "1.3.1"
+const Version = "1.4.0"
 
 // Trust-basis identifiers emitted by offline OSCAL bundle verifiers (WN-4).
 const (
@@ -112,6 +112,17 @@ const (
 
 	DefaultCloneTwinCount = models.DefaultCloneTwinCount
 
+	EstateSourceTierAMachine               = models.EstateSourceTierAMachine
+	EstateSourceTierBWorkload              = models.EstateSourceTierBWorkload
+	EstateSourceTierCCensus                = models.EstateSourceTierCCensus
+	CloneSourceModeEstateLoader            = models.CloneSourceModeEstateLoader
+	CloneSourceModeManual                  = models.CloneSourceModeManual
+	EstateDriftPolicyRecordOnly            = models.EstateDriftPolicyRecordOnly
+	EstateDriftPolicyFailClosed            = models.EstateDriftPolicyFailClosed
+	CloneSourceResolutionSignedClass       = models.CloneSourceResolutionSignedClass
+	CloneSourceResolutionSignedClassManual = models.CloneSourceResolutionSignedClassManual
+	CloneSourceResolutionEnvFallback       = models.CloneSourceResolutionEnvFallback
+
 	ClosureCompletenessFull         = models.ClosureCompletenessFull
 	ClosureCompletenessPartial      = models.ClosureCompletenessPartial
 	ClosureCompletenessDispatchOnly = models.ClosureCompletenessDispatchOnly
@@ -193,6 +204,16 @@ type (
 	DistributorDescriptor       = models.DistributorDescriptor
 	CloneTwinInstanceResult     = models.CloneTwinInstanceResult
 	CloneTwinProvingManifest    = models.CloneTwinProvingManifest
+	DeclaredCloneSource         = models.DeclaredCloneSource
+	ResolvedCloneSourceEvidence = models.ResolvedCloneSourceEvidence
+	OSKernelBucket              = models.OSKernelBucket
+	SoftwareBucket              = models.SoftwareBucket
+	CloneSourceCandidate        = models.CloneSourceCandidate
+	EstateSnapshot              = models.EstateSnapshot
+	EstateReadEvidenceRecord    = models.EstateReadEvidenceRecord
+	EstateSourceDescriptor      = models.EstateSourceDescriptor
+	EstateProposalRequest       = models.EstateProposalRequest
+	EstateProposalResponse      = models.EstateProposalResponse
 )
 
 // APIError represents a structured non-2xx HTTP response from warrantd.

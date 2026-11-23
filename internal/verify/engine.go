@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cgilbert61/G1-Warrant/internal/adapters"
+	"github.com/cgilbert61/G1-Warrant/internal/adapters/estatereader"
 	"github.com/cgilbert61/G1-Warrant/internal/agentcp"
 	"github.com/cgilbert61/G1-Warrant/internal/crypto"
 	"github.com/cgilbert61/G1-Warrant/internal/db"
@@ -63,6 +64,7 @@ type Engine struct {
 	deploy        adapters.DeploymentTarget
 	twin          adapters.TwinRunner
 	vmTwin        adapters.VMTwinProvider
+	estateReaders *estatereader.Registry
 	rulepacks     *adapters.RulepackRegistry
 	onBroadcast   func(eventType string, payload any)
 	mu            sync.Mutex

@@ -381,7 +381,7 @@ func (az *AzureComputeVMTwinProvider) RunVMTwinProving(ctx context.Context, req 
 					"adminPassword": randomEphemeralPassword(),
 				},
 				"storageProfile": map[string]any{
-					"imageReference": map[string]string{"id": az.cfg.QAImageID},
+					"imageReference": map[string]string{"id": firstNonEmptyStr(req.BaseCloneImageIdentity, az.cfg.QAImageID)},
 					"osDisk": map[string]any{
 						"createOption": "FromImage",
 						"deleteOption": "Delete",

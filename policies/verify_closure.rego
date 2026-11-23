@@ -90,9 +90,15 @@ runtime_matches_patch_layer if {
 	twin_runtime == "VM_TWIN"
 }
 
+estate_drift_blocks_closure if {
+	upper(trim_space(object.get(input, "estate_drift_policy", ""))) == "FAIL_CLOSED"
+	object.get(input, "estate_drift_exceeded", false) == true
+}
+
 clone_twin_valid if {
 	object.get(input, "clone_twin_proving_present", false) != true
 	runtime_matches_patch_layer
+	not estate_drift_blocks_closure
 }
 
 clone_twin_valid if {
@@ -100,6 +106,7 @@ clone_twin_valid if {
 	runtime_matches_patch_layer
 	object.get(input, "clone_twin_count", 0) >= 1
 	object.get(input, "clone_twin_all_passed", false) == true
+	not estate_drift_blocks_closure
 }
 
 closure_evidence_valid if {
@@ -217,6 +224,11 @@ blockers contains "N1_WARRANT_REVERIFY_FAILED" if {
 blockers contains "KERNEL_PATCH_REQUIRES_VM_TWIN_RUNTIME" if {
 	not is_secret_rotation
 	not runtime_matches_patch_layer
+}
+
+blockers contains "ESTATE_DRIFT_TOLERANCE_EXCEEDED" if {
+	not is_secret_rotation
+	estate_drift_blocks_closure
 }
 
 blockers contains "CLONE_TWIN_PROVING_FAILED" if {

@@ -155,6 +155,8 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 		vIn.TwinRuntime = ctp.TwinRuntime
 		vIn.CloneTwinCount = ctp.CloneCount
 		vIn.CloneTwinAllPassed = ctp.AllPassed
+		vIn.EstateDriftPolicy = ctp.EstateDriftPolicy
+		vIn.EstateDriftExceeded = ctp.DriftExceeded
 	}
 	verDec, err := e.policy.EvalVerify(ctx, vIn)
 	if err != nil {
@@ -708,7 +710,7 @@ func buildCloneTwinProvingObservation(
 			},
 		}
 	}
-	evidence := make([]map[string]any, 0, len(ctp.Clones))
+	evidence := make([]map[string]any, 0, len(ctp.Clones)+len(ctp.ResolvedCloneSources))
 	for _, c := range ctp.Clones {
 		evidence = append(evidence, map[string]any{
 			"href": fmt.Sprintf("twin://%s/%s?index=%d", ctp.ProvingNamespace, c.CloneName, c.CloneIndex),
@@ -716,27 +718,65 @@ func buildCloneTwinProvingObservation(
 				c.CloneIndex, c.CloneName, c.PodIP, c.ServiceUpPassed, c.SmokeTestPassed, c.ClassAcceptancePassed, c.ObservedLatencyMs, c.EvidenceSHA256),
 		})
 	}
+	for _, rs := range ctp.ResolvedCloneSources {
+		evidence = append(evidence, map[string]any{
+			"href": fmt.Sprintf("estate-source://%s/%s", rs.SourceSystem, rs.ImageIdentity),
+			"description": fmt.Sprintf("Clone Source (%s | image=%s | mode=%s | image_age_seconds=%d)",
+				rs.SourceSystem, rs.ImageIdentity, rs.SourceMode, rs.ImageAgeSeconds),
+		})
+	}
+	props := []map[string]string{
+		{"name": "clone-twin-proving-executed", "value": "true"},
+		{"name": "proving-run-id", "value": ctp.ProvingRunID},
+		{"name": "proving-namespace", "value": ctp.ProvingNamespace},
+		{"name": "twin-runtime", "value": ctp.TwinRuntime},
+		{"name": "patch-target-layer", "value": ctp.PatchTargetLayer},
+		{"name": "clone-count", "value": fmt.Sprintf("%d", ctp.CloneCount)},
+		{"name": "services-up-count", "value": fmt.Sprintf("%d", ctp.ServicesUpCount)},
+		{"name": "smoke-passed-count", "value": fmt.Sprintf("%d", ctp.SmokePassedCount)},
+		{"name": "acceptance-passed-count", "value": fmt.Sprintf("%d", ctp.AcceptancePassedCount)},
+		{"name": "all-passed", "value": fmt.Sprintf("%t", ctp.AllPassed)},
+		{"name": "proving-transcript-sha256", "value": ctp.TranscriptSHA256},
+	}
+	if ctp.CloneSourceResolutionPath != "" {
+		props = append(props, map[string]string{"name": "clone-source-resolution-path", "value": ctp.CloneSourceResolutionPath})
+	}
+	if ctp.EstateSourceSystem != "" {
+		props = append(props,
+			map[string]string{"name": "estate-source-system", "value": ctp.EstateSourceSystem},
+			map[string]string{"name": "estate-query-identity", "value": ctp.EstateQueryIdentity},
+			map[string]string{"name": "signing-snapshot-sha256", "value": ctp.SigningSnapshotSHA256},
+			map[string]string{"name": "proving-snapshot-sha256", "value": ctp.ProvingSnapshotSHA256},
+			map[string]string{"name": "estate-drift-policy", "value": ctp.EstateDriftPolicy},
+			map[string]string{"name": "estate-drift-tolerance-pct", "value": fmt.Sprintf("%.2f", ctp.EstateDriftTolerancePct)},
+			map[string]string{"name": "observed-drift-pct", "value": fmt.Sprintf("%.2f", ctp.ObservedDriftPct)},
+			map[string]string{"name": "drift-exceeded", "value": fmt.Sprintf("%t", ctp.DriftExceeded)},
+			map[string]string{"name": "drift-delta-summary", "value": ctp.DriftDeltaSummary},
+		)
+	}
+	if ctp.SigningReadAt != nil {
+		props = append(props, map[string]string{"name": "signing-read-at", "value": ctp.SigningReadAt.UTC().Format(time.RFC3339)})
+	}
+	if ctp.ProvingReadAt != nil {
+		props = append(props, map[string]string{"name": "proving-read-at", "value": ctp.ProvingReadAt.UTC().Format(time.RFC3339)})
+	}
+	for idx, rs := range ctp.ResolvedCloneSources {
+		props = append(props,
+			map[string]string{"name": fmt.Sprintf("clone-source-%d-identity", idx), "value": rs.ImageIdentity},
+			map[string]string{"name": fmt.Sprintf("clone-source-%d-age-seconds", idx), "value": fmt.Sprintf("%d", rs.ImageAgeSeconds)},
+			map[string]string{"name": fmt.Sprintf("clone-source-%d-mode", idx), "value": rs.SourceMode},
+		)
+	}
 	return map[string]any{
 		"uuid":  obsUUID,
 		"title": "N3 Isolated Clone-Twin Proving Ground Verification",
-		"description": fmt.Sprintf("Proved candidate patch %s across %d isolated clones in %s (%s | layer=%s | ready=%d/%d | smoke=%d/%d | acceptance=%d/%d).",
+		"description": fmt.Sprintf("Proved candidate patch %s across %d isolated clones in %s (%s | layer=%s | source_path=%s | ready=%d/%d | smoke=%d/%d | acceptance=%d/%d).",
 			ctp.CandidateDigest, ctp.CloneCount, ctp.ProvingNamespace, ctp.TwinRuntime, ctp.PatchTargetLayer,
+			ctp.CloneSourceResolutionPath,
 			ctp.ServicesUpCount, ctp.CloneCount, ctp.SmokePassedCount, ctp.CloneCount, ctp.AcceptancePassedCount, ctp.CloneCount),
-		"methods":   []string{"TEST", "EXAMINE"},
-		"collected": ctp.ProvedAt.Format(time.RFC3339),
-		"props": []map[string]string{
-			{"name": "clone-twin-proving-executed", "value": "true"},
-			{"name": "proving-run-id", "value": ctp.ProvingRunID},
-			{"name": "proving-namespace", "value": ctp.ProvingNamespace},
-			{"name": "twin-runtime", "value": ctp.TwinRuntime},
-			{"name": "patch-target-layer", "value": ctp.PatchTargetLayer},
-			{"name": "clone-count", "value": fmt.Sprintf("%d", ctp.CloneCount)},
-			{"name": "services-up-count", "value": fmt.Sprintf("%d", ctp.ServicesUpCount)},
-			{"name": "smoke-passed-count", "value": fmt.Sprintf("%d", ctp.SmokePassedCount)},
-			{"name": "acceptance-passed-count", "value": fmt.Sprintf("%d", ctp.AcceptancePassedCount)},
-			{"name": "all-passed", "value": fmt.Sprintf("%t", ctp.AllPassed)},
-			{"name": "proving-transcript-sha256", "value": ctp.TranscriptSHA256},
-		},
+		"methods":           []string{"TEST", "EXAMINE"},
+		"collected":         ctp.ProvedAt.Format(time.RFC3339),
+		"props":             props,
 		"relevant-evidence": evidence,
 	}
 }

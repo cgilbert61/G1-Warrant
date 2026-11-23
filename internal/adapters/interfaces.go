@@ -84,9 +84,10 @@ type CloneTwinProvingRequest struct {
 	CVEID             string
 	CWEID             string
 	VulnerableDigest  string
-	CandidateDigest   string
-	CandidateImageRef string
-	KBArticleID       string
+	CandidateDigest        string
+	CandidateImageRef      string
+	BaseCloneImageIdentity string
+	KBArticleID            string
 	PackageNEVRA      string
 	PatchTargetLayer  string // "USERSPACE_SOFTWARE" | "KERNEL" | "BOOT_LAYER"
 	CloneCount        int

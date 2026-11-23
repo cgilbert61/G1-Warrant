@@ -108,3 +108,38 @@ test_reject_expired_warrant if {
 	not ac5.allow with input as bad
 	"WARRANT_EXPIRED" in ac5.violations with input as bad
 }
+
+test_v140_reject_tier_c_scanner_clone_source_and_fabricated_manual_hash if {
+	bad_scanner := object.union(valid_input, {
+		"clone_sources": [{
+			"source_system": "tenable",
+			"image_identity": "fake-scanner-img",
+			"source_mode": "ESTATE_LOADER",
+			"snapshot_sha256": "abcd1234",
+		}],
+	})
+	not ac5.allow with input as bad_scanner
+	"TIER_C_SCANNER_CANNOT_DECLARE_CLONE_SOURCE" in ac5.violations with input as bad_scanner
+
+	bad_manual := object.union(valid_input, {
+		"clone_sources": [{
+			"source_system": "ms-mecm",
+			"image_identity": "wim://win2022-qa",
+			"source_mode": "MANUAL",
+			"snapshot_sha256": "fabricated1234",
+		}],
+	})
+	not ac5.allow with input as bad_manual
+	"MANUAL_CLONE_SOURCE_FORBIDS_FABRICATED_SNAPSHOT_HASH" in ac5.violations with input as bad_manual
+
+	good_estate := object.union(valid_input, {
+		"clone_sources": [{
+			"source_system": "ms-mecm",
+			"image_identity": "wim://win2022-qa",
+			"source_mode": "ESTATE_LOADER",
+			"snapshot_sha256": "99887766554433221100",
+		}],
+		"estate_drift_policy": "FAIL_CLOSED",
+	})
+	ac5.allow with input as good_estate
+}

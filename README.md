@@ -15,7 +15,7 @@
 [![Federal Compliance](https://img.shields.io/badge/9--Gate%20DevSecOps-100%25%20COMPLIANT-success.svg)](docs/federal_devsecops_compliance_report.md)
 [![Section 508](https://img.shields.io/badge/Section%20508%20%2F%20WCAG%202.1%20AA-PASS-success.svg)](reports/axe-accessibility.json)
 
-**Deterministic Autonomous Remediation, Virtual Containment & NIST OSCAL 1.1.2 Attestation Control Plane (`v1.3.1`) — G1163RT Security Labs, Inc.**
+**Deterministic Autonomous Remediation, Virtual Containment & NIST OSCAL 1.1.2 Attestation Control Plane (`v1.4.0`) — G1163RT Security Labs, Inc.**
 
 > **Core Operational Principle:** **Contain in seconds; verify and roll out safely in minutes.**
 
@@ -42,7 +42,7 @@ Remediation stalls in that merge-to-production gap for four structural reasons:
 
 ## Incumbent Integration Architecture (`v1.2.0` — 18 Vendor Translators)
 
-> **Proof Tier & Verification Fence:** `LiveKubernetesAdapter` (`WARRANT_CLUSTER_DRIVER=kubernetes`) and the `v1.3.0` 3-Clone `CONTAINER_TWIN` Proving Ground (`g1-twin-proving`) have been **executed end-to-end against a real disposable `k3s` Kubernetes cluster** (`scripts/run_disposable_cluster_f3_proof.py`, closing `F3`). By contrast, the 4 non-Docker `VM_TWIN` QA Clone drivers (`hyperv`, `aws-ec2`, `azure-vm`, `gcp-gce`), the 3 `WN-7` commercial Finder translators, and the 14 non-Kubernetes `WN-8` Distributor translators are verified against deterministic invariant tests (`TestInvariant15`–`TestInvariant19`), wire-PoP mock HTTP servers, and recorded/sandbox sessions; **none of those external vendor/cloud/Hyper-V VM targets has yet run against live cloud tenant credentials or an elevated Hyper-V golden `.vhdx` host** (and when `WARRANT_VM_TWIN_DRIVER` is unset, `KERNEL` and `BOOT_LAYER` patches fail closed with `KERNEL_PATCH_REQUIRES_VM_TWIN_RUNTIME`). Output from `/warrant distributors list` (and `GET /api/v1/distributors`) confirms translator registration in the control-plane registry; it does **not** confirm an authenticated conversation with a live vendor API.
+> **Proof Tier & Verification Fence:** `LiveKubernetesAdapter` (`WARRANT_CLUSTER_DRIVER=kubernetes`) and the `v1.3.0` 3-Clone `CONTAINER_TWIN` Proving Ground (`g1-twin-proving`) have been **executed end-to-end against a real disposable `k3s` Kubernetes cluster** (`scripts/run_disposable_cluster_f3_proof.py`, transcript at [`reports/f3-disposable-k3s-proof-transcript.txt`](reports/f3-disposable-k3s-proof-transcript.txt), closing `F3`). By contrast, the 4 non-Docker `VM_TWIN` QA Clone drivers (`hyperv`, `aws-ec2`, `azure-vm`, `gcp-gce`), the `v1.4.0` **`EstateReader`** capability across all 18 connected systems (`5` handler families), the 3 `WN-7` commercial Finder translators, and the 14 non-Kubernetes `WN-8` Distributor translators are verified against deterministic invariant tests (`TestInvariant15`–`TestInvariant20`), wire-accurate mock HTTP servers, and recorded/sandbox sessions; **none of those external vendor APIs, live tenant estate reads, cloud `VM_TWIN` accounts (`aws-ec2`, `azure-vm`, `gcp-gce`), or elevated Hyper-V golden `.vhdx` hosts has yet run against live tenant credentials** (a turnkey AWS PrivateLink proving enclave stack at [`deploy/aws/vm_twin_proving_enclave.cfn.yaml`](deploy/aws/vm_twin_proving_enclave.cfn.yaml) and non-simulated proof runner at `scripts/run_aws_vmtwin_live_proof.py` are ready to execute as soon as AWS credentials are supplied; when `WARRANT_VM_TWIN_DRIVER` is unset, `KERNEL` and `BOOT_LAYER` patches fail closed with `KERNEL_PATCH_REQUIRES_VM_TWIN_RUNTIME`). Output from `/warrant distributors list` (`GET /api/v1/distributors`) and `/warrant estate-loader sources` (`GET /api/v1/estate-loader/sources`) confirms registry wiring; it does **not** confirm an authenticated conversation with a live vendor API.
 
 ### Inbound Finders (`WN-7` — 3 Vendor Translators + Open Standards)
 
@@ -160,6 +160,9 @@ flowchart LR
 11. **Zero-Signature Intake Doctrine, 3-Clone Proving Ground (`Kubernetes` + `Hyper-V` / `AWS` / `Azure` / `GCP` `VM_TWIN`) & Light/Dark Console (`v1.3.0`):**
     - **Zero-Signature Intake (`TestInvariant18`):** Findings (`Qualys`, `Tenable`, `Rapid7`, `SARIF`, `Secrets`) arrive on `X-Warrant-Intake-Token` alone across REST APIs, Go CLI (`warrant intake ... --intake-token`), Python CLI (`g1-warrant finder-intake ... --intake-token`), and the Console's **Ingest Scanner Export (Token-Only)** panel (which also includes a persistent **Light / Dark Mode** toggle across all 5 Console views and the 3PAO Auditor Portal). Dual-key (`Slot 1` + `Slot 2`) is never requested at ingest; unmapped or unbound findings arm containment autonomously (`StatusHealth = "BRIDGED"`, `ClassBindingStatus = "UNBOUND"`, `0` Four-Eyes Queue rows) until decoupled class binding (`POST /api/v1/remediations/{id}/bind-class`).
     - **3-Clone Proving Ground & Runtime-Follows-Patch (`F3` Closed + `TestInvariant19`):** Before any `N2` canary wave or `WN-8` distributor order fires, `N3` clones **3 isolated replicas** of the workload (`g1-twin-proving` namespace on Kubernetes for `CONTAINER_TWIN`, executed end-to-end on real `rancher/k3s` via `python scripts/run_disposable_cluster_f3_proof.py`) and verifies **(a)** services-up readiness, **(b)** workload smoke tests, and **(c)** Standing Warrant class acceptance checks with zero per-run human signatures. For non-Docker QA estates (`WARRANT_VM_TWIN_SERVICES`) and **`KERNEL` / `BOOT_LAYER`** patches (which require real OS reboots), `WARRANT_VM_TWIN_DRIVER` ships wire-accurate drivers for **`hyperv`** (Differencing `.vhdx` + `Private` switch + `Copy-VMFile`/PowerShell Direct via `scripts/hyperv_vm_twin_agent.ps1` once granted `Hyper-V Administrators`), **`aws-ec2`** (pure-Go AWS SigV4 + EC2 `2016-11-15` XML + SSM `exit 194`/`3010` reboot + 1-command PrivateLink proving enclave stack in [`deploy/aws/vm_twin_proving_enclave.cfn.yaml`](deploy/aws/vm_twin_proving_enclave.cfn.yaml)), **`azure-vm`** (Entra ID OAuth2 + ARM `2024-03-01` `deleteOption=Delete` + `202` LRO polling + `restart` + `runCommand`), and **`gcp-gce`** (Service Account RS256 JWT / Metadata + Compute Engine v1 + serial-port reboot verification), failing closed with `KERNEL_PATCH_REQUIRES_VM_TWIN_RUNTIME` when unconfigured.
+12. **Estate Loader: Bounded Decision-Time Clone-Source Selection Across All 18 Systems (`v1.4.0` — `TestInvariant20`):**
+    - **Zero Replication & Strict Read/Dispatch Separation:** `EstateReader` (`internal/adapters/estatereader/`) queries bounded class membership, OS/kernel & CPE 2.3/SWID/PURL software distributions, candidate clone images, and upstream inventory freshness across all **18** connected systems via **5 handler families** (`Microsoft`, `Cloud`, `Kubernetes`, data-driven `Declarative REST` with embedded JSON mapping sheets, and `Scanner Census`), storing **only** summary digests in hash-chained WORM `estate_read_evidence` (zero per-host mirror tables) under dedicated read-only credentials (`WARRANT_<VENDOR>_READ_TOKEN` / `agt-estate-reader`, strictly separated from `WN-8` dispatch tokens).
+    - **System Proposes, Humans Sign, Proving Re-Reads:** At class drafting (`POST /api/v1/estate-loader/propose`, Console View 2, `warrant warrants draft --propose-from`, `g1-warrant warrant-mint --propose-from`), Tier A (`12` machine systems) and Tier B (`3` Kubernetes systems) propose candidate clone sources while Tier C (`3` scanners) supply corroborating census deltas only (`0` clone sources). Confirmed `clone_sources[]` and `estate_snapshot_sha256` are signed into the `2-of-2` Standing Warrant, resolved ahead of env fallbacks (`SIGNED_CLASS` -> `SIGNED_CLASS_MANUAL` -> `ENV_BOOTSTRAP_FALLBACK`), and re-read at proving time under `RECORD_ONLY` or `FAIL_CLOSED` drift gating (defaulting `KERNEL` and `BOOT_LAYER` strictly to `FAIL_CLOSED` if the re-read is unavailable).
 
 ---
 
@@ -299,7 +302,7 @@ print("Offline OSCAL DSSE Verified:", proof["valid"], "TrustBasis:", proof["trus
 ### 3. Go Client SDK (`pkg/warrantsdk`)
 
 ```bash
-go get github.com/cgilbert61/G1-Warrant/pkg/warrantsdk@v1.3.1
+go get github.com/cgilbert61/G1-Warrant/pkg/warrantsdk@v1.4.0
 ```
 
 ```go
@@ -337,7 +340,7 @@ G1-Warrant (`FISMA ID: G1-WARRANT-001`) is continuously verified against a **9-G
 | **4. SBOM & SPDX Licenses** | Syft (`CycloneDX 1.5`) + SPDX | EO 14028 / NIST SP 800-53 Rev 5 SR-3 | **PASS** | `48/48` SPDX Permissive (`0` Copyleft) | [`reports/sbom.cdx.json`](reports/sbom.cdx.json) |
 | **5. SCA & Containers** | Trivy | DISA STIG / NIST SP 800-53 Rev 5 SI-2 & RA-5 | **PASS** | `0` Critical/High CVEs | [`reports/trivy-fs.sarif`](reports/trivy-fs.sarif) |
 | **6. DAST Dynamic Scan** | OWASP ZAP Baseline | NIST SP 800-53 Rev 5 RA-5 / OWASP Top 10 | **PASS** | `0` Active Injection Alerts | [`reports/zap_warrantd_report.json`](reports/zap_warrantd_report.json) |
-| **7. Section 508 A11y** | `axe-core` / WCAG 2.1 AA | Section 508 / WCAG 2.1 Level AA | **PASS** | `91 / 91` Passed (`0` Violations) | [`reports/axe-accessibility.json`](reports/axe-accessibility.json) |
+| **7. Section 508 A11y** | `axe-core` / WCAG 2.1 AA | Section 508 / WCAG 2.1 Level AA | **PASS** | `111 / 111` Passed (`0` Violations) | [`reports/axe-accessibility.json`](reports/axe-accessibility.json) |
 | **8. Load & SLA Testing** | `k6` | Control-Plane API SLA (`p95 <= 35.0ms`) | **PASS** | `< 10 ms` `p95` (`0%` Errors) | [`reports/k6-summary.json`](reports/k6-summary.json) |
 | **9. Federal GRC Platform** | GovReady-Q (Rev 5) | NIST SP 800-53 Rev 5 (`16` Controls) | **PASS** | `16 / 16` Implemented (`OSCAL 1.1.2`) | [`docs/g1_warrant_oscal_component.json`](docs/g1_warrant_oscal_component.json) |
 
@@ -348,7 +351,7 @@ make license-check
 # Run all 9 Federal DevSecOps compliance gates locally
 make compliance-check
 
-# Run embedded OPA Rego policy tests (35/35) + Go -race 16-invariant & live-feed E2E suite
+# Run embedded OPA Rego policy tests (40/40) + Go -race 20-invariant & live-feed E2E suite
 make docker-test
 ```
 

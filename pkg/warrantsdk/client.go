@@ -27,6 +27,7 @@ type Client struct {
 	operatorToken   string
 	automationToken string
 	intakeToken     string
+	estateReadToken string
 	signerBundle    *SignerKeyBundle
 	userAgent       string
 }
@@ -95,6 +96,14 @@ func WithAutomationToken(token string) Option {
 func WithIntakeToken(token string) Option {
 	return func(c *Client) {
 		c.intakeToken = strings.TrimSpace(token)
+	}
+}
+
+// WithEstateReadToken attaches a dedicated read-only Estate Loader credential (WARRANT_ESTATE_READ_TOKEN)
+// scoped strictly to /api/v1/estate-loader/* decision-time reading routes.
+func WithEstateReadToken(token string) Option {
+	return func(c *Client) {
+		c.estateReadToken = strings.TrimSpace(token)
 	}
 }
 
@@ -779,6 +788,45 @@ func (c *Client) doActionJSON(ctx context.Context, method, path, govAction strin
 	return nil
 }
 
+// ListEstateSources lists all registered v1.4.0 EstateReader descriptors across Tiers A, B, and C.
+func (c *Client) ListEstateSources(ctx context.Context) ([]EstateSourceDescriptor, error) {
+	var out []EstateSourceDescriptor
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/estate-loader/sources", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ProposeEstateClass queries a connected Tier A/B system (and optional Tier C corroborating scanner)
+// via POST /api/v1/estate-loader/propose to propose class profile and candidate clone sources at drafting time.
+func (c *Client) ProposeEstateClass(ctx context.Context, req EstateProposalRequest) (*EstateProposalResponse, error) {
+	var out EstateProposalResponse
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/estate-loader/propose", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListEstateEvidence retrieves append-only WORM estate_read_evidence rows (optionally filtered by source or warrant).
+func (c *Client) ListEstateEvidence(ctx context.Context, sourceSystem, warrantID string) ([]EstateReadEvidenceRecord, error) {
+	q := url.Values{}
+	if strings.TrimSpace(sourceSystem) != "" {
+		q.Set("source_system", strings.TrimSpace(sourceSystem))
+	}
+	if strings.TrimSpace(warrantID) != "" {
+		q.Set("warrant_id", strings.TrimSpace(warrantID))
+	}
+	path := "/api/v1/estate-loader/evidence"
+	if enc := q.Encode(); enc != "" {
+		path += "?" + enc
+	}
+	var out []EstateReadEvidenceRecord
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) doJSON(ctx context.Context, method, path string, reqBody any, dst any) error {
 	return c.doJSONWithHeaders(ctx, method, path, reqBody, dst, nil)
 }
@@ -840,6 +888,9 @@ func (c *Client) doRawWithHeaders(ctx context.Context, method, path, contentType
 	}
 	if c.intakeToken != "" {
 		req.Header.Set("X-Warrant-Intake-Token", c.intakeToken)
+	}
+	if c.estateReadToken != "" {
+		req.Header.Set("X-Warrant-Estate-Read-Token", c.estateReadToken)
 	}
 	for k, v := range extraHeaders {
 		req.Header.Set(k, v)

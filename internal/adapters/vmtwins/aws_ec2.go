@@ -271,7 +271,7 @@ func (a *AWSEC2VMTwinProvider) RunVMTwinProving(ctx context.Context, req adapter
 	// 1. Launch 3 isolated EC2 QA AMI clones (AssociatePublicIpAddress=false + Isolated Security Group)
 	q := url.Values{}
 	q.Set("Action", "RunInstances")
-	q.Set("ImageId", a.cfg.QAAMIID)
+	q.Set("ImageId", firstNonEmptyStr(req.BaseCloneImageIdentity, a.cfg.QAAMIID))
 	q.Set("InstanceType", a.cfg.InstanceType)
 	q.Set("MinCount", strconv.Itoa(cloneCount))
 	q.Set("MaxCount", strconv.Itoa(cloneCount))

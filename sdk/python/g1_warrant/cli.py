@@ -43,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--operator-token", default=None, help="Optional WARRANT_OPERATOR_TOKEN (simulator dev mode)")
     parser.add_argument("--automation-token", default=None, help="Optional WARRANT_AUTOMATION_TOKEN for feeds/checkpoints")
     parser.add_argument("--intake-token", default=None, help="Optional WARRANT_INTAKE_TOKEN for zero-signature scanner intake")
+    parser.add_argument("--estate-read-token", default=None, help="Optional WARRANT_ESTATE_READ_TOKEN for read-only Estate Loader queries")
     parser.add_argument("--json", action="store_true", help="Emit JSON output")
     parser.add_argument("--version", action="version", version=f"g1-warrant-sdk v{__version__}")
 
@@ -59,6 +60,19 @@ def main(argv: list[str] | None = None) -> int:
     p_mint.add_argument("--slot2-key", type=Path, required=True, help="Slot 2 (AUTHORIZING_OFFICIAL) .priv.json")
     p_mint.add_argument("--warrant-class", default="KEV-TIER1-STATELESS")
     p_mint.add_argument("--services", default="payments-ledger-api,identity-sso-gateway")
+    p_mint.add_argument("--propose-from", default=None, help="Connected Tier A/B system to read Estate Proposal & clone_sources[]")
+    p_mint.add_argument("--corroborate-scanner", default=None, help="Optional Tier C scanner for census cross-check")
+    p_mint.add_argument("--drift-policy", default=None, choices=["RECORD_ONLY", "FAIL_CLOSED"])
+    p_mint.add_argument("--drift-tolerance-pct", type=float, default=None)
+    p_mint.add_argument("--manual-clone-source", default=None, help="Explicit <system>=<image_identity> manual override")
+
+    p_prop = sub.add_parser("warrant-propose", help="Query Estate Loader to render class profile & candidate clone sources (read-only)")
+    p_prop.add_argument("--source", required=True, help="Connected Tier A or Tier B system ID")
+    p_prop.add_argument("--corroborate-scanner", default=None, help="Optional Tier C scanner ID (qualys, tenable, rapid7)")
+    p_prop.add_argument("--warrant-class", default="KEV-TIER1-STATELESS")
+    p_prop.add_argument("--services", default="payments-ledger-api")
+    p_prop.add_argument("--drift-policy", default=None)
+    p_prop.add_argument("--drift-tolerance-pct", type=float, default=10.0)
 
     p_keygen = sub.add_parser("keygen", help="Generate split Ed25519 AC-5 keypair (<name>.priv.json + <name>.pub.json)")
     p_keygen.add_argument("--id", required=True)
@@ -217,6 +231,7 @@ def main(argv: list[str] | None = None) -> int:
             operator_token=args.operator_token,
             automation_token=args.automation_token,
             intake_token=effective_intake_tok,
+            estate_read_token=args.estate_read_token,
             signer_bundle=global_signer,
         )
 
@@ -283,9 +298,54 @@ def main(argv: list[str] | None = None) -> int:
             _dump(res)
             return 0 if res.get("valid") else 2
 
+        if args.command == "warrant-propose":
+            svcs = [s.strip() for s in args.services.split(",") if s.strip()]
+            prop = cli.propose_estate_class(
+                source_system=args.source,
+                scope_services=svcs,
+                warrant_class=args.warrant_class,
+                corroborating_scanner=args.corroborate_scanner,
+                estate_drift_policy=args.drift_policy,
+                estate_drift_tolerance_pct=args.drift_tolerance_pct,
+            )
+            _dump(prop)
+            return 0
+
         if args.command == "warrant-mint":
             svcs = [s.strip() for s in args.services.split(",") if s.strip()]
-            env = draft_warrant_envelope(scope_services=svcs, warrant_class=args.warrant_class)
+            clone_sources = None
+            snap_sha = None
+            eff_policy = args.drift_policy
+            if args.propose_from:
+                prop = cli.propose_estate_class(
+                    source_system=args.propose_from,
+                    scope_services=svcs,
+                    warrant_class=args.warrant_class,
+                    corroborating_scanner=args.corroborate_scanner,
+                    estate_drift_policy=eff_policy,
+                    estate_drift_tolerance_pct=args.drift_tolerance_pct,
+                )
+                clone_sources = prop.get("proposed_clone_sources") or []
+                snap_sha = prop.get("proposed_estate_snapshot_sha256")
+                if not eff_policy:
+                    eff_policy = prop.get("recommended_drift_policy")
+            elif args.manual_clone_source:
+                sys_id, img_id = args.manual_clone_source.split("=", 1)
+                from datetime import datetime, timezone
+                clone_sources = [{
+                    "source_system": sys_id.strip(),
+                    "image_identity": img_id.strip(),
+                    "source_mode": "MANUAL",
+                    "declared_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                }]
+            env = draft_warrant_envelope(
+                scope_services=svcs,
+                warrant_class=args.warrant_class,
+                clone_sources=clone_sources,
+                estate_snapshot_sha256=snap_sha,
+                estate_drift_policy=eff_policy,
+                estate_drift_tolerance_pct=args.drift_tolerance_pct,
+            )
             s1 = SignerKeyBundle.from_dict(json.loads(args.slot1_key.read_text(encoding="utf-8")))
             s2 = SignerKeyBundle.from_dict(json.loads(args.slot2_key.read_text(encoding="utf-8")))
             s1.sign_envelope(1, env)

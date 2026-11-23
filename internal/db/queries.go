@@ -67,8 +67,25 @@ func (s *Store) ListWarrants(ctx context.Context) ([]models.WarrantRecord, error
 		_ = json.Unmarshal(envRaw, &w.DSSEEnvelope)
 		if pBytes, dErr := w.DSSEEnvelope.DecodePayload(); dErr == nil {
 			var wp models.WarrantPayload
-			if json.Unmarshal(pBytes, &wp) == nil && wp.CloneTwinCount > 0 {
-				w.CloneTwinCount = wp.CloneTwinCount
+			if json.Unmarshal(pBytes, &wp) == nil {
+				if wp.CloneTwinCount > 0 {
+					w.CloneTwinCount = wp.CloneTwinCount
+				}
+				if len(wp.CloneSources) > 0 {
+					w.CloneSources = wp.CloneSources
+				}
+				if wp.EstateSnapshotSHA256 != "" {
+					w.EstateSnapshotSHA256 = wp.EstateSnapshotSHA256
+				}
+				if wp.EstateDriftPolicy != "" {
+					w.EstateDriftPolicy = wp.EstateDriftPolicy
+				}
+				if wp.EstateDriftTolerancePct > 0 {
+					w.EstateDriftTolerancePct = wp.EstateDriftTolerancePct
+				}
+				if wp.MaxEstateStalenessSec > 0 {
+					w.MaxEstateStalenessSec = wp.MaxEstateStalenessSec
+				}
 			}
 		}
 		if w.CloneTwinCount <= 0 {

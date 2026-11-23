@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/cgilbert61/G1-Warrant/internal/models"
 	"github.com/cgilbert61/G1-Warrant/policies"
 	"github.com/open-policy-agent/opa/v1/rego"
 )
@@ -39,8 +40,10 @@ type AC5Input struct {
 	FindingIsKEV           bool        `json:"finding_is_kev,omitempty"`
 	FindingCWE             string      `json:"finding_cwe,omitempty"`
 	AutoRemediateCWEs      []string    `json:"auto_remediate_cwes,omitempty"`
-	MaxBlastRadiusReplicas int         `json:"max_blast_radius_replicas"`
-	TargetReplicas         int         `json:"target_replicas"`
+	MaxBlastRadiusReplicas int                          `json:"max_blast_radius_replicas"`
+	TargetReplicas         int                          `json:"target_replicas"`
+	CloneSources           []models.DeclaredCloneSource `json:"clone_sources,omitempty"`
+	EstateDriftPolicy      string                       `json:"estate_drift_policy,omitempty"`
 }
 
 // SignerInput represents one signer slot in AC-5 evaluation.
@@ -141,6 +144,8 @@ type VerifyInput struct {
 	CloneTwinProvingPresent   bool   `json:"clone_twin_proving_present,omitempty"`
 	CloneTwinCount            int    `json:"clone_twin_count,omitempty"`
 	CloneTwinAllPassed        bool   `json:"clone_twin_all_passed,omitempty"`
+	EstateDriftPolicy         string `json:"estate_drift_policy,omitempty"`
+	EstateDriftExceeded       bool   `json:"estate_drift_exceeded,omitempty"`
 }
 
 // VerifyDecision is the deterministic decision from data.warrant.verify.

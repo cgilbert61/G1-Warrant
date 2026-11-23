@@ -108,3 +108,31 @@ violations contains "BLAST_RADIUS_EXCEEDS_CEILING" if {
 	input.max_blast_radius_replicas > 0
 	input.target_replicas > input.max_blast_radius_replicas
 }
+
+# v1.4.0 Estate Loader Clone-Source Declaration Rules:
+# 1. Tier C vulnerability scanners provide corroborating census ONLY and can never be declared as clone sources.
+tier_c_scanner_systems := {"qualys", "qualys_vmdr", "qualys-vmdr", "tenable", "tenable_io", "tenable_sc", "tenable_io_sc", "rapid7", "insightvm", "rapid7_insightvm"}
+
+violations contains "TIER_C_SCANNER_CANNOT_DECLARE_CLONE_SOURCE" if {
+	some cs in object.get(input, "clone_sources", [])
+	lower(trim_space(object.get(cs, "source_system", ""))) in tier_c_scanner_systems
+}
+
+# 2. ESTATE_LOADER clone sources MUST bind a non-empty snapshot_sha256; MANUAL overrides MUST NOT carry a fabricated snapshot_sha256.
+violations contains "ESTATE_LOADER_CLONE_SOURCE_MISSING_SNAPSHOT_HASH" if {
+	some cs in object.get(input, "clone_sources", [])
+	upper(trim_space(object.get(cs, "source_mode", "ESTATE_LOADER"))) == "ESTATE_LOADER"
+	trim_space(object.get(cs, "snapshot_sha256", "")) == ""
+}
+
+violations contains "MANUAL_CLONE_SOURCE_FORBIDS_FABRICATED_SNAPSHOT_HASH" if {
+	some cs in object.get(input, "clone_sources", [])
+	upper(trim_space(object.get(cs, "source_mode", ""))) == "MANUAL"
+	trim_space(object.get(cs, "snapshot_sha256", "")) != ""
+}
+
+violations contains "INVALID_ESTATE_DRIFT_POLICY" if {
+	pol := upper(trim_space(object.get(input, "estate_drift_policy", "")))
+	pol != ""
+	not pol in {"RECORD_ONLY", "FAIL_CLOSED"}
+}

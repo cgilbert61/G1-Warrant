@@ -343,6 +343,7 @@ export const App: React.FC = () => {
             commissioningFunctions={snapshot.commissioning_functions}
             agents={snapshot.agents}
             pendingSponsorTransfers={snapshot.pending_sponsor_transfers}
+            estateSources={snapshot.estate_sources}
             nowMs={nowMs}
             testPersonas={snapshot.test_personas}
             rpId={rpId}

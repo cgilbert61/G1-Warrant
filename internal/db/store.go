@@ -746,11 +746,28 @@ func (s *Store) AppendWarrantEnvelope(ctx context.Context, w *models.WarrantReco
 	if w.WarrantClass == models.WarrantClassSecretRotation {
 		w.AllowSecretRotation = true
 	}
+	cloneSourcesJSON, _ := json.Marshal(w.CloneSources)
+	if len(w.CloneSources) == 0 {
+		cloneSourcesJSON = []byte("[]")
+	}
+	driftPolicy := strings.TrimSpace(w.EstateDriftPolicy)
+	if driftPolicy == "" {
+		driftPolicy = models.EstateDriftPolicyRecordOnly
+	}
+	driftTol := w.EstateDriftTolerancePct
+	if driftTol <= 0 {
+		driftTol = models.DefaultEstateDriftTolPct
+	}
+	cloneTwinCnt := w.CloneTwinCount
+	if cloneTwinCnt <= 0 {
+		cloneTwinCnt = models.DefaultCloneTwinCount
+	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO warrant_envelopes (
 			warrant_id, warrant_class, scope_services, scope_assets, authorized_vendor_detections, max_cvss, kev_eligible,
 			max_blast_radius_replicas, allow_stateful_patches, allow_guarded_canary,
 			allow_secret_rotation, auto_remediate_cwes, min_canary_samples, stage_dwell_seconds,
+			clone_twin_count, clone_sources_json, estate_snapshot_sha256, estate_drift_policy, estate_drift_tolerance_pct, max_estate_staleness_seconds,
 			sla_bridge_minutes, max_p99_latency_ms,
 			issued_at, expires_at, dsse_envelope,
 			slot1_principal_id, slot1_email, slot1_key_fp, slot1_role,
@@ -758,12 +775,14 @@ func (s *Store) AppendWarrantEnvelope(ctx context.Context, w *models.WarrantReco
 			prev_hash, entry_hash, created_at
 		) VALUES (
 			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-			$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30
+			$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,
+			$31,$32,$33,$34,$35,$36
 		)
 	`,
 		w.WarrantID, w.WarrantClass, scopeJSON, scopeAssetsJSON, authVendorDetJSON, w.MaxCVSS, w.KEVEligible,
 		w.MaxBlastRadiusReplicas, w.AllowStatefulPatches, w.AllowGuardedCanary,
 		w.AllowSecretRotation, cwesJSON, w.MinCanarySamples, w.StageDwellSeconds,
+		cloneTwinCnt, cloneSourcesJSON, w.EstateSnapshotSHA256, driftPolicy, driftTol, w.MaxEstateStalenessSec,
 		w.SLABridgeMinutes, w.MaxP99LatencyMs,
 		w.IssuedAt, w.ExpiresAt, envJSON,
 		w.Slot1PrincipalID, w.Slot1Email, w.Slot1KeyFP, w.Slot1Role,
@@ -945,6 +964,10 @@ func (s *Store) VerifyAllLedgerChains(ctx context.Context, externalWitnesses ...
 	if err != nil {
 		return nil, err
 	}
+	estStatus, err := s.verifyEstateReadEvidenceChain(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var witnessSlice []models.LedgerCheckpoint
 	if len(externalWitnesses) > 0 {
 		witnessSlice = externalWitnesses[0]
@@ -984,7 +1007,7 @@ func (s *Store) VerifyAllLedgerChains(ctx context.Context, externalWitnesses ...
 	allValid := wStatus.Valid && aStatus.Valid && attStatus.Valid &&
 		pStatus.Valid && revStatus.Valid && kStatus.Valid &&
 		cfStatus.Valid && aiStatus.Valid && aleStatus.Valid &&
-		anchorOK && lineageOK
+		estStatus.Valid && anchorOK && lineageOK
 	return &models.LedgerVerificationReport{
 		AllValid:                allValid,
 		ExternalAnchorVerified:  anchorOK,
@@ -994,6 +1017,7 @@ func (s *Store) VerifyAllLedgerChains(ctx context.Context, externalWitnesses ...
 		VerifiedAt:              time.Now().UTC(),
 		Tables:                  []models.ChainTableStatus{wStatus, aStatus, attStatus, pStatus, revStatus, kStatus},
 		AgentAuthorityTables:    []models.ChainTableStatus{cfStatus, aiStatus, aleStatus},
+		EstateEvidenceTables:    []models.ChainTableStatus{estStatus},
 	}, nil
 }
 

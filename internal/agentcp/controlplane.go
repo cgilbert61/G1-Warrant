@@ -135,6 +135,14 @@ func (cp *ControlPlane) initInternalWorkers() {
 			egress:      models.EgressProfileInternalCluster,
 			allowIntake: false,
 		},
+		{
+			alias:       "estate-reader",
+			agentID:     "agt-estate-reader",
+			displayName: "Governed v1.4.0 Read-Only Estate Snapshot Worker",
+			actions:     []string{models.AgentActionReadEstateSnapshot},
+			egress:      models.EgressProfileInternalCluster,
+			allowIntake: true,
+		},
 	}
 
 	for _, sp := range specs {

@@ -143,12 +143,44 @@ func (e *Engine) SubmitDualSignedWarrant(ctx context.Context, env crypto.Envelop
 		MaxCVSS:                wp.MaxCVSS,
 		AutoRemediateCWEs:      wp.AutoRemediateCWEs,
 		MaxBlastRadiusReplicas: wp.MaxBlastRadiusReplicas,
+		CloneSources:           wp.CloneSources,
+		EstateDriftPolicy:      wp.EstateDriftPolicy,
 	})
 	if err != nil {
 		return nil, err
 	}
 	if !ac5Dec.Allow {
 		return nil, fmt.Errorf("OPA_AC5_DENIED: %s", strings.Join(ac5Dec.Violations, ","))
+	}
+
+	// Enforce Item 5 (Unavailable at Signing): ESTATE_LOADER clone sources MUST reference a genuine recorded
+	// signing-time estate_read_evidence snapshot in Store; unrecorded/unavailable sources cannot forge ESTATE_LOADER bindings.
+	for idx := range wp.CloneSources {
+		cs := &wp.CloneSources[idx]
+		mode := strings.ToUpper(strings.TrimSpace(cs.SourceMode))
+		if mode == "" {
+			mode = models.CloneSourceModeEstateLoader
+			cs.SourceMode = mode
+		}
+		if mode == models.CloneSourceModeEstateLoader {
+			snapSHA := strings.TrimSpace(cs.SnapshotSHA256)
+			if snapSHA == "" {
+				snapSHA = strings.TrimSpace(wp.EstateSnapshotSHA256)
+				cs.SnapshotSHA256 = snapSHA
+			}
+			if _, fErr := e.store.FindEstateReadEvidenceBySnapshot(ctx, cs.SourceSystem, snapSHA); fErr != nil {
+				return nil, fmt.Errorf(
+					"ESTATE_READ_UNAVAILABLE_AT_SIGNING: cannot bind ESTATE_LOADER clone source %q from %q without verified signing-time estate_read_evidence for snapshot_sha256=%q (use source_mode=MANUAL with empty snapshot_sha256 for explicit manual override)",
+					cs.ImageIdentity, cs.SourceSystem, snapSHA,
+				)
+			}
+		} else if mode == models.CloneSourceModeManual {
+			if strings.TrimSpace(cs.SnapshotSHA256) != "" {
+				return nil, fmt.Errorf("MANUAL_CLONE_SOURCE_FORBIDS_FABRICATED_SNAPSHOT_HASH: source_mode=MANUAL cannot carry snapshot_sha256")
+			}
+		} else {
+			return nil, fmt.Errorf("INVALID_CLONE_SOURCE_MODE: %q (must be ESTATE_LOADER or MANUAL)", cs.SourceMode)
+		}
 	}
 
 	if wp.SLABridgeMinutes <= 0 {
@@ -182,6 +214,11 @@ func (e *Engine) SubmitDualSignedWarrant(ctx context.Context, env crypto.Envelop
 		SLABridgeMinutes:       wp.SLABridgeMinutes,
 		MaxP99LatencyMs:        wp.MaxP99LatencyMs,
 		CloneTwinCount:         max(wp.CloneTwinCount, models.DefaultCloneTwinCount),
+		CloneSources:           wp.CloneSources,
+		EstateSnapshotSHA256:   wp.EstateSnapshotSHA256,
+		EstateDriftPolicy:      wp.EstateDriftPolicy,
+		EstateDriftTolerancePct: wp.EstateDriftTolerancePct,
+		MaxEstateStalenessSec:  wp.MaxEstateStalenessSec,
 		IssuedAt:               issuedAt,
 		ExpiresAt:              expiresAt,
 		DSSEEnvelope:           env,

@@ -390,14 +390,15 @@ func (g *GCPComputeVMTwinProvider) RunVMTwinProving(ctx context.Context, req ada
 				},
 			},
 		}
-		if strings.Contains(g.cfg.QAMachineImage, "/machineImages/") {
-			instBody["sourceMachineImage"] = g.cfg.QAMachineImage
+		gcpImg := firstNonEmptyStr(req.BaseCloneImageIdentity, g.cfg.QAMachineImage)
+		if strings.Contains(gcpImg, "/machineImages/") {
+			instBody["sourceMachineImage"] = gcpImg
 		} else {
 			instBody["disks"] = []map[string]any{{
 				"boot":       true,
 				"autoDelete": true,
 				"initializeParams": map[string]any{
-					"sourceImage": g.cfg.QAMachineImage,
+					"sourceImage": gcpImg,
 				},
 			}}
 		}

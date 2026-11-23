@@ -449,6 +449,12 @@ def draft_warrant_envelope(
     warrant_id: str | None = None,
     scope_assets: list[str] | None = None,
     authorized_vendor_detections: list[str] | None = None,
+    clone_twin_count: int | None = None,
+    clone_sources: list[dict[str, Any]] | None = None,
+    estate_snapshot_sha256: str | None = None,
+    estate_drift_policy: str | None = None,
+    estate_drift_tolerance_pct: float | None = None,
+    max_estate_staleness_seconds: int | None = None,
 ) -> dict[str, Any]:
     """Create an unsigned DSSEv1 Standing Warrant envelope ready for 2-of-2 AC-5 co-signing."""
     if not scope_services:
@@ -477,6 +483,18 @@ def draft_warrant_envelope(
         payload["authorized_vendor_detections"] = authorized_vendor_detections
     if auto_remediate_cwes:
         payload["auto_remediate_cwes"] = auto_remediate_cwes
+    if clone_twin_count and clone_twin_count > 0:
+        payload["clone_twin_count"] = int(clone_twin_count)
+    if clone_sources:
+        payload["clone_sources"] = clone_sources
+    if estate_snapshot_sha256:
+        payload["estate_snapshot_sha256"] = estate_snapshot_sha256
+    if estate_drift_policy:
+        payload["estate_drift_policy"] = estate_drift_policy
+    if estate_drift_tolerance_pct is not None and estate_drift_tolerance_pct > 0:
+        payload["estate_drift_tolerance_pct"] = float(estate_drift_tolerance_pct)
+    if max_estate_staleness_seconds is not None and max_estate_staleness_seconds > 0:
+        payload["max_estate_staleness_seconds"] = int(max_estate_staleness_seconds)
     return draft_unsigned_envelope(PAYLOAD_TYPE_WARRANT, payload)
 
 

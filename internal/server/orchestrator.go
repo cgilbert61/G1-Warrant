@@ -21,6 +21,7 @@ import (
 
 	"github.com/cgilbert61/G1-Warrant/internal/adapters"
 	"github.com/cgilbert61/G1-Warrant/internal/adapters/distributors"
+	"github.com/cgilbert61/G1-Warrant/internal/adapters/estatereader"
 	"github.com/cgilbert61/G1-Warrant/internal/adapters/vmtwins"
 	"github.com/cgilbert61/G1-Warrant/internal/agentcp"
 	"github.com/cgilbert61/G1-Warrant/internal/crypto"
@@ -51,6 +52,7 @@ type ControlPlaneOrchestrator struct {
 	Deploy              adapters.DeploymentTarget
 	Twin                adapters.TwinRunner
 	Distributors        *adapters.DistributorRegistry
+	EstateReaders       *estatereader.Registry
 	Broker              *SSEBroker
 	WebAuthnCfg         crypto.WebAuthnConfig
 	tetragonSensorToken string
@@ -59,6 +61,7 @@ type ControlPlaneOrchestrator struct {
 	operatorToken       string
 	automationToken     string
 	intakeToken         string
+	estateReadToken     string
 	igaToken            string
 	igaHMACSecret       string
 }
@@ -361,6 +364,9 @@ func (o *ControlPlaneOrchestrator) VerifyOperatorOrSinglePrincipalAuth(
 	expectedAction string,
 	rawBody []byte,
 ) (string, *models.PrincipalGovernancePayload, int, error) {
+	if code, sepErr := o.RejectEstateReadCredentialOnMutation(r); sepErr != nil {
+		return "", nil, code, sepErr
+	}
 	if actor, gp, attemptedDSSE, code, err := o.verifyRequestScopedDSSE(ctx, r, expectedAction, rawBody); attemptedDSSE {
 		return actor, gp, code, err
 	}
@@ -384,6 +390,9 @@ func (o *ControlPlaneOrchestrator) VerifyOperatorOrSinglePrincipalAuth(
 	}
 	if strings.HasPrefix(tok, "g1aud_") || strings.HasPrefix(tok, "g1tet_") {
 		return "", nil, http.StatusForbidden, fmt.Errorf("INVALID_OPERATOR_CREDENTIAL: auditor and sensor tokens cannot execute governance mutations")
+	}
+	if code, sepErr := o.RejectEstateReadCredentialOnMutation(r); sepErr != nil {
+		return "", nil, code, sepErr
 	}
 
 	if o.IsProductionOrLivePosture(ctx) {
@@ -410,6 +419,9 @@ func (o *ControlPlaneOrchestrator) VerifyAutomationOrPrincipalAuth(
 	expectedAction string,
 	rawBody []byte,
 ) (string, *models.PrincipalGovernancePayload, int, error) {
+	if code, sepErr := o.RejectEstateReadCredentialOnMutation(r); sepErr != nil {
+		return "", nil, code, sepErr
+	}
 	if actor, gp, attemptedDSSE, code, err := o.verifyRequestScopedDSSE(ctx, r, expectedAction, rawBody); attemptedDSSE {
 		return actor, gp, code, err
 	}
@@ -708,6 +720,7 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 	opTok := strings.TrimSpace(os.Getenv("WARRANT_OPERATOR_TOKEN"))
 	autoTok := strings.TrimSpace(os.Getenv("WARRANT_AUTOMATION_TOKEN"))
 	inTok := strings.TrimSpace(os.Getenv("WARRANT_INTAKE_TOKEN"))
+	estReadTok := strings.TrimSpace(os.Getenv("WARRANT_ESTATE_READ_TOKEN"))
 	igaTok := strings.TrimSpace(os.Getenv("WARRANT_IGA_TOKEN"))
 	igaHMAC := strings.TrimSpace(os.Getenv("WARRANT_IGA_WEBHOOK_HMAC_SECRET"))
 
@@ -770,6 +783,35 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 	n5 := ledger.NewEngine(store, pol, n1, signer, broker.Broadcast)
 	distReg := adapters.NewDistributorRegistry()
 	distributors.RegisterAllBuiltinDistributors(distReg, deploy, n4.NewGovernedRoundTripper("distributor-gateway", nil), os.Getenv)
+
+	estateReg := estatereader.NewRegistry()
+	localK8sReader := func(rCtx context.Context, scopeServices []string) ([]models.EstateService, error) {
+		allSvcs, sErr := store.ListEstateServices(rCtx)
+		if sErr != nil {
+			return nil, sErr
+		}
+		if len(scopeServices) == 0 {
+			return allSvcs, nil
+		}
+		want := map[string]bool{}
+		for _, s := range scopeServices {
+			if s == "*" {
+				return allSvcs, nil
+			}
+			want[strings.TrimSpace(s)] = true
+		}
+		var filtered []models.EstateService
+		for _, svc := range allSvcs {
+			if want[svc.ServiceID] {
+				filtered = append(filtered, svc)
+			}
+		}
+		return filtered, nil
+	}
+	if erErr := estatereader.RegisterAllBuiltinEstateReaders(estateReg, localK8sReader, n4.NewGovernedRoundTripper("estate-reader", nil), os.Getenv); erErr != nil {
+		return nil, fmt.Errorf("initialize EstateReader registry: %w", erErr)
+	}
+	n3.SetEstateReaders(estateReg)
 	store.SetBootstrapSealAnchorFunc(n5.CreateCheckpoint)
 
 	if warn := ExternalAnchorStartupWarning(os.Getenv); warn != "" {
@@ -794,6 +836,7 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 		Deploy:              deploy,
 		Twin:                twin,
 		Distributors:        distReg,
+		EstateReaders:       estateReg,
 		Broker:              broker,
 		WebAuthnCfg:         webauthnCfg,
 		tetragonSensorToken: tetToken,
@@ -802,6 +845,7 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 		operatorToken:       opTok,
 		automationToken:     autoTok,
 		intakeToken:         inTok,
+		estateReadToken:     estReadTok,
 		igaToken:            igaTok,
 		igaHMACSecret:       igaHMAC,
 	}, nil

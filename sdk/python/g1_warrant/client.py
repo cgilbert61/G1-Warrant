@@ -47,6 +47,7 @@ class WarrantClient:
         operator_token: str | None = None,
         automation_token: str | None = None,
         intake_token: str | None = None,
+        estate_read_token: str | None = None,
         signer_bundle: SignerKeyBundle | None = None,
     ) -> None:
         raw_url = (base_url or os.environ.get("WARRANT_API_URL") or "http://localhost:8080").rstrip("/")
@@ -62,6 +63,7 @@ class WarrantClient:
         self.operator_token = (operator_token or os.environ.get("WARRANT_OPERATOR_TOKEN") or "").strip()
         self.automation_token = (automation_token or os.environ.get("WARRANT_AUTOMATION_TOKEN") or "").strip()
         self.intake_token = (intake_token or os.environ.get("WARRANT_INTAKE_TOKEN") or "").strip()
+        self.estate_read_token = (estate_read_token or os.environ.get("WARRANT_ESTATE_READ_TOKEN") or "").strip()
         self.signer_bundle = signer_bundle
         self.timeout = timeout
 
@@ -77,7 +79,7 @@ class WarrantClient:
         full_path = f"{self._base_path}{path}"
         conn_cls = http.client.HTTPSConnection if self._scheme == "https" else http.client.HTTPConnection
         conn = conn_cls(self._host, self._port, timeout=self.timeout)
-        headers: dict[str, str] = {"User-Agent": "g1-warrant-python-sdk/1.3.1"}
+        headers: dict[str, str] = {"User-Agent": "g1-warrant-python-sdk/1.4.0"}
         if content_type:
             headers["Content-Type"] = content_type
         tok = (bearer_override if bearer_override is not None else self.auditor_token).strip()
@@ -89,6 +91,8 @@ class WarrantClient:
             headers["X-Warrant-Automation-Token"] = self.automation_token
         if self.intake_token:
             headers["X-Warrant-Intake-Token"] = self.intake_token
+        if self.estate_read_token:
+            headers["X-Warrant-Estate-Read-Token"] = self.estate_read_token
         if extra_headers:
             headers.update(extra_headers)
 
@@ -783,3 +787,43 @@ class WarrantClient:
         if distributor_id:
             body["distributor_id"] = distributor_id
         return self._request_json("POST", f"/api/v1/remediations/{safe_id}/bind-class", payload=body)
+
+    def list_estate_sources(self) -> list[dict[str, Any]]:
+        return self._request_json("GET", "/api/v1/estate-loader/sources")
+
+    def propose_estate_class(
+        self,
+        source_system: str,
+        scope_services: list[str],
+        warrant_class: str = "KEV-TIER1-STATELESS",
+        corroborating_scanner: str | None = None,
+        estate_drift_policy: str | None = None,
+        estate_drift_tolerance_pct: float | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "source_system": source_system,
+            "warrant_class": warrant_class,
+            "scope_services": scope_services,
+        }
+        if corroborating_scanner:
+            body["corroborating_scanner"] = corroborating_scanner
+        if estate_drift_policy:
+            body["estate_drift_policy"] = estate_drift_policy
+        if estate_drift_tolerance_pct is not None and estate_drift_tolerance_pct > 0:
+            body["estate_drift_tolerance_pct"] = estate_drift_tolerance_pct
+        return self._request_json("POST", "/api/v1/estate-loader/propose", payload=body)
+
+    def list_estate_evidence(
+        self,
+        source_system: str | None = None,
+        warrant_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, str] = {}
+        if source_system:
+            params["source_system"] = source_system
+        if warrant_id:
+            params["warrant_id"] = warrant_id
+        path = "/api/v1/estate-loader/evidence"
+        if params:
+            path += "?" + urllib.parse.urlencode(params)
+        return self._request_json("GET", path)

@@ -26,6 +26,7 @@ func main() {
 	opToken := strings.TrimSpace(os.Getenv("WARRANT_OPERATOR_TOKEN"))
 	autoToken := strings.TrimSpace(os.Getenv("WARRANT_AUTOMATION_TOKEN"))
 	inToken := strings.TrimSpace(os.Getenv("WARRANT_INTAKE_TOKEN"))
+	estateReadToken := strings.TrimSpace(os.Getenv("WARRANT_ESTATE_READ_TOKEN"))
 	globalSignerPath := strings.TrimSpace(os.Getenv("WARRANT_SIGNER_KEY"))
 	jsonOutput := false
 
@@ -57,6 +58,11 @@ func main() {
 			i++
 		case strings.HasPrefix(a, "--intake-token="):
 			inToken = strings.TrimSpace(strings.TrimPrefix(a, "--intake-token="))
+		case a == "--estate-read-token" && i+1 < len(rawArgs):
+			estateReadToken = strings.TrimSpace(rawArgs[i+1])
+			i++
+		case strings.HasPrefix(a, "--estate-read-token="):
+			estateReadToken = strings.TrimSpace(strings.TrimPrefix(a, "--estate-read-token="))
 		case a == "--signer-key" && i+1 < len(rawArgs):
 			globalSignerPath = strings.TrimSpace(rawArgs[i+1])
 			i++
@@ -87,6 +93,9 @@ func main() {
 	}
 	if inToken != "" {
 		clientOpts = append(clientOpts, warrantsdk.WithIntakeToken(inToken))
+	}
+	if estateReadToken != "" {
+		clientOpts = append(clientOpts, warrantsdk.WithEstateReadToken(estateReadToken))
 	}
 	if globalSignerPath != "" {
 		sb, sErr := loadPrivateSignerFile(globalSignerPath)
@@ -341,6 +350,12 @@ func main() {
 			autoCWEs := fs.String("auto-cwes", "", "Optional comma-separated attack-path CWEs (e.g. CWE-209,CWE-918,CWE-434)")
 			scopeAssets := fs.String("assets", "", "Optional comma-separated WN-8 target asset keys (defaults to scope_services)")
 			vendorDetections := fs.String("vendor-detections", "", "Optional comma-separated WN-7 unmapped vendor detection IDs (e.g. QID-99101)")
+			proposeFrom := fs.String("propose-from", "", "Optional connected Tier A/B system (e.g. ms-mecm, k8s-cilium-native, aws-ssm) to read Estate Proposal & candidate clone sources")
+			corrobScanner := fs.String("corroborate-scanner", "", "Optional Tier C scanner (qualys, tenable, rapid7) for corroborating census cross-check")
+			selectCloneSrc := fs.String("select-clone-source", "", "Optional comma-separated candidate image identities to confirm from Estate Proposal")
+			manualCloneSrc := fs.String("manual-clone-source", "", "Optional explicit <system>=<image_identity> manual override (source_mode=MANUAL, zero fabricated snapshot hash)")
+			driftPolicy := fs.String("drift-policy", "", "Estate drift policy at proving time: RECORD_ONLY or FAIL_CLOSED")
+			driftTolPct := fs.Float64("drift-tolerance-pct", 10.0, "Maximum tolerated estate drift percentage before triggering drift policy")
 			outFile := fs.String("out", "warrant-draft.dsse.json", "Output DSSE draft file")
 			_ = fs.Parse(args[2:])
 
@@ -348,19 +363,78 @@ func main() {
 			cweList := splitCSV(*autoCWEs)
 			assetList := splitCSV(*scopeAssets)
 			detList := splitCSV(*vendorDetections)
+
+			var cloneSources []warrantsdk.DeclaredCloneSource
+			var snapshotSHA string
+			effDriftPolicy := strings.TrimSpace(*driftPolicy)
+
+			if strings.TrimSpace(*proposeFrom) != "" {
+				prop, pErr := cli.ProposeEstateClass(ctx, warrantsdk.EstateProposalRequest{
+					SourceSystem:         strings.TrimSpace(*proposeFrom),
+					CorroboratingScanner: strings.TrimSpace(*corrobScanner),
+					WarrantClass:         *wClass,
+					ScopeServices:        svcList,
+					EstateDriftPolicy:    effDriftPolicy,
+					DriftTolerancePct:    *driftTolPct,
+				})
+				must(pErr)
+				snapshotSHA = prop.ProposedEstateSnapshotSHA256
+				if effDriftPolicy == "" {
+					effDriftPolicy = prop.RecommendedDriftPolicy
+				}
+				selectedFilter := splitCSV(*selectCloneSrc)
+				if len(selectedFilter) > 0 {
+					want := map[string]bool{}
+					for _, s := range selectedFilter {
+						want[s] = true
+					}
+					for _, pcs := range prop.ProposedCloneSources {
+						if want[pcs.ImageIdentity] {
+							cloneSources = append(cloneSources, pcs)
+						}
+					}
+				} else {
+					cloneSources = prop.ProposedCloneSources
+				}
+				fmt.Printf("Estate Proposal (%s | %s | snapshot_sha256=%s):\n",
+					prop.PrimarySnapshot.SourceSystem, prop.PrimarySnapshot.SourceTier, prop.ProposedEstateSnapshotSHA256)
+				fmt.Printf("  Members=%d | FreshnessAge=%ds | Candidates=%d | DriftPolicy=%s (tol=%.1f%%)\n",
+					prop.PrimarySnapshot.ClassMembershipCount, prop.PrimarySnapshot.SourceFreshnessAgeSeconds,
+					len(cloneSources), effDriftPolicy, *driftTolPct)
+				if prop.CensusSnapshot != nil {
+					fmt.Printf("  Tier C Census (%s): count=%d delta=%+d (%s)\n",
+						prop.CensusSnapshot.SourceSystem, prop.CensusSnapshot.ClassMembershipCount, prop.CensusCountDelta, prop.CensusAdvisory)
+				}
+			} else if strings.TrimSpace(*manualCloneSrc) != "" {
+				parts := strings.SplitN(strings.TrimSpace(*manualCloneSrc), "=", 2)
+				if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+					fatalf("--manual-clone-source must be formatted as <source_system>=<image_identity>")
+				}
+				cloneSources = []warrantsdk.DeclaredCloneSource{{
+					SourceSystem:  strings.TrimSpace(parts[0]),
+					ImageIdentity: strings.TrimSpace(parts[1]),
+					SourceMode:    warrantsdk.CloneSourceModeManual,
+					DeclaredAt:    time.Now().UTC().Format(time.RFC3339),
+				}}
+			}
+
 			env, payload, err := warrantsdk.DraftWarrantEnvelope(warrantsdk.WarrantDraftOptions{
 				WarrantClass:               *wClass,
 				ScopeServices:              svcList,
 				ScopeAssets:                assetList,
 				AuthorizedVendorDetections: detList,
 				MaxCVSS:                    *maxCVSS,
-				KEVEligible:            true,
-				MaxBlastRadiusReplicas: *maxRep,
-				AllowSecretRotation:    *allowSecRot,
-				AutoRemediateCWEs:      cweList,
-				SLABridgeMinutes:       *slaMin,
-				MaxP99LatencyMs:        *maxP99,
-				TTLDays:                *ttlDays,
+				KEVEligible:                true,
+				MaxBlastRadiusReplicas:     *maxRep,
+				AllowSecretRotation:        *allowSecRot,
+				AutoRemediateCWEs:          cweList,
+				CloneSources:               cloneSources,
+				EstateSnapshotSHA256:       snapshotSHA,
+				EstateDriftPolicy:          effDriftPolicy,
+				EstateDriftTolerancePct:    *driftTolPct,
+				SLABridgeMinutes:           *slaMin,
+				MaxP99LatencyMs:            *maxP99,
+				TTLDays:                    *ttlDays,
 			})
 			must(err)
 			raw, _ := json.MarshalIndent(env, "", "  ")
@@ -859,6 +933,55 @@ func main() {
 			must(err)
 			printJSON(vault)
 
+		default:
+			printUsage()
+			os.Exit(1)
+		}
+
+	case "estate-loader":
+		sub := argOrDefault(args, 1, "sources")
+		switch sub {
+		case "sources":
+			list, err := cli.ListEstateSources(ctx)
+			must(err)
+			if jsonOutput {
+				printJSON(list)
+				return
+			}
+			tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+			fmt.Fprintln(tw, "SOURCE_SYSTEM\tTIER\tFAMILY\tCONFIGURED\tCAN_PROPOSE_CLONES\tREAD_ENV_PREFIX")
+			for _, s := range list {
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%t\t%t\t%s\n",
+					s.SourceSystem, s.SourceTier, s.HandlerFamily, s.ReadConfigured, s.CanProposeCloneSources, s.ReadEnvPrefix)
+			}
+			_ = tw.Flush()
+		case "propose":
+			fs := flag.NewFlagSet("estate-loader propose", flag.ExitOnError)
+			srcSys := fs.String("source", "k8s-cilium-native", "Connected Tier A or Tier B estate system ID")
+			scannerSys := fs.String("corroborate-scanner", "", "Optional Tier C scanner ID (qualys, tenable, rapid7)")
+			wClass := fs.String("class", "KEV-TIER1-STATELESS", "Warrant class")
+			services := fs.String("services", "payments-ledger-api", "Comma-separated service IDs")
+			driftPol := fs.String("drift-policy", "", "RECORD_ONLY or FAIL_CLOSED")
+			driftTol := fs.Float64("drift-tolerance-pct", 10.0, "Drift tolerance percentage")
+			_ = fs.Parse(args[2:])
+			prop, err := cli.ProposeEstateClass(ctx, warrantsdk.EstateProposalRequest{
+				SourceSystem:         *srcSys,
+				CorroboratingScanner: *scannerSys,
+				WarrantClass:         *wClass,
+				ScopeServices:        splitCSV(*services),
+				EstateDriftPolicy:    *driftPol,
+				DriftTolerancePct:    *driftTol,
+			})
+			must(err)
+			printJSON(prop)
+		case "evidence":
+			fs := flag.NewFlagSet("estate-loader evidence", flag.ExitOnError)
+			srcSys := fs.String("source", "", "Optional source_system filter")
+			wrtID := fs.String("warrant", "", "Optional warrant_id filter")
+			_ = fs.Parse(args[2:])
+			list, err := cli.ListEstateEvidence(ctx, *srcSys, *wrtID)
+			must(err)
+			printJSON(list)
 		default:
 			printUsage()
 			os.Exit(1)

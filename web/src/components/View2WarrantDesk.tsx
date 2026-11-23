@@ -6,8 +6,11 @@ import type {
   BootstrapState,
   CeilingException,
   CommissioningFunction,
+  DeclaredCloneSource,
   DSSEEnvelope,
+  EstateProposalResponse,
   EstateService,
+  EstateSourceDescriptor,
   PendingSponsorTransfer,
   Principal,
   TestSmartcardPersona,
@@ -38,6 +41,7 @@ interface View2WarrantDeskProps {
   commissioningFunctions?: CommissioningFunction[];
   agents?: AgentIdentity[];
   pendingSponsorTransfers?: PendingSponsorTransfer[];
+  estateSources?: EstateSourceDescriptor[];
   nowMs?: number;
   testPersonas: TestSmartcardPersona[];
   rpId: string;
@@ -66,6 +70,7 @@ export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
   commissioningFunctions = [],
   agents = [],
   pendingSponsorTransfers = [],
+  estateSources = [],
   nowMs = Date.now(),
   testPersonas,
   rpId,
@@ -88,6 +93,84 @@ export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
   const [ttlDays, setTtlDays] = useState(30);
   const [verifyMsg, setVerifyMsg] = useState<Record<string, string>>({});
   const [revokeError, setRevokeError] = useState<string | null>(null);
+
+  // v1.4.0 Estate Loader Proposal & Clone-Source Declaration state
+  const [proposeSource, setProposeSource] = useState('k8s-cilium-native');
+  const [corroborateScanner, setCorroborateScanner] = useState('');
+  const [estateReadTokenInput, setEstateReadTokenInput] = useState('');
+  const [driftPolicy, setDriftPolicy] = useState<'RECORD_ONLY' | 'FAIL_CLOSED'>('RECORD_ONLY');
+  const [driftTolerancePct, setDriftTolerancePct] = useState(10.0);
+  const [estateProposal, setEstateProposal] = useState<EstateProposalResponse | null>(null);
+  const [confirmedCloneSources, setConfirmedCloneSources] = useState<DeclaredCloneSource[]>([]);
+  const [manualCloneSystem, setManualCloneSystem] = useState('');
+  const [manualCloneImage, setManualCloneImage] = useState('');
+  const [proposalLoading, setProposalLoading] = useState(false);
+  const [proposalError, setProposalError] = useState<string | null>(null);
+
+  const handleFetchEstateProposal = async () => {
+    setProposalLoading(true);
+    setProposalError(null);
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (estateReadTokenInput.trim() !== '') {
+        headers['X-Warrant-Estate-Read-Token'] = estateReadTokenInput.trim();
+      }
+      const res = await fetch('/api/v1/estate-loader/propose', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          source_system: proposeSource,
+          corroborating_scanner: corroborateScanner || undefined,
+          warrant_class: warrantClass,
+          scope_services: selectedServices,
+          estate_drift_policy: driftPolicy,
+          estate_drift_tolerance_pct: driftTolerancePct,
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        throw new Error(body.error || body.reason || `HTTP ${res.status}`);
+      }
+      const prop = body as EstateProposalResponse;
+      setEstateProposal(prop);
+      setConfirmedCloneSources(prop.proposed_clone_sources || []);
+      if (prop.recommended_drift_policy) {
+        setDriftPolicy(prop.recommended_drift_policy);
+      }
+    } catch (err) {
+      setEstateProposal(null);
+      setConfirmedCloneSources([]);
+      setProposalError(err instanceof Error ? err.message : 'Estate read failed');
+    } finally {
+      setProposalLoading(false);
+    }
+  };
+
+  const toggleConfirmedCloneSource = (imgId: string) => {
+    if (!estateProposal) return;
+    setConfirmedCloneSources((prev) => {
+      const exists = prev.some((c) => c.image_identity === imgId);
+      if (exists) {
+        return prev.filter((c) => c.image_identity !== imgId);
+      }
+      const found = estateProposal.proposed_clone_sources.find((c) => c.image_identity === imgId);
+      return found ? [...prev, found] : prev;
+    });
+  };
+
+  const handleApplyManualCloneOverride = () => {
+    if (!manualCloneSystem.trim() || !manualCloneImage.trim()) return;
+    setEstateProposal(null);
+    setProposalError(null);
+    setConfirmedCloneSources([
+      {
+        source_system: manualCloneSystem.trim(),
+        image_identity: manualCloneImage.trim(),
+        source_mode: 'MANUAL',
+        declared_at: new Date().toISOString(),
+      },
+    ]);
+  };
 
   // WebAuthn Hardware Enrollment form
   const [hwName, setHwName] = useState('Hardware Signer');
@@ -389,13 +472,204 @@ export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
             </div>
           </div>
 
+          <div className="border border-slate-200 rounded p-3 bg-slate-50 space-y-3 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <span className="font-bold uppercase tracking-wider text-slate-900">
+                  Estate Loader Proposal &amp; Clone-Source Declaration (v1.4.0)
+                </span>
+                <p className="text-[11px] text-slate-600">
+                  Bounded decision-time read (zero asset replication). Proposes clone sources from Tier A/B systems for human SO+AO confirmation before signing.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleFetchEstateProposal}
+                disabled={proposalLoading || selectedServices.length === 0}
+                className="px-3 py-1.5 rounded bg-slate-900 text-white font-semibold hover:bg-slate-800 disabled:opacity-50"
+              >
+                {proposalLoading ? 'Reading Estate...' : 'Read Estate Proposal'}
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
+              <div>
+                <label htmlFor="estate-propose-source" className="block font-semibold text-slate-700 mb-1">
+                  Primary Source (Tier A / B)
+                </label>
+                <select
+                  id="estate-propose-source"
+                  value={proposeSource}
+                  onChange={(e) => setProposeSource(e.target.value)}
+                  className="w-full border border-slate-300 rounded px-2 py-1.5 font-mono bg-white text-slate-900"
+                >
+                  {(estateSources.filter((s) => s.can_propose_clone_sources).length > 0
+                    ? estateSources.filter((s) => s.can_propose_clone_sources)
+                    : [
+                        { source_system: 'k8s-cilium-native', source_tier: 'TIER_B_WORKLOAD' },
+                        { source_system: 'ms-mecm', source_tier: 'TIER_A_MACHINE' },
+                        { source_system: 'ms-intune', source_tier: 'TIER_A_MACHINE' },
+                        { source_system: 'aws-ssm', source_tier: 'TIER_A_MACHINE' },
+                      ]
+                  ).map((s) => (
+                    <option key={s.source_system} value={s.source_system}>
+                      {s.source_system} ({s.source_tier})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label htmlFor="estate-census-scanner" className="block font-semibold text-slate-700 mb-1">
+                  Tier C Census Cross-Check
+                </label>
+                <select
+                  id="estate-census-scanner"
+                  value={corroborateScanner}
+                  onChange={(e) => setCorroborateScanner(e.target.value)}
+                  className="w-full border border-slate-300 rounded px-2 py-1.5 font-mono bg-white text-slate-900"
+                >
+                  <option value="">None</option>
+                  <option value="tenable">tenable (TIER_C_CENSUS)</option>
+                  <option value="qualys_vmdr">qualys_vmdr (TIER_C_CENSUS)</option>
+                  <option value="rapid7_insightvm">rapid7_insightvm (TIER_C_CENSUS)</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor="estate-drift-policy" className="block font-semibold text-slate-700 mb-1">
+                  Proving Drift Policy
+                </label>
+                <select
+                  id="estate-drift-policy"
+                  value={driftPolicy}
+                  onChange={(e) => setDriftPolicy(e.target.value as 'RECORD_ONLY' | 'FAIL_CLOSED')}
+                  className="w-full border border-slate-300 rounded px-2 py-1.5 font-mono bg-white text-slate-900"
+                >
+                  <option value="RECORD_ONLY">RECORD_ONLY</option>
+                  <option value="FAIL_CLOSED">FAIL_CLOSED</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor="estate-drift-tol" className="block font-semibold text-slate-700 mb-1">
+                  Drift Tolerance (%)
+                </label>
+                <input
+                  id="estate-drift-tol"
+                  type="number"
+                  step="0.5"
+                  min="0.5"
+                  max="100"
+                  value={driftTolerancePct}
+                  onChange={(e) => setDriftTolerancePct(Number(e.target.value))}
+                  className="w-full border border-slate-300 rounded px-2 py-1.5 font-mono bg-white text-slate-900"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label htmlFor="estate-read-token-input" className="block font-semibold text-slate-700 mb-1">
+                Optional Read-Only Token (X-Warrant-Estate-Read-Token — distinct from WN-8 dispatch tokens)
+              </label>
+              <input
+                id="estate-read-token-input"
+                type="password"
+                value={estateReadTokenInput}
+                onChange={(e) => setEstateReadTokenInput(e.target.value)}
+                placeholder="Leave blank in local simulator mode when WARRANT_ESTATE_READ_TOKEN is unset"
+                className="w-full border border-slate-300 rounded px-2.5 py-1 font-mono bg-white text-slate-900"
+              />
+            </div>
+
+            {proposalError && (
+              <div role="alert" className="p-2.5 rounded border border-amber-300 bg-amber-50 text-amber-900 space-y-2">
+                <div className="font-mono text-[11px]">{proposalError}</div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 items-end pt-1">
+                  <div>
+                    <label htmlFor="manual-clone-sys" className="block text-[11px] font-semibold">Manual System Override</label>
+                    <input
+                      id="manual-clone-sys"
+                      type="text"
+                      value={manualCloneSystem}
+                      onChange={(e) => setManualCloneSystem(e.target.value)}
+                      placeholder="e.g. ms-mecm"
+                      className="w-full border border-amber-400 rounded px-2 py-1 font-mono bg-white text-slate-900"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="manual-clone-img" className="block text-[11px] font-semibold">Manual Image Identity</label>
+                    <input
+                      id="manual-clone-img"
+                      type="text"
+                      value={manualCloneImage}
+                      onChange={(e) => setManualCloneImage(e.target.value)}
+                      placeholder="e.g. wim://qa-win2022"
+                      className="w-full border border-amber-400 rounded px-2 py-1 font-mono bg-white text-slate-900"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleApplyManualCloneOverride}
+                    className="px-2.5 py-1 rounded bg-amber-900 text-white font-semibold"
+                  >
+                    Declare MANUAL Source
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {estateProposal && (
+              <div className="border border-emerald-300 bg-white rounded p-2.5 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-[11px]">
+                  <span className="font-bold text-emerald-900">
+                    Snapshot {shortHash(estateProposal.proposed_estate_snapshot_sha256)} ({estateProposal.primary_snapshot.source_system})
+                  </span>
+                  <span className="text-slate-700">
+                    Members: {estateProposal.primary_snapshot.class_membership_count} · Freshness Age: {estateProposal.primary_snapshot.source_freshness_age_seconds}s
+                  </span>
+                </div>
+                {estateProposal.census_advisory && (
+                  <div className="text-[11px] font-mono text-slate-700 bg-slate-100 px-2 py-1 rounded">
+                    Tier C Census: {estateProposal.census_advisory}
+                  </div>
+                )}
+                <div className="space-y-1">
+                  <div className="text-[11px] font-semibold text-slate-700">
+                    Confirm Candidate Clone Sources to Bind into 2-of-2 Warrant ({confirmedCloneSources.length} selected):
+                  </div>
+                  {estateProposal.proposed_clone_sources.map((cand) => {
+                    const isChecked = confirmedCloneSources.some((c) => c.image_identity === cand.image_identity);
+                    return (
+                      <label key={cand.image_identity} className="flex items-center gap-2 font-mono text-[11px] text-slate-800">
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => toggleConfirmedCloneSource(cand.image_identity)}
+                        />
+                        <span>{cand.image_identity}</span>
+                        <span className="text-slate-500">
+                          ({cand.platform_family || 'workload'} · age={cand.image_age_seconds_at_sign ?? 0}s)
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {!estateProposal && confirmedCloneSources.length > 0 && (
+              <div className="text-[11px] font-mono text-slate-800 bg-white border border-slate-300 rounded px-2.5 py-1.5">
+                Confirmed Clone Sources ({confirmedCloneSources[0].source_mode}):{' '}
+                {confirmedCloneSources.map((c) => `${c.source_system}=${c.image_identity}`).join(', ')}
+              </div>
+            )}
+          </div>
+
           <DualKeyCeremonyPanel
             title="Mint Append-Only Standing Warrant DSSE Envelope"
             payloadType="application/vnd.g1163rt.warrant.v1+json"
             buildPayload={() => {
               const now = new Date();
               const exp = new Date(now.getTime() + ttlDays * 86400 * 1000);
-              return {
+              const payload: Record<string, unknown> = {
                 warrant_id: `wrt-${Math.random().toString(36).slice(2, 9)}`,
                 warrant_class: warrantClass,
                 scope_services: selectedServices,
@@ -408,6 +682,15 @@ export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
                 issued_at: now.toISOString(),
                 expires_at: exp.toISOString(),
               };
+              if (confirmedCloneSources.length > 0) {
+                payload.clone_sources = confirmedCloneSources;
+                payload.estate_drift_policy = driftPolicy;
+                payload.estate_drift_tolerance_pct = driftTolerancePct;
+                if (estateProposal?.proposed_estate_snapshot_sha256) {
+                  payload.estate_snapshot_sha256 = estateProposal.proposed_estate_snapshot_sha256;
+                }
+              }
+              return payload;
             }}
             testPersonas={testPersonas}
             principals={principals}

@@ -192,6 +192,10 @@ func (o *ControlPlaneOrchestrator) registerFinderAndDistributorRoutes(mux *http.
 	// (either submitting a new 2-of-2 Warrant DSSE envelope or referencing an active 2-of-2 Warrant ID),
 	// strictly decoupling class authorization from X-Warrant-Intake-Token arrival.
 	mux.HandleFunc("POST /api/v1/remediations/{id}/bind-class", func(w http.ResponseWriter, r *http.Request) {
+		if code, sepErr := o.RejectEstateReadCredentialOnMutation(r); sepErr != nil {
+			writeAPIError(w, code, sepErr)
+			return
+		}
 		ctx := r.Context()
 		remID := strings.TrimSpace(r.PathValue("id"))
 		var req struct {
