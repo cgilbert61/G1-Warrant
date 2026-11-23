@@ -130,12 +130,24 @@ When patching non-container estates (Windows `.msu` KBs, RHEL/Ubuntu `.rpm`/`.de
 
 Configure `WARRANT_VM_TWIN_DRIVER` (`hyperv` | `aws-ec2` | `azure-vm` | `gcp-gce`) to spin up **3 isolated QA VM clones** (`zero_production_egress = true`), apply the candidate patch, reboot, verify **(a)** services-up, **(b)** QA smoke tests, and **(c)** Standing Warrant class acceptance checks, and guarantee clone deletion in `defer`:
 
-| Driver (`WARRANT_VM_TWIN_DRIVER`) | Clone Mechanism | Zero-Egress Isolation Boundary | Out-of-Band Patch, Reboot & Prove Channel |
-| :--- | :--- | :--- | :--- |
-| **`hyperv`** (`scripts/hyperv_vm_twin_agent.ps1`) | 3 Copy-on-Write Differencing `.vhdx` Gen-2 VMs (`New-VHD -Differencing`) from `WARRANT_HYPERV_QA_PARENT_VHDX` | Hyper-V `Private` Virtual Switch (`g1-twin-proving-private` — zero physical NIC/LAN/internet routing) | PowerShell Direct over VMBus (`Invoke-Command -VMName` + `Restart-VM -Wait -For Heartbeat`) |
-| **`aws-ec2`** | 3 ephemeral EC2 instances (`POST /ec2/RunInstances`) from `WARRANT_AWS_TWIN_AMI_ID` (`AssociatePublicIpAddress=false`) | Dedicated subnet + zero-egress Security Group (`WARRANT_AWS_TWIN_ISOLATED_SG_ID`, VPC SSM endpoints only) | `POST /ssm/SendCommand` (`G1Warrant-ProveAndRebootQAClone`) + `POST /ec2/TerminateInstances` |
-| **`azure-vm`** | 3 ephemeral Azure VMs from `WARRANT_AZURE_TWIN_IMAGE_ID` (`publicIPAddress=null`) | Deny-all outbound `NSG` (`WARRANT_AZURE_TWIN_NSG_ID`) | `POST .../virtualMachines/{vm}/runCommand` + `DELETE .../virtualMachines/{vm}?forceDeletion=true` |
-| **`gcp-gce`** | 3 ephemeral GCE VMs from `WARRANT_GCP_TWIN_MACHINE_IMAGE` (`accessConfigs=[]`) | Zero external IP + deny-egress VPC firewall tag (`WARRANT_GCP_TWIN_ISOLATED_TAG`) | `POST /osconfig/v1/projects/{project}/patchJobs:execute` (`rebootConfig=ALWAYS`) + `DELETE .../instances/{vm}` |
+| Driver (`WARRANT_VM_TWIN_DRIVER`) | Auth & Wire Protocol | Clone Mechanism | Zero-Egress Isolation Boundary | Out-of-Band Patch, Reboot & Teardown |
+| :--- | :--- | :--- | :--- | :--- |
+| **`hyperv`** (`scripts/hyperv_vm_twin_agent.ps1`) | Bearer token over loopback/mTLS (`Hyper-V Administrators` group) | 3 Copy-on-Write Differencing `.vhdx` VMs (`New-VHD -Differencing`, `Set-VMFirmware` Windows/Linux UEFI) | Hyper-V `Private` Virtual Switch (`g1-twin-proving-private` — zero physical NIC/LAN/internet) | `Copy-VMFile` + PowerShell Direct (`Invoke-Command -VMName`) + `Restart-VM -Wait -For Heartbeat` + `Stop-VM`/`Remove-VM`/delete `.vhdx` |
+| **`aws-ec2`** (`internal/adapters/vmtwins/aws_ec2.go`) | Pure-Go **AWS SigV4 (`AWS4-HMAC-SHA256`)** (`EC2` XML `2016-11-15` + `SSM` JSON-RPC 1.1) | `Action=RunInstances` (`MinCount=3`, `AssociatePublicIpAddress=false`) + `Action=DescribeInstances` poll | Dedicated subnet + zero-egress Security Group (`WARRANT_AWS_TWIN_ISOLATED_SG_ID`, VPC SSM endpoints only) | `AmazonSSM.SendCommand` (`AWS-RunShellScript` / `AWS-RunPowerShellScript` `exit 194`/`3010` reboot) + `GetCommandInvocation` poll + `Action=TerminateInstances` |
+| **`azure-vm`** (`internal/adapters/vmtwins/azure_vm.go`) | **Entra ID OAuth2** (`/{tenant}/oauth2/v2.0/token`, Commercial & US Gov) + ARM `2024-03-01` | `PUT .../networkInterfaces` (`2023-11-01`) + `PUT .../virtualMachines` (`deleteOption=Delete`) + `202` `Azure-AsyncOperation` LRO poll | Zero `publicIPAddress` + deny-all outbound `NSG` (`WARRANT_AZURE_TWIN_NSG_ID`) | `POST .../runCommand` (stage) + `POST .../restart` + `POST .../runCommand` (post-reboot `value[0].message`) + `DELETE ?forceDeletion=true` |
+| **`gcp-gce`** (`internal/adapters/vmtwins/gcp_gce.go`) | **Service Account RS256 JWT** (`jwt-bearer`) or GCE Metadata Server + Compute Engine v1 | `POST .../zones/{zone}/instances` (`sourceMachineImage` / `sourceImage`) + Zone `operations` poll | `accessConfigs=[]` (zero external IP) + isolated VPC firewall tag (`WARRANT_GCP_TWIN_ISOLATED_TAG`) | Two-phase boot-persistent `startup-script` / `windows-startup-script-ps1` + `GET .../serialPort?port=1` (`G1_CLONE_RESULT=`) + `DELETE .../instances/{vm}` |
+
+### Granting Local Windows Hyper-V Rights (No Full Admin Needed After One-Time Grant)
+
+```powershell
+# 1. Run ONCE in an elevated ("Run as Administrator") PowerShell window:
+Add-LocalGroupMember -Group "Hyper-V Administrators" -Member "$env:USERDOMAIN\$env:USERNAME"
+# (Sign out/in of Windows or restart your terminal/IDE so your user token acquires the Hyper-V Administrators SID.)
+
+# 2. Start the local Hyper-V VM_TWIN Agent pointing at your read-only QA base VHDX:
+$env:WARRANT_HYPERV_AGENT_TOKEN = "hv-secret-$([guid]::NewGuid().ToString('N'))"
+powershell -ExecutionPolicy Bypass -File .\scripts\hyperv_vm_twin_agent.ps1 -ListenPrefix "http://127.0.0.1:8099/"
+```
 
 > **Proof Fence (`VM_TWIN` Drivers):** All 4 `VM_TWIN` drivers (`hyperv`, `aws-ec2`, `azure-vm`, `gcp-gce`) are verified end-to-end against wire-level HTTP harnesses, `N4` bearer/PoP headers, OPA `verify_closure.rego`, OSCAL `1.1.2` attestation minting, and fail-closed teardown in `TestInvariant19_NonDockerVMTwinProvidersHyperVAWSGCPAzure`; live execution against an elevated Hyper-V `vmms` administrator session with a golden QA `.vhdx` or live AWS/Azure/GCP cloud credentials has not yet been run in this environment. When `WARRANT_VM_TWIN_DRIVER` is unset, `KERNEL` and `BOOT_LAYER` patches fail closed with `KERNEL_PATCH_REQUIRES_VM_TWIN_RUNTIME`.
 
