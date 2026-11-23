@@ -15,7 +15,7 @@
 [![Federal Compliance](https://img.shields.io/badge/9--Gate%20DevSecOps-100%25%20COMPLIANT-success.svg)](docs/federal_devsecops_compliance_report.md)
 [![Section 508](https://img.shields.io/badge/Section%20508%20%2F%20WCAG%202.1%20AA-PASS-success.svg)](reports/axe-accessibility.json)
 
-**Deterministic Autonomous Remediation, Virtual Containment & NIST OSCAL 1.1.2 Attestation Control Plane (`v1.3.0`) — G1163RT Security Labs, Inc.**
+**Deterministic Autonomous Remediation, Virtual Containment & NIST OSCAL 1.1.2 Attestation Control Plane (`v1.3.1`) — G1163RT Security Labs, Inc.**
 
 > **Core Operational Principle:** **Contain in seconds; verify and roll out safely in minutes.**
 
@@ -299,7 +299,7 @@ print("Offline OSCAL DSSE Verified:", proof["valid"], "TrustBasis:", proof["trus
 ### 3. Go Client SDK (`pkg/warrantsdk`)
 
 ```bash
-go get github.com/cgilbert61/G1-Warrant/pkg/warrantsdk@v1.3.0
+go get github.com/cgilbert61/G1-Warrant/pkg/warrantsdk@v1.3.1
 ```
 
 ```go

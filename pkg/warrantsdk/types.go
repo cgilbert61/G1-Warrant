@@ -10,7 +10,7 @@ import (
 )
 
 // Version is the semantic version of the G1-Warrant Go SDK.
-const Version = "1.3.0"
+const Version = "1.3.1"
 
 // Trust-basis identifiers emitted by offline OSCAL bundle verifiers (WN-4).
 const (

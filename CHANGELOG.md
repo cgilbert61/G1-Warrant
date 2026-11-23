@@ -5,6 +5,24 @@ Published Git tags (`v1.0.0`, `v1.0.1`, `v1.0.2`, `v1.0.3`, `v1.0.4`, `v1.1.0`, 
 
 ---
 
+## [v1.3.1] - 2026-11-23
+
+### Wire-Accurate `VM_TWIN` Drivers (`Hyper-V`, `AWS`, `Azure`, `GCP`), AWS PrivateLink Enclave Stack & Console Light/Dark Mode
+
+1. **Wire-Accurate Non-Docker `VM_TWIN` Proving Drivers (`internal/adapters/vmtwins/`, `TestInvariant19`):**
+   - Implemented 4 stdlib-only `VMTwinProvider` drivers (`0` new Go dependencies) for `KERNEL`, `BOOT_LAYER`, and `WARRANT_VM_TWIN_SERVICES` workloads:
+     - **`hyperv`** (`internal/adapters/vmtwins/hyperv.go` + `scripts/hyperv_vm_twin_agent.ps1`): `Private` Hyper-V vSwitch isolation, 3 Copy-on-Write Differencing `.vhdx` VMs, Gen-1/Gen-2 UEFI Secure Boot templates, `Copy-VMFile` + PowerShell Direct (`Invoke-Command -VMName`), `Restart-VM -Wait -For Heartbeat`, and guaranteed `Stop-VM`/`Remove-VM`/`.vhdx` cleanup.
+     - **`aws-ec2`** (`internal/adapters/vmtwins/aws_ec2.go` + `deploy/aws/vm_twin_proving_enclave.cfn.yaml`): Pure-Go AWS SigV4 (`AWS4-HMAC-SHA256`), EC2 `2016-11-15` XML `RunInstances` (`AssociatePublicIpAddress=false`, `InstanceInitiatedShutdownBehavior=terminate`), SSM `InvalidInstanceId` boot-warmup retry, `AmazonSSM.SendCommand` / `GetCommandInvocation` (`exit 194` / `3010` reboot), `TerminateInstances` teardown, and turnkey PrivateLink VPC CloudFormation enclave stack.
+     - **`azure-vm`** (`internal/adapters/vmtwins/azure_vm.go`): Entra ID OAuth2 Client-Credentials, ARM `networkInterfaces` (`2023-11-01`, zero public IP + deny-egress NSG), ARM `virtualMachines` (`2024-03-01`, `deleteOption=Delete`), `202` `Azure-AsyncOperation` LRO polling, `runCommand` -> `restart` -> `runCommand` verification, and `DELETE ?forceDeletion=true`.
+     - **`gcp-gce`** (`internal/adapters/vmtwins/gcp_gce.go`): Service Account `RS256` JWT / GCE Metadata Server auth, Compute Engine v1 `instances.insert` (`accessConfigs=[]`), Zone `operations` polling, boot-persistent startup-script serial-port (`G1_CLONE_RESULT=`) verification across reboot, and `instances.delete`.
+   - *Proof Fence:* All 4 `VM_TWIN` drivers (`hyperv`, `aws-ec2`, `azure-vm`, `gcp-gce`) are verified against deterministic wire-protocol doubles in `TestInvariant19` and `aws_ec2_test.go`; none has yet executed against live cloud tenant credentials or an elevated Hyper-V golden `.vhdx` host.
+2. **Persistent Light / Dark Mode Console Toggle (`web/src/`):**
+   - Added CSP-clean pre-paint theme initialization (`web/public/theme-init.js`), `web/src/lib/theme.ts`, WCAG 2.1 AA dark mode styling (`web/src/index.css`), and Sun/Moon toggle buttons across the 5-View Operator Console and 3PAO Auditor Portal (`101/101` Section 508 checks passing).
+3. **Go SDK (`pkg/warrantsdk` `1.3.1`) & Python SDK (`g1-warrant-sdk` `1.3.1`):**
+   - Bumped both SDKs to `1.3.1` with 100% backwards-compatible exported signatures so public repository claims match immutable release tags.
+
+---
+
 ## [v1.3.0] - 2026-11-23
 
 ### Zero-Signature Intake Doctrine Lock (Item 1) & Executed Clone-Twin Proving Ground on Disposable Kubernetes Cluster (Item 2 / `F3` Closure)
