@@ -94,6 +94,23 @@ func (b *baseEstateHTTPClient) SourceTier() string    { return b.sourceTier }
 func (b *baseEstateHTTPClient) HandlerFamily() string { return b.handlerFamily }
 func (b *baseEstateHTTPClient) ReadEnvPrefix() string { return b.readEnvPrefix }
 func (b *baseEstateHTTPClient) ReadConfigured() bool  { return b.readURL != "" }
+func (b *baseEstateHTTPClient) ReadURL() string       { return b.readURL }
+func (b *baseEstateHTTPClient) HasReadToken() bool    { return b.readToken != "" }
+func (b *baseEstateHTTPClient) MaskedReadToken() string {
+	return MaskConnectorSecret(b.readToken)
+}
+
+// MaskConnectorSecret returns a non-reversible masked preview (e.g. "••••v1") or "" if empty.
+func MaskConnectorSecret(secret string) string {
+	s := strings.TrimSpace(secret)
+	if s == "" {
+		return ""
+	}
+	if len(s) <= 4 {
+		return "••••"
+	}
+	return "••••" + s[len(s)-4:]
+}
 
 // ValidateReadCredentialSeparation enforces Rule 2: read credentials and WN-8 dispatch credentials must be strictly distinct.
 func (b *baseEstateHTTPClient) ValidateReadCredentialSeparation(presentedToken string) error {
@@ -270,6 +287,7 @@ func FinalizeEstateSnapshot(snap *models.EstateSnapshot, now time.Time) error {
 	// Tier C Scanners NEVER propose clone sources under any circumstance.
 	if snap.SourceTier == models.EstateSourceTierCCensus {
 		snap.CandidateCloneSources = []models.CloneSourceCandidate{}
+		snap.EphemeralServers = nil
 	} else {
 		if snap.CandidateCloneSources == nil {
 			snap.CandidateCloneSources = []models.CloneSourceCandidate{}
@@ -297,6 +315,38 @@ func FinalizeEstateSnapshot(snap *models.EstateSnapshot, now time.Time) error {
 		}
 		sort.Slice(snap.CandidateCloneSources, func(i, j int) bool {
 			return snap.CandidateCloneSources[i].ImageIdentity < snap.CandidateCloneSources[j].ImageIdentity
+		})
+
+		for idx := range snap.EphemeralServers {
+			sv := &snap.EphemeralServers[idx]
+			sv.SourceSystem = snap.SourceSystem
+			if len(sv.PatchTargetLayers) == 0 {
+				if snap.SourceTier == models.EstateSourceTierBWorkload {
+					sv.PatchTargetLayers = []string{models.PatchTargetLayerUserspace}
+				} else {
+					sv.PatchTargetLayers = []string{models.PatchTargetLayerUserspace, models.PatchTargetLayerKernel, models.PatchTargetLayerBoot}
+				}
+			}
+			sort.Strings(sv.PatchTargetLayers)
+			if sv.ImageCreatedAt != "" {
+				if ts, err := time.Parse(time.RFC3339, sv.ImageCreatedAt); err == nil {
+					age := int64(now.Sub(ts.UTC()).Seconds())
+					if age < 0 {
+						age = 0
+					}
+					sv.ImageAgeSeconds = age
+				}
+			}
+		}
+		sort.Slice(snap.EphemeralServers, func(i, j int) bool {
+			a, b := snap.EphemeralServers[i], snap.EphemeralServers[j]
+			if a.ServiceID != b.ServiceID {
+				return a.ServiceID < b.ServiceID
+			}
+			if a.Hostname != b.Hostname {
+				return a.Hostname < b.Hostname
+			}
+			return a.ServerID < b.ServerID
 		})
 	}
 

@@ -167,6 +167,10 @@ func (m *MicrosoftFamilyEstateReader) ReadEstateSnapshot(ctx context.Context, q 
 			Tags:              im.Tags,
 		})
 	}
+	seenImages := map[string]bool{}
+	for _, c := range snap.CandidateCloneSources {
+		seenImages[c.ImageIdentity] = true
+	}
 
 	// Also support native OData `value` (Graph / ConfigMgr AdminService) and Resource Graph `data` arrays
 	rows := wire.Value
@@ -176,9 +180,8 @@ func (m *MicrosoftFamilyEstateReader) ReadEstateSnapshot(ctx context.Context, q 
 	if len(rows) > 0 {
 		osCounts := map[string]*models.OSKernelBucket{}
 		swCounts := map[string]*models.SoftwareBucket{}
-		seenImages := map[string]bool{}
 		total := 0
-		for _, r := range rows {
+		for rowIdx, r := range rows {
 			cnt := intFromMap(r, "count", 1)
 			total += cnt
 			osFam := strFromMap(r, "operatingSystem", "Caption0", "osName", "os_family", "WINDOWS")
@@ -193,8 +196,9 @@ func (m *MicrosoftFamilyEstateReader) ReadEstateSnapshot(ctx context.Context, q 
 					OSFamily: osFam, OSVersionOrBuild: osVer, KernelRelease: kern, CPE23: cpe, Count: cnt,
 				}
 			}
-			if swName := strFromMap(r, "softwareName", "ProductName0", "kbPackage", ""); swName != "" {
-				swVer := strFromMap(r, "softwareVersion", "ProductVersion0", "version", "1.0")
+			swName := strFromMap(r, "softwareName", "ProductName0", "kbPackage", "")
+			swVer := strFromMap(r, "softwareVersion", "ProductVersion0", "version", "1.0")
+			if swName != "" {
 				swKey := swName + "|" + swVer
 				if sb, ok := swCounts[swKey]; ok {
 					sb.Count += cnt
@@ -209,15 +213,51 @@ func (m *MicrosoftFamilyEstateReader) ReadEstateSnapshot(ctx context.Context, q 
 					}
 				}
 			}
-			if imgID := strFromMap(r, "qaImageId", "ImagePackageID", "sourceImageId", "baselineVhdx", ""); imgID != "" && !seenImages[imgID] {
+			imgID := strFromMap(r, "qaImageId", "ImagePackageID", "sourceImageId", "baselineVhdx", "")
+			imgCreated := firstStr(strFromMap(r, "imageCreatedAt", ""), now.Add(-48*time.Hour).Format(time.RFC3339))
+			platFam := firstStr(strFromMap(r, "platformFamily", ""), "WINDOWS_SERVER")
+			if imgID != "" && !seenImages[imgID] {
 				seenImages[imgID] = true
 				snap.CandidateCloneSources = append(snap.CandidateCloneSources, models.CloneSourceCandidate{
 					SourceSystem:      m.sourceSystem,
 					ImageIdentity:     imgID,
-					PlatformFamily:    firstStr(strFromMap(r, "platformFamily", ""), "WINDOWS_SERVER"),
+					PlatformFamily:    platFam,
 					PatchTargetLayers: []string{models.PatchTargetLayerUserspace, models.PatchTargetLayerKernel, models.PatchTargetLayerBoot},
-					CreatedAt:         firstStr(strFromMap(r, "imageCreatedAt", ""), now.Add(-48*time.Hour).Format(time.RFC3339)),
+					CreatedAt:         imgCreated,
 				})
+			}
+			host := strFromMap(r, "deviceName", "Name0", "FullDomainName", "hostname", "name", "")
+			srvID := strFromMap(r, "id", "ResourceID", "computerTargetId", "server_id", "")
+			if host != "" || srvID != "" {
+				twinImg := imgID
+				if twinImg == "" && len(snap.CandidateCloneSources) > 0 {
+					twinImg = snap.CandidateCloneSources[0].ImageIdentity
+				}
+				if twinImg != "" {
+					if srvID == "" {
+						srvID = fmt.Sprintf("%s-srv-%02d", m.sourceSystem, rowIdx+1)
+					}
+					if host == "" {
+						host = srvID
+					}
+					pkgSummary := swName
+					if swName != "" && swVer != "" {
+						pkgSummary = swName + " " + swVer
+					}
+					snap.EphemeralServers = append(snap.EphemeralServers, models.EstateSelectableServer{
+						ServerID:          srvID,
+						Hostname:          host,
+						ServiceID:         strFromMap(r, "serviceId", "service_id", ""),
+						SourceSystem:      m.sourceSystem,
+						OSFamily:          osFam,
+						OSVersionOrBuild:  osVer,
+						KernelRelease:     kern,
+						PrimaryPackage:    pkgSummary,
+						TwinImageIdentity: twinImg,
+						PlatformFamily:    platFam,
+						ImageCreatedAt:    imgCreated,
+					})
+				}
 			}
 			if freshStr == "" {
 				freshStr = strFromMap(r, "lastSyncDateTime", "LastHWScan", "lastReportedStatusTime", "lastModifiedDateTime", "")

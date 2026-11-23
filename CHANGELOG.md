@@ -5,6 +5,22 @@ Published Git tags (`v1.0.0`, `v1.0.1`, `v1.0.2`, `v1.0.3`, `v1.0.4`, `v1.1.0`, 
 
 ---
 
+## [v1.4.1] - 2026-11-23
+
+### Console 18-Vendor Configurator, `fleet-sim` Demo Estate Mock & Interactive Server-to-Twin Selection (`TestInvariant21`)
+
+1. **Console 18-Vendor Configurator (`web/src/components/VendorConnectorsModal.tsx`, `internal/server/api_vendor_connectors.go`):**
+   - Added `GET /api/v1/estate-loader/connectors` and `PUT /api/v1/estate-loader/connectors/{system_id}` plus the **18-Vendor Estate Loader & WN-8 Distributor Connections** modal accessible from both the Command Bar (`Vendors: X/18 Ready`) and `View 2: Warrant Desk`.
+   - Displays all **18** connected systems across Tiers A, B, and C with live mode badges (`DEMO_MOCK`, `LIVE_CUSTOM`, `LOCAL_CLUSTER`, `UNCONFIGURED`), write-only masked bearer tokens (`••••xxxx` — cleartext tokens are never echoed), live `POST .../test` connectivity & server-discovery checks, and runtime **Rule 2** enforcement (`Read Token != Dispatch Token`, `HTTP 403` on cross-boundary reuse).
+2. **Wire-Accurate Demo Estate Mock Across All 18 Systems (`internal/fleetsim/estate_mock.go`):**
+   - Extended `fleet-sim` with `/mock-estate/{system_id}/...` (enforcing `X-Warrant-Read-Role: READ_ESTATE_SNAPSHOT` and rejecting dispatch tokens) and `/mock-distributor/{system_id}/...` (rejecting read tokens) plus a 1-click **Connect All 18 to Demo Estate** (`POST /api/v1/estate-loader/connectors/demo-mock`) button in sandbox mode (disabled in `live` / `kubernetes` posture).
+3. **Interactive Ephemeral Server-to-Twin Selection (`View2WarrantDesk.tsx`, `EstateSelectableServer`):**
+   - Streams discoverable servers (`hostname`, `server_id`, `service_id`, `os_family`, `kernel_release`, `primary_package`, `twin_image_identity`) ephemerally in memory during decision-time reads (**zero** server rows persisted to PostgreSQL, preserving Doctrine Rule 1), allowing human signers (`SO` + `AO`) to select specific server(s) from the connected estate service and cryptographically bind `selected_server_id`, `selected_server_hostname`, and `image_identity` into `clone_sources[]` on the `2-of-2` Standing Warrant.
+4. **SDKs (`1.4.1`) & Regression Lock (`TestInvariant21`):**
+   - Bumped `pkg/warrantsdk` and `g1-warrant-sdk` to `1.4.1` (`ListVendorConnectors`, `UpdateVendorConnector`, `ConnectDemoEstateMock`, `TestVendorConnectorRead`) and locked all invariants in `TestInvariant21_GUIVendorConfiguratorDemoMockAndServerTwinSelection`.
+
+---
+
 ## [v1.4.0] - 2026-11-23
 
 ### Estate Loader: Bounded Decision-Time Clone-Source Selection Across All 18 Connected Systems (`TestInvariant20`)

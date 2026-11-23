@@ -451,15 +451,17 @@ type KernelKeyRotationPayload struct {
 
 // DeclaredCloneSource binds an estate-read or explicitly manual clone image/template identity into a 2-of-2 Standing Warrant class.
 type DeclaredCloneSource struct {
-	SourceSystem          string `json:"source_system"`
-	ImageIdentity         string `json:"image_identity"`
-	PlatformFamily        string `json:"platform_family,omitempty"`
-	SnapshotSHA256        string `json:"snapshot_sha256,omitempty"`
-	QueryIdentity         string `json:"query_identity,omitempty"`
-	SourceMode            string `json:"source_mode"` // "ESTATE_LOADER" | "MANUAL"
-	ImageCreatedAt        string `json:"image_created_at,omitempty"`
-	ImageAgeSecondsAtSign int64  `json:"image_age_seconds_at_sign,omitempty"`
-	DeclaredAt            string `json:"declared_at"`
+	SourceSystem           string `json:"source_system"`
+	ImageIdentity          string `json:"image_identity"`
+	PlatformFamily         string `json:"platform_family,omitempty"`
+	SelectedServerID       string `json:"selected_server_id,omitempty"`
+	SelectedServerHostname string `json:"selected_server_hostname,omitempty"`
+	SnapshotSHA256         string `json:"snapshot_sha256,omitempty"`
+	QueryIdentity          string `json:"query_identity,omitempty"`
+	SourceMode             string `json:"source_mode"` // "ESTATE_LOADER" | "MANUAL"
+	ImageCreatedAt         string `json:"image_created_at,omitempty"`
+	ImageAgeSecondsAtSign  int64  `json:"image_age_seconds_at_sign,omitempty"`
+	DeclaredAt             string `json:"declared_at"`
 }
 
 // WarrantPayload is the JCS-canonicalized body inside a dual-signed Standing Warrant DSSE envelope.
@@ -1357,24 +1359,44 @@ type CloneSourceCandidate struct {
 	Tags              map[string]string `json:"tags,omitempty"`
 }
 
+// EstateSelectableServer is an EPHEMERAL decision-time server/workload candidate streamed to the Console/SDK
+// so human signers can select which server(s) to clone into a QA Twin.
+// Doctrine Rule 1 (Zero Replication): EphemeralServers are NEVER stored in PostgreSQL or WORM estate_read_evidence.
+type EstateSelectableServer struct {
+	ServerID          string   `json:"server_id"`
+	Hostname          string   `json:"hostname"`
+	ServiceID         string   `json:"service_id,omitempty"`
+	SourceSystem      string   `json:"source_system"`
+	OSFamily          string   `json:"os_family"`
+	OSVersionOrBuild  string   `json:"os_version_or_build"`
+	KernelRelease     string   `json:"kernel_release,omitempty"`
+	PrimaryPackage    string   `json:"primary_package,omitempty"`
+	TwinImageIdentity string   `json:"twin_image_identity"`
+	PlatformFamily    string   `json:"platform_family"`
+	PatchTargetLayers []string `json:"patch_target_layers,omitempty"`
+	ImageCreatedAt    string   `json:"image_created_at,omitempty"`
+	ImageAgeSeconds   int64    `json:"image_age_seconds,omitempty"`
+}
+
 // EstateSnapshot is the bounded, prose-free OCSF Inventory Info (class_uid=5001) & NIST OSCAL inventory-item summary
 // returned by an EstateReader. Warrant stores only summary digests and cryptographic evidence — never per-host tables.
 type EstateSnapshot struct {
-	SnapshotID                  string                 `json:"snapshot_id"`
-	OCSFClassUID                int                    `json:"ocsf_class_uid"`
-	SourceSystem                string                 `json:"source_system"`
-	SourceTier                  string                 `json:"source_tier"` // "TIER_A_MACHINE" | "TIER_B_WORKLOAD" | "TIER_C_CENSUS"
-	HandlerFamily               string                 `json:"handler_family"`
-	QueryIdentity               string                 `json:"query_identity"`
-	ClassScope                  []string               `json:"class_scope"`
-	ClassMembershipCount        int                    `json:"class_membership_count"`
-	OSBuildKernelDistribution   []OSKernelBucket       `json:"os_build_kernel_distribution"`
-	SoftwareVersionDistribution []SoftwareBucket       `json:"software_version_distribution"`
-	CandidateCloneSources       []CloneSourceCandidate `json:"candidate_clone_sources"`
-	SourceInventoryFreshnessAt  time.Time              `json:"source_inventory_freshness_at"`
-	SourceFreshnessAgeSeconds   int64                  `json:"source_freshness_age_seconds"`
-	ObservedAt                  time.Time              `json:"observed_at"`
-	SnapshotSHA256              string                 `json:"snapshot_sha256"`
+	SnapshotID                  string                   `json:"snapshot_id"`
+	OCSFClassUID                int                      `json:"ocsf_class_uid"`
+	SourceSystem                string                   `json:"source_system"`
+	SourceTier                  string                   `json:"source_tier"` // "TIER_A_MACHINE" | "TIER_B_WORKLOAD" | "TIER_C_CENSUS"
+	HandlerFamily               string                   `json:"handler_family"`
+	QueryIdentity               string                   `json:"query_identity"`
+	ClassScope                  []string                 `json:"class_scope"`
+	ClassMembershipCount        int                      `json:"class_membership_count"`
+	OSBuildKernelDistribution   []OSKernelBucket         `json:"os_build_kernel_distribution"`
+	SoftwareVersionDistribution []SoftwareBucket         `json:"software_version_distribution"`
+	CandidateCloneSources       []CloneSourceCandidate   `json:"candidate_clone_sources"`
+	EphemeralServers            []EstateSelectableServer `json:"ephemeral_servers,omitempty"`
+	SourceInventoryFreshnessAt  time.Time                `json:"source_inventory_freshness_at"`
+	SourceFreshnessAgeSeconds   int64                    `json:"source_freshness_age_seconds"`
+	ObservedAt                  time.Time                `json:"observed_at"`
+	SnapshotSHA256              string                   `json:"snapshot_sha256"`
 }
 
 // EstateReadEvidenceRecord is an append-only, hash-chained WORM evidence row in estate_read_evidence.
@@ -1423,16 +1445,64 @@ type EstateProposalRequest struct {
 
 // EstateProposalResponse returns the system's proposed class profile, freshness, Tier C census cross-check, and candidate clone sources.
 type EstateProposalResponse struct {
-	ProposalID                   string                `json:"proposal_id"`
-	PrimarySnapshot              EstateSnapshot        `json:"primary_snapshot"`
-	PrimaryEvidenceID            string                `json:"primary_evidence_id"`
-	CensusSnapshot               *EstateSnapshot       `json:"census_snapshot,omitempty"`
-	CensusEvidenceID             string                `json:"census_evidence_id,omitempty"`
-	CensusCountDelta             int                   `json:"census_count_delta,omitempty"`
-	CensusDeltaPct               float64               `json:"census_delta_pct,omitempty"`
-	CensusAdvisory               string                `json:"census_advisory,omitempty"`
-	ProposedCloneSources         []DeclaredCloneSource `json:"proposed_clone_sources"`
-	ProposedEstateSnapshotSHA256 string                `json:"proposed_estate_snapshot_sha256"`
-	RecommendedDriftPolicy       string                `json:"recommended_drift_policy"`
-	RecommendedDriftTolerancePct float64               `json:"recommended_drift_tolerance_pct"`
+	ProposalID                   string                   `json:"proposal_id"`
+	PrimarySnapshot              EstateSnapshot           `json:"primary_snapshot"`
+	PrimaryEvidenceID            string                   `json:"primary_evidence_id"`
+	CensusSnapshot               *EstateSnapshot          `json:"census_snapshot,omitempty"`
+	CensusEvidenceID             string                   `json:"census_evidence_id,omitempty"`
+	CensusCountDelta             int                      `json:"census_count_delta,omitempty"`
+	CensusDeltaPct               float64                  `json:"census_delta_pct,omitempty"`
+	CensusAdvisory               string                   `json:"census_advisory,omitempty"`
+	ProposedCloneSources         []DeclaredCloneSource    `json:"proposed_clone_sources"`
+	SelectableServers            []EstateSelectableServer `json:"selectable_servers,omitempty"`
+	ProposedEstateSnapshotSHA256 string                   `json:"proposed_estate_snapshot_sha256"`
+	RecommendedDriftPolicy       string                   `json:"recommended_drift_policy"`
+	RecommendedDriftTolerancePct float64                  `json:"recommended_drift_tolerance_pct"`
+}
+
+// VendorConnectorConfigStatus exposes masked read & dispatch configuration state for each of the 18 connected systems in the Console GUI.
+// Raw bearer tokens are write-only and are NEVER echoed in cleartext.
+type VendorConnectorConfigStatus struct {
+	SourceSystem           string `json:"source_system"`
+	DisplayName            string `json:"display_name"`
+	SourceTier             string `json:"source_tier"`
+	HandlerFamily          string `json:"handler_family"`
+	CanProposeCloneSources bool   `json:"can_propose_clone_sources"`
+	SupportsWN8Dispatch    bool   `json:"supports_wn8_dispatch"`
+	ConnectionMode         string `json:"connection_mode"` // "LIVE_CUSTOM" | "DEMO_MOCK" | "LOCAL_CLUSTER" | "UNCONFIGURED"
+	ReadEnvPrefix          string `json:"read_env_prefix"`
+	ReadURL                string `json:"read_url"`
+	ReadTokenConfigured    bool   `json:"read_token_configured"`
+	ReadTokenMasked        string `json:"read_token_masked,omitempty"`
+	ReadConfigured         bool   `json:"read_configured"`
+	DispatchEnvPrefix      string `json:"dispatch_env_prefix,omitempty"`
+	DispatchURL            string `json:"dispatch_url,omitempty"`
+	DispatchTokenSet       bool   `json:"dispatch_token_configured"`
+	DispatchTokenMasked    string `json:"dispatch_token_masked,omitempty"`
+	DispatchConfigured     bool   `json:"dispatch_configured"`
+	DemoMockAvailable      bool   `json:"demo_mock_available"`
+}
+
+// VendorConnectorUpdateRequest updates read and/or dispatch endpoints and credentials for a connected system at runtime.
+// ReadToken and DispatchToken MUST be distinct (Doctrine Rule 2).
+type VendorConnectorUpdateRequest struct {
+	ReadURL            string `json:"read_url"`
+	ReadToken          string `json:"read_token,omitempty"`
+	ClearReadToken     bool   `json:"clear_read_token,omitempty"`
+	DispatchURL        string `json:"dispatch_url,omitempty"`
+	DispatchToken      string `json:"dispatch_token,omitempty"`
+	ClearDispatchToken bool   `json:"clear_dispatch_token,omitempty"`
+}
+
+// VendorConnectorTestResult summarizes a bounded non-persisted connectivity test against a configured EstateReader.
+type VendorConnectorTestResult struct {
+	SourceSystem         string                   `json:"source_system"`
+	Reachable            bool                     `json:"reachable"`
+	ConnectionMode       string                   `json:"connection_mode"`
+	ClassMembershipCount int                      `json:"class_membership_count"`
+	CandidateSourceCount int                      `json:"candidate_source_count"`
+	SelectableServers    []EstateSelectableServer `json:"selectable_servers,omitempty"`
+	FreshnessAgeSeconds  int64                    `json:"freshness_age_seconds"`
+	SnapshotSHA256       string                   `json:"snapshot_sha256,omitempty"`
+	TestedAt             time.Time                `json:"tested_at"`
 }

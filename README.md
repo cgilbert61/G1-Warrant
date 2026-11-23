@@ -15,7 +15,7 @@
 [![Federal Compliance](https://img.shields.io/badge/9--Gate%20DevSecOps-100%25%20COMPLIANT-success.svg)](docs/federal_devsecops_compliance_report.md)
 [![Section 508](https://img.shields.io/badge/Section%20508%20%2F%20WCAG%202.1%20AA-PASS-success.svg)](reports/axe-accessibility.json)
 
-**Deterministic Autonomous Remediation, Virtual Containment & NIST OSCAL 1.1.2 Attestation Control Plane (`v1.4.0`) — G1163RT Security Labs, Inc.**
+**Deterministic Autonomous Remediation, Virtual Containment & NIST OSCAL 1.1.2 Attestation Control Plane (`v1.4.1`) — G1163RT Security Labs, Inc.**
 
 > **Core Operational Principle:** **Contain in seconds; verify and roll out safely in minutes.**
 
@@ -85,8 +85,8 @@ Real-time visibility across `01 INTAKE & REPRO` → `02 BRIDGED / CONTAINED` →
 
 ![G1-Warrant Race Pipeline Demo](docs/assets/screenshots/G1-Warrant-Race-Pipeline-Demo.gif)
 
-### 2. Warrant Desk, Dual-Key Ceremonies & Approval Pressure Analytics (`N1`)
-Tracks `2-of-2` Standing Warrants (`SERVICE_OWNER` + `AUTHORIZING_OFFICIAL`), hardware WebAuthn/Ed25519 signing ceremonies, Four-Eyes exception queues, and per-class approval pressure velocity to prevent scope miscalibration and rubber-stamping.
+### 2. Warrant Desk, 18-Vendor Estate Configurator & Server-to-Twin Selection (`N1` · `v1.4.1`)
+Tracks `2-of-2` Standing Warrants (`SERVICE_OWNER` + `AUTHORIZING_OFFICIAL`), hardware WebAuthn/Ed25519 signing ceremonies, Four-Eyes exception queues, per-class approval pressure velocity, the **18-Vendor Estate Loader & WN-8 Configurator** (with 1-click `fleet-sim` Demo Estate Mock attachment in sandbox mode), and **ephemeral Server-to-Twin selection** (zero asset replication in PostgreSQL).
 
 ![G1-Warrant Signing Ceremony Demo](docs/assets/screenshots/G1-Warrant-Signing-Ceremony-Demo.gif)
 

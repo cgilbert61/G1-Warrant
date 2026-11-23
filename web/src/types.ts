@@ -95,6 +95,8 @@ export interface DeclaredCloneSource {
   source_system: string;
   image_identity: string;
   platform_family?: string;
+  selected_server_id?: string;
+  selected_server_hostname?: string;
   snapshot_sha256?: string;
   query_identity?: string;
   source_mode: 'ESTATE_LOADER' | 'MANUAL';
@@ -619,6 +621,7 @@ export interface BootstrapSnapshot {
   pending_sponsor_transfers?: PendingSponsorTransfer[];
   distributors?: DistributorDescriptor[];
   estate_sources?: EstateSourceDescriptor[];
+  vendor_connectors?: VendorConnectorConfigStatus[];
   deployment_orders?: DeploymentOrder[];
   deployment_results?: DeploymentResult[];
   asset_aliases?: AssetIdentityAlias[];
@@ -729,6 +732,55 @@ export interface EstateSourceDescriptor {
   can_propose_clone_sources: boolean;
 }
 
+export interface EstateSelectableServer {
+  server_id: string;
+  hostname: string;
+  service_id?: string;
+  source_system: string;
+  os_family: string;
+  os_version_or_build: string;
+  kernel_release?: string;
+  primary_package?: string;
+  twin_image_identity: string;
+  platform_family: string;
+  patch_target_layers?: string[];
+  image_created_at?: string;
+  image_age_seconds?: number;
+}
+
+export interface VendorConnectorConfigStatus {
+  source_system: string;
+  display_name: string;
+  source_tier: 'TIER_A_MACHINE' | 'TIER_B_WORKLOAD' | 'TIER_C_CENSUS';
+  handler_family: string;
+  can_propose_clone_sources: boolean;
+  supports_wn8_dispatch: boolean;
+  connection_mode: 'LIVE_CUSTOM' | 'DEMO_MOCK' | 'LOCAL_CLUSTER' | 'UNCONFIGURED';
+  read_env_prefix: string;
+  read_url: string;
+  read_token_configured: boolean;
+  read_token_masked?: string;
+  read_configured: boolean;
+  dispatch_env_prefix?: string;
+  dispatch_url?: string;
+  dispatch_token_configured: boolean;
+  dispatch_token_masked?: string;
+  dispatch_configured: boolean;
+  demo_mock_available: boolean;
+}
+
+export interface VendorConnectorTestResult {
+  source_system: string;
+  reachable: boolean;
+  connection_mode: string;
+  class_membership_count: number;
+  candidate_source_count: number;
+  selectable_servers?: EstateSelectableServer[];
+  freshness_age_seconds: number;
+  snapshot_sha256?: string;
+  tested_at: string;
+}
+
 export interface EstateProposalResponse {
   proposal_id: string;
   primary_snapshot: {
@@ -760,6 +812,7 @@ export interface EstateProposalResponse {
       created_at: string;
       image_age_seconds: number;
     }>;
+    ephemeral_servers?: EstateSelectableServer[];
     source_inventory_freshness_at: string;
     source_freshness_age_seconds: number;
     observed_at: string;
@@ -776,6 +829,7 @@ export interface EstateProposalResponse {
   census_delta_pct?: number;
   census_advisory?: string;
   proposed_clone_sources: DeclaredCloneSource[];
+  selectable_servers?: EstateSelectableServer[];
   proposed_estate_snapshot_sha256: string;
   recommended_drift_policy: 'RECORD_ONLY' | 'FAIL_CLOSED';
   recommended_drift_tolerance_pct: number;

@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cgilbert61/G1-Warrant/internal/adapters"
@@ -51,19 +52,24 @@ type ControlPlaneOrchestrator struct {
 	Shield      adapters.ShieldEnforcer
 	Deploy              adapters.DeploymentTarget
 	Twin                adapters.TwinRunner
-	Distributors        *adapters.DistributorRegistry
-	EstateReaders       *estatereader.Registry
-	Broker              *SSEBroker
-	WebAuthnCfg         crypto.WebAuthnConfig
-	tetragonSensorToken string
-	tetragonHMACSecret  string
-	bootstrapAdminToken string
-	operatorToken       string
-	automationToken     string
-	intakeToken         string
-	estateReadToken     string
-	igaToken            string
-	igaHMACSecret       string
+	Distributors         *adapters.DistributorRegistry
+	EstateReaders        *estatereader.Registry
+	Broker               *SSEBroker
+	WebAuthnCfg          crypto.WebAuthnConfig
+	fleetURL             string
+	localK8sReader       estatereader.LocalK8sWorkloadReader
+	connectorMu          sync.RWMutex
+	connectorOverrides   map[string]string
+	connectorPersistPath string
+	tetragonSensorToken  string
+	tetragonHMACSecret   string
+	bootstrapAdminToken  string
+	operatorToken        string
+	automationToken      string
+	intakeToken          string
+	estateReadToken      string
+	igaToken             string
+	igaHMACSecret        string
 }
 
 func isWeakOrPlaceholderSecret(val string) bool {
@@ -780,9 +786,23 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 	} else if vmTwinProv != nil {
 		n3.SetVMTwinProvider(vmTwinProv)
 	}
+	connPersistPath := strings.TrimSpace(os.Getenv("WARRANT_CONNECTOR_CONFIG_PATH"))
+	connOverrides := map[string]string{}
+	if connPersistPath != "" {
+		if rawCfg, rErr := os.ReadFile(connPersistPath); rErr == nil && len(rawCfg) > 0 {
+			_ = json.Unmarshal(rawCfg, &connOverrides)
+		}
+	}
+	initGetenv := func(k string) string {
+		if v, ok := connOverrides[k]; ok {
+			return v
+		}
+		return os.Getenv(k)
+	}
+
 	n5 := ledger.NewEngine(store, pol, n1, signer, broker.Broadcast)
 	distReg := adapters.NewDistributorRegistry()
-	distributors.RegisterAllBuiltinDistributors(distReg, deploy, n4.NewGovernedRoundTripper("distributor-gateway", nil), os.Getenv)
+	distributors.RegisterAllBuiltinDistributors(distReg, deploy, n4.NewGovernedRoundTripper("distributor-gateway", nil), initGetenv)
 
 	estateReg := estatereader.NewRegistry()
 	localK8sReader := func(rCtx context.Context, scopeServices []string) ([]models.EstateService, error) {
@@ -808,7 +828,7 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 		}
 		return filtered, nil
 	}
-	if erErr := estatereader.RegisterAllBuiltinEstateReaders(estateReg, localK8sReader, n4.NewGovernedRoundTripper("estate-reader", nil), os.Getenv); erErr != nil {
+	if erErr := estatereader.RegisterAllBuiltinEstateReaders(estateReg, localK8sReader, n4.NewGovernedRoundTripper("estate-reader", nil), initGetenv); erErr != nil {
 		return nil, fmt.Errorf("initialize EstateReader registry: %w", erErr)
 	}
 	n3.SetEstateReaders(estateReg)
@@ -822,32 +842,36 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 	_, _ = n5.CreateCheckpoint(ctx)
 
 	return &ControlPlaneOrchestrator{
-		Store:               store,
-		Policy:              pol,
-		N1Warrant:           n1,
-		N2Gate:              n2,
-		N3Verify:            n3,
-		N4AgentCP:           n4,
-		N5Ledger:            n5,
-		Feeds:               feedMgr,
-		SARIFIntake:         sarifIn,
-		FixProvider:         fixProv,
-		Shield:              shield,
-		Deploy:              deploy,
-		Twin:                twin,
-		Distributors:        distReg,
-		EstateReaders:       estateReg,
-		Broker:              broker,
-		WebAuthnCfg:         webauthnCfg,
-		tetragonSensorToken: tetToken,
-		tetragonHMACSecret:  tetHMAC,
-		bootstrapAdminToken: adminTok,
-		operatorToken:       opTok,
-		automationToken:     autoTok,
-		intakeToken:         inTok,
-		estateReadToken:     estReadTok,
-		igaToken:            igaTok,
-		igaHMACSecret:       igaHMAC,
+		Store:                store,
+		Policy:               pol,
+		N1Warrant:            n1,
+		N2Gate:               n2,
+		N3Verify:             n3,
+		N4AgentCP:            n4,
+		N5Ledger:             n5,
+		Feeds:                feedMgr,
+		SARIFIntake:          sarifIn,
+		FixProvider:          fixProv,
+		Shield:               shield,
+		Deploy:               deploy,
+		Twin:                 twin,
+		Distributors:         distReg,
+		EstateReaders:        estateReg,
+		Broker:               broker,
+		WebAuthnCfg:          webauthnCfg,
+		fleetURL:             strings.TrimRight(strings.TrimSpace(fleetURL), "/"),
+		localK8sReader:       localK8sReader,
+		connectorOverrides:   connOverrides,
+		connectorPersistPath: connPersistPath,
+		tetragonSensorToken:  tetToken,
+		tetragonHMACSecret:   tetHMAC,
+		bootstrapAdminToken:  adminTok,
+		operatorToken:        opTok,
+		automationToken:      autoTok,
+		intakeToken:          inTok,
+		estateReadToken:      estReadTok,
+		igaToken:             igaTok,
+		igaHMACSecret:        igaHMAC,
 	}, nil
 }
 

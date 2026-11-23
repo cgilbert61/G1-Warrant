@@ -19,6 +19,7 @@ import { View4ContainmentLockout } from './components/View4ContainmentLockout';
 import { View5AuditorLedger } from './components/View5AuditorLedger';
 import { AuditorPortal } from './components/AuditorPortal';
 import { LiveFeedsModal } from './components/LiveFeedsModal';
+import { VendorConnectorsModal } from './components/VendorConnectorsModal';
 import { useTheme } from './lib/theme';
 
 type ViewKey = 'VIEW1_RACE' | 'VIEW2_WARRANTS' | 'VIEW3_SHADOW' | 'VIEW4_CONTAINMENT' | 'VIEW5_AUDITOR';
@@ -31,6 +32,8 @@ export const App: React.FC = () => {
   const [activeView, setActiveView] = useState<ViewKey>('VIEW1_RACE');
   const [smartcardBarEnabled, setSmartcardBarEnabled] = useState(true);
   const [showFeedsModal, setShowFeedsModal] = useState(false);
+  const [showConnectorsModal, setShowConnectorsModal] = useState(false);
+  const [preferredProposeSource, setPreferredProposeSource] = useState('');
   const [isMobileViewport, setIsMobileViewport] = useState(() => window.innerWidth < 1024);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [sseConnected, setSseConnected] = useState(false);
@@ -215,6 +218,9 @@ export const App: React.FC = () => {
         smartcardBarEnabled={smartcardBarEnabled}
         onToggleSmartcardBar={() => setSmartcardBarEnabled((v) => !v)}
         onOpenLiveFeeds={() => setShowFeedsModal(true)}
+        onOpenVendorConnectors={() => setShowConnectorsModal(true)}
+        configuredVendorCount={(snapshot.vendor_connectors || []).filter((c) => c.read_configured).length}
+        totalVendorCount={(snapshot.vendor_connectors || []).length || 18}
         isMobileViewport={isMobileViewport}
         onOpenInbox={() => setActiveView('VIEW2_WARRANTS')}
         onTriggerFreeze={async (mode, actor, reason) => {
@@ -344,6 +350,10 @@ export const App: React.FC = () => {
             agents={snapshot.agents}
             pendingSponsorTransfers={snapshot.pending_sponsor_transfers}
             estateSources={snapshot.estate_sources}
+            vendorConnectors={snapshot.vendor_connectors}
+            preferredProposeSource={preferredProposeSource}
+            onOpenVendorConnectors={() => setShowConnectorsModal(true)}
+            onRefreshBootstrap={loadBootstrap}
             nowMs={nowMs}
             testPersonas={snapshot.test_personas}
             rpId={rpId}
@@ -558,6 +568,19 @@ export const App: React.FC = () => {
           />
         )}
       </main>
+
+      {showConnectorsModal && (
+        <VendorConnectorsModal
+          connectors={snapshot.vendor_connectors || []}
+          onClose={() => setShowConnectorsModal(false)}
+          onRefresh={loadBootstrap}
+          onSelectForTwinInWarrantDesk={(sys) => {
+            setPreferredProposeSource(sys);
+            setShowConnectorsModal(false);
+            setActiveView('VIEW2_WARRANTS');
+          }}
+        />
+      )}
 
       {showFeedsModal && snapshot.feed_status && (
         <LiveFeedsModal

@@ -122,10 +122,12 @@ func (c *CloudFamilyEstateReader) ReadEstateSnapshot(ctx context.Context, q Esta
 			Count:         p.Count,
 		})
 	}
+	seenCloudImgs := map[string]bool{}
 	for _, im := range wire.CandidateAMIs {
 		if strings.TrimSpace(im.ImageID) == "" {
 			continue
 		}
+		seenCloudImgs[im.ImageID] = true
 		snap.CandidateCloneSources = append(snap.CandidateCloneSources, models.CloneSourceCandidate{
 			SourceSystem:      c.sourceSystem,
 			ImageIdentity:     im.ImageID,
@@ -144,9 +146,11 @@ func (c *CloudFamilyEstateReader) ReadEstateSnapshot(ctx context.Context, q Esta
 	freshStr := firstStr(wire.CaptureTime, wire.UpdateTime)
 	if len(rows) > 0 {
 		osMap := map[string]*models.OSKernelBucket{}
-		for _, r := range rows {
+		swMap := map[string]*models.SoftwareBucket{}
+		rowCount := 0
+		for rowIdx, r := range rows {
 			cnt := intFromMap(r, "count", 1)
-			snap.ClassMembershipCount += cnt
+			rowCount += cnt
 			osFam := strFromMap(r, "PlatformType", "osLongName", "LINUX")
 			osVer := strFromMap(r, "PlatformVersion", "osVersion", "2023")
 			kern := strFromMap(r, "KernelRelease", "kernelVersion", "6.1.92")
@@ -159,22 +163,81 @@ func (c *CloudFamilyEstateReader) ReadEstateSnapshot(ctx context.Context, q Esta
 					CPE23: strFromMap(r, "cpe23", ""), Count: cnt,
 				}
 			}
-			if img := strFromMap(r, "qaImageId", "sourceMachineImage", ""); img != "" {
+			pkgName := strFromMap(r, "PackageName", "packageName", "")
+			pkgVer := strFromMap(r, "PackageVersion", "packageVersion", "")
+			if pkgName != "" {
+				sk := pkgName + "|" + pkgVer
+				if sb, ok := swMap[sk]; ok {
+					sb.Count += cnt
+				} else {
+					swMap[sk] = &models.SoftwareBucket{
+						ComponentName: pkgName,
+						Version:       firstStr(pkgVer, "1.0"),
+						PURL:          strFromMap(r, "PackagePurl", "purl", ""),
+						Count:         cnt,
+					}
+				}
+			}
+			img := strFromMap(r, "qaImageId", "sourceMachineImage", "")
+			imgCreated := firstStr(strFromMap(r, "imageCreatedAt", ""), now.Add(-24*time.Hour).Format(time.RFC3339))
+			if img != "" && !seenCloudImgs[img] {
+				seenCloudImgs[img] = true
 				snap.CandidateCloneSources = append(snap.CandidateCloneSources, models.CloneSourceCandidate{
 					SourceSystem:      c.sourceSystem,
 					ImageIdentity:     img,
 					PlatformFamily:    defaultPlat,
 					PatchTargetLayers: []string{models.PatchTargetLayerUserspace, models.PatchTargetLayerKernel, models.PatchTargetLayerBoot},
-					CreatedAt:         firstStr(strFromMap(r, "imageCreatedAt", ""), now.Add(-24*time.Hour).Format(time.RFC3339)),
+					CreatedAt:         imgCreated,
 				})
+			}
+			srvID := strFromMap(r, "Id", "instance", "server_id", "")
+			host := strFromMap(r, "ComputerName", "instanceName", "hostname", "")
+			if srvID != "" || host != "" {
+				twinImg := img
+				if twinImg == "" && len(snap.CandidateCloneSources) > 0 {
+					twinImg = snap.CandidateCloneSources[0].ImageIdentity
+				}
+				if twinImg != "" {
+					if srvID == "" {
+						srvID = fmt.Sprintf("%s-inst-%02d", c.sourceSystem, rowIdx+1)
+					}
+					if host == "" {
+						host = srvID
+					}
+					pkgSummary := pkgName
+					if pkgName != "" && pkgVer != "" {
+						pkgSummary = pkgName + " " + pkgVer
+					}
+					snap.EphemeralServers = append(snap.EphemeralServers, models.EstateSelectableServer{
+						ServerID:          srvID,
+						Hostname:          host,
+						ServiceID:         strFromMap(r, "ServiceId", "service_id", ""),
+						SourceSystem:      c.sourceSystem,
+						OSFamily:          osFam,
+						OSVersionOrBuild:  osVer,
+						KernelRelease:     kern,
+						PrimaryPackage:    pkgSummary,
+						TwinImageIdentity: twinImg,
+						PlatformFamily:    defaultPlat,
+						ImageCreatedAt:    imgCreated,
+					})
+				}
 			}
 			if freshStr == "" {
 				freshStr = strFromMap(r, "CaptureTime", "updateTime", "")
 			}
 		}
+		if snap.ClassMembershipCount == 0 {
+			snap.ClassMembershipCount = rowCount
+		}
 		if len(snap.OSBuildKernelDistribution) == 0 {
 			for _, b := range osMap {
 				snap.OSBuildKernelDistribution = append(snap.OSBuildKernelDistribution, *b)
+			}
+		}
+		if len(snap.SoftwareVersionDistribution) == 0 {
+			for _, sb := range swMap {
+				snap.SoftwareVersionDistribution = append(snap.SoftwareVersionDistribution, *sb)
 			}
 		}
 	}

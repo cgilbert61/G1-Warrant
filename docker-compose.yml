@@ -81,6 +81,7 @@ services:
       WARRANT_KERNEL_KEY_PATH: "/var/lib/warrant-anchor/kernel_signer.json"
       WARRANT_KERNEL_PUBLIC_KEY_EXPORT_PATH: "/var/lib/warrant-pubkeys/kernel_public_key.b64"
       WARRANT_EXTERNAL_ANCHOR_PATH: "/var/lib/warrant-anchor/checkpoints.jsonl"
+      WARRANT_CONNECTOR_CONFIG_PATH: "/var/lib/warrant-anchor/connectors.json"
       WARRANT_IGA_TOKEN: "${WARRANT_IGA_TOKEN:-}"
       WARRANT_IGA_WEBHOOK_HMAC_SECRET: "${WARRANT_IGA_WEBHOOK_HMAC_SECRET:-}"
       WARRANT_FEED_MODE: "${WARRANT_FEED_MODE:-offline}"

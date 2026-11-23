@@ -13,8 +13,8 @@
     "compliance": "Section 508 Federal Accessibility",
     "liveEndpointVerified": true
   },
-  "timestamp": "2026-11-23T20:58:53.064443+00:00",
-  "filesAudited": 13,
+  "timestamp": "2026-11-23T22:12:41.265087+00:00",
+  "filesAudited": 14,
   "violations": [],
   "passes": [
     {
@@ -181,6 +181,17 @@
       "tags": [
         "wcag2a",
         "wcag111",
+        "section508"
+      ],
+      "file": "web/src/components/CommandBar.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
         "section508"
       ],
       "file": "web/src/components/CommandBar.tsx"
@@ -579,6 +590,164 @@
     {
       "id": "label",
       "impact": "critical",
+      "description": "Form control <input id='JSX_TEMPLATE'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/VendorConnectorsModal.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='JSX_TEMPLATE'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/VendorConnectorsModal.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='JSX_TEMPLATE'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/VendorConnectorsModal.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='JSX_TEMPLATE'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/VendorConnectorsModal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/VendorConnectorsModal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/VendorConnectorsModal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/VendorConnectorsModal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/VendorConnectorsModal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/VendorConnectorsModal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/VendorConnectorsModal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/VendorConnectorsModal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/VendorConnectorsModal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/VendorConnectorsModal.tsx"
+    },
+    {
+      "id": "aria-dialog-name",
+      "impact": "serious",
+      "description": "Modal dialog declares aria-modal and aria-labelledby/aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/VendorConnectorsModal.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
       "description": "Form control <select id='intake-vendor-select'> has programmatic label association",
       "tags": [
         "wcag2a",
@@ -917,6 +1086,18 @@
     {
       "id": "label",
       "impact": "critical",
+      "description": "Form control <input id='JSX_EXPR'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View2WarrantDesk.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
       "description": "Form control <input id='wrapped'> has programmatic label association",
       "tags": [
         "wcag2a",
@@ -969,6 +1150,50 @@
       "tags": [
         "wcag2a",
         "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View2WarrantDesk.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View2WarrantDesk.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View2WarrantDesk.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/View2WarrantDesk.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
         "wcag412",
         "section508"
       ],
@@ -1277,8 +1502,8 @@
     }
   ],
   "summary": {
-    "totalChecks": 111,
-    "passedChecks": 111,
+    "totalChecks": 131,
+    "passedChecks": 131,
     "violationsCount": 0,
     "status": "PASS"
   }

@@ -922,6 +922,8 @@ func (cs *ClusterSimulator) Handler() http.Handler {
 		})
 	})
 
+	cs.registerDemoEstateMockRoutes(mux)
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && !strings.HasPrefix(r.URL.Path, "/v1/drift/") {
 			requirePoP := strings.EqualFold(strings.TrimSpace(os.Getenv("FLEET_SIM_REQUIRE_TASK_POP")), "true") &&

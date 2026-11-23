@@ -186,6 +186,110 @@ func (o *ControlPlaneOrchestrator) registerEstateLoaderRoutes(mux *http.ServeMux
 		}
 		writeAPIJSON(w, http.StatusOK, resp)
 	})
+
+	// v1.4.1 Console 18-Vendor Configurator & Demo Estate Mock Endpoints
+	mux.HandleFunc("GET /api/v1/estate-loader/connectors", func(w http.ResponseWriter, r *http.Request) {
+		if code, err := o.VerifyEstateReadAuth(r, nil); err != nil {
+			writeAPIError(w, code, err)
+			return
+		}
+		writeAPIJSON(w, http.StatusOK, o.ListVendorConnectorStatuses(r.Context()))
+	})
+
+	mux.HandleFunc("PUT /api/v1/estate-loader/connectors/{system_id}", func(w http.ResponseWriter, r *http.Request) {
+		rawBody, err := readBoundedBody(w, r, 64<<10)
+		if err != nil {
+			writeAPIError(w, statusForBodyReadError(err), err)
+			return
+		}
+		if code, authErr := o.VerifyConnectorMutationAuth(r.Context(), r, rawBody); authErr != nil {
+			writeAPIError(w, code, authErr)
+			return
+		}
+		var req models.VendorConnectorUpdateRequest
+		if err := json.Unmarshal(rawBody, &req); err != nil {
+			writeAPIError(w, http.StatusBadRequest, err)
+			return
+		}
+		st, upErr := o.UpdateVendorConnector(r.Context(), r.PathValue("system_id"), req)
+		if upErr != nil {
+			msg := upErr.Error()
+			switch {
+			case strings.Contains(msg, "CREDENTIAL_SEPARATION_VIOLATION"):
+				writeAPIError(w, http.StatusForbidden, upErr)
+			case strings.Contains(msg, "UNKNOWN_ESTATE_SOURCE_SYSTEM"):
+				writeAPIError(w, http.StatusNotFound, upErr)
+			default:
+				writeAPIError(w, http.StatusUnprocessableEntity, upErr)
+			}
+			return
+		}
+		writeAPIJSON(w, http.StatusOK, st)
+	})
+
+	mux.HandleFunc("POST /api/v1/estate-loader/connectors/demo-mock", func(w http.ResponseWriter, r *http.Request) {
+		rawBody, err := readBoundedBody(w, r, 16<<10)
+		if err != nil {
+			writeAPIError(w, statusForBodyReadError(err), err)
+			return
+		}
+		if allowed, reason := o.IsSimulationAllowed(r.Context()); !allowed {
+			writeAPIError(w, http.StatusForbidden, fmt.Errorf("%s", reason))
+			return
+		}
+		if code, authErr := o.VerifyConnectorMutationAuth(r.Context(), r, rawBody); authErr != nil {
+			writeAPIError(w, code, authErr)
+			return
+		}
+		var req struct {
+			SystemID string `json:"system_id"`
+		}
+		if len(strings.TrimSpace(string(rawBody))) > 0 {
+			if err := json.Unmarshal(rawBody, &req); err != nil {
+				writeAPIError(w, http.StatusBadRequest, err)
+				return
+			}
+		}
+		statuses, mErr := o.ConnectDemoEstateMock(r.Context(), req.SystemID)
+		if mErr != nil {
+			writeAPIError(w, http.StatusUnprocessableEntity, mErr)
+			return
+		}
+		writeAPIJSON(w, http.StatusOK, statuses)
+	})
+
+	mux.HandleFunc("POST /api/v1/estate-loader/connectors/{system_id}/test", func(w http.ResponseWriter, r *http.Request) {
+		rawBody, err := readBoundedBody(w, r, 16<<10)
+		if err != nil {
+			writeAPIError(w, statusForBodyReadError(err), err)
+			return
+		}
+		if code, authErr := o.VerifyEstateReadAuth(r, rawBody); authErr != nil {
+			writeAPIError(w, code, authErr)
+			return
+		}
+		var req struct {
+			WarrantClass  string   `json:"warrant_class"`
+			ScopeServices []string `json:"scope_services"`
+		}
+		if len(strings.TrimSpace(string(rawBody))) > 0 {
+			_ = json.Unmarshal(rawBody, &req)
+		}
+		res, tErr := o.TestVendorConnectorRead(r.Context(), r.PathValue("system_id"), req.WarrantClass, req.ScopeServices)
+		if tErr != nil {
+			msg := tErr.Error()
+			switch {
+			case strings.Contains(msg, "CREDENTIAL_SEPARATION_VIOLATION"):
+				writeAPIError(w, http.StatusForbidden, tErr)
+			case strings.Contains(msg, "UNKNOWN_ESTATE_SOURCE_SYSTEM"):
+				writeAPIError(w, http.StatusNotFound, tErr)
+			default:
+				writeAPIError(w, http.StatusServiceUnavailable, tErr)
+			}
+			return
+		}
+		writeAPIJSON(w, http.StatusOK, res)
+	})
 }
 
 // ExecuteEstateClassProposal reads bounded decision-time estate state from a Tier A or Tier B system
@@ -252,9 +356,18 @@ func (o *ControlPlaneOrchestrator) ExecuteEstateClassProposal(
 		)
 	}
 
+	serverByImage := map[string]models.EstateSelectableServer{}
+	for _, sv := range primarySnap.EphemeralServers {
+		if sv.TwinImageIdentity != "" {
+			if _, exists := serverByImage[sv.TwinImageIdentity]; !exists {
+				serverByImage[sv.TwinImageIdentity] = sv
+			}
+		}
+	}
+
 	proposedSources := make([]models.DeclaredCloneSource, 0, len(primarySnap.CandidateCloneSources))
 	for _, cand := range primarySnap.CandidateCloneSources {
-		proposedSources = append(proposedSources, models.DeclaredCloneSource{
+		dcs := models.DeclaredCloneSource{
 			SourceSystem:          primarySnap.SourceSystem,
 			ImageIdentity:         cand.ImageIdentity,
 			PlatformFamily:        cand.PlatformFamily,
@@ -264,7 +377,12 @@ func (o *ControlPlaneOrchestrator) ExecuteEstateClassProposal(
 			ImageCreatedAt:        cand.CreatedAt,
 			ImageAgeSecondsAtSign: cand.ImageAgeSeconds,
 			DeclaredAt:            now.Format(time.RFC3339),
-		})
+		}
+		if sv, ok := serverByImage[cand.ImageIdentity]; ok {
+			dcs.SelectedServerID = sv.ServerID
+			dcs.SelectedServerHostname = sv.Hostname
+		}
+		proposedSources = append(proposedSources, dcs)
 	}
 
 	recPolicy := strings.ToUpper(strings.TrimSpace(req.EstateDriftPolicy))
@@ -285,6 +403,7 @@ func (o *ControlPlaneOrchestrator) ExecuteEstateClassProposal(
 		PrimarySnapshot:              *primarySnap,
 		PrimaryEvidenceID:            primEv.EvidenceID,
 		ProposedCloneSources:         proposedSources,
+		SelectableServers:            primarySnap.EphemeralServers,
 		ProposedEstateSnapshotSHA256: primarySnap.SnapshotSHA256,
 		RecommendedDriftPolicy:       recPolicy,
 		RecommendedDriftTolerancePct: recTol,

@@ -304,6 +304,64 @@ func (d *DeclarativeRESTEstateReader) ReadEstateSnapshot(ctx context.Context, q 
 		}
 	}
 
+	for recIdx, rec := range records {
+		host := firstStr(lookupStr(rec, "hostname"), lookupStr(rec, "computer_name"), lookupStr(rec, "name"), lookupStr(rec, "fqdn"))
+		srvID := firstStr(lookupStr(rec, "server_id"), lookupStr(rec, "id"), lookupStr(rec, "uuid"))
+		if host == "" && srvID == "" {
+			continue
+		}
+		twinImg := firstStr(lookupStr(rec, "twin_image_identity"), lookupStr(rec, d.spec.CandidateIDField))
+		if twinImg == "" && len(snap.CandidateCloneSources) > 0 {
+			twinImg = snap.CandidateCloneSources[recIdx%len(snap.CandidateCloneSources)].ImageIdentity
+		}
+		if twinImg == "" {
+			continue
+		}
+		if !seenCands[twinImg] {
+			seenCands[twinImg] = true
+			snap.CandidateCloneSources = append(snap.CandidateCloneSources, models.CloneSourceCandidate{
+				SourceSystem:   d.sourceSystem,
+				ImageIdentity:  twinImg,
+				PlatformFamily: firstStr(lookupStr(rec, "platform_family"), d.spec.DefaultPlatform, "LINUX_RPM"),
+				CreatedAt:      now.Add(-24 * time.Hour).Format(time.RFC3339),
+			})
+		}
+		if srvID == "" {
+			srvID = fmt.Sprintf("%s-host-%02d", d.sourceSystem, recIdx+1)
+		}
+		if host == "" {
+			host = srvID
+		}
+		osFam := firstStr(lookupStr(rec, d.spec.OSFamilyField), d.spec.DefaultOSFamily, "LINUX")
+		osVer := firstStr(lookupStr(rec, d.spec.OSVersionField), "unknown")
+		kern := lookupStr(rec, d.spec.KernelReleaseField)
+		primaryPkg := ""
+		if d.spec.SoftwareArrayField != "" {
+			if swArr := extractObjectSlice(rec, d.spec.SoftwareArrayField); len(swArr) > 0 {
+				pName := lookupStr(swArr[0], d.spec.SoftwareNameField)
+				pVer := lookupStr(swArr[0], d.spec.SoftwareVersionField)
+				primaryPkg = strings.TrimSpace(pName + " " + pVer)
+			}
+		} else {
+			pName := lookupStr(rec, d.spec.SoftwareNameField)
+			pVer := lookupStr(rec, d.spec.SoftwareVersionField)
+			primaryPkg = strings.TrimSpace(pName + " " + pVer)
+		}
+		snap.EphemeralServers = append(snap.EphemeralServers, models.EstateSelectableServer{
+			ServerID:          srvID,
+			Hostname:          host,
+			ServiceID:         lookupStr(rec, "service_id"),
+			SourceSystem:      d.sourceSystem,
+			OSFamily:          osFam,
+			OSVersionOrBuild:  osVer,
+			KernelRelease:     kern,
+			PrimaryPackage:    primaryPkg,
+			TwinImageIdentity: twinImg,
+			PlatformFamily:    firstStr(lookupStr(rec, "platform_family"), d.spec.DefaultPlatform, "LINUX_RPM"),
+			ImageCreatedAt:    now.Add(-24 * time.Hour).Format(time.RFC3339),
+		})
+	}
+
 	if snap.ClassMembershipCount == 0 {
 		snap.ClassMembershipCount = sumMembers
 	}

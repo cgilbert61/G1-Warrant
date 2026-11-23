@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Shield, AlertOctagon, Inbox, CreditCard, Lock, Unlock, X, Radio, Sun, Moon } from 'lucide-react';
+import { Shield, AlertOctagon, Inbox, CreditCard, Lock, Unlock, X, Radio, Sun, Moon, PlugZap } from 'lucide-react';
 import type { DSSEEnvelope, GlobalScoreboard, LiveFeedStatus, Principal, TestSmartcardPersona } from '../types';
 import type { ThemeMode } from '../lib/theme';
 import { formatDurationSeconds } from '../lib/templates';
@@ -16,6 +16,9 @@ interface CommandBarProps {
   smartcardBarEnabled: boolean;
   onToggleSmartcardBar: () => void;
   onOpenLiveFeeds: () => void;
+  onOpenVendorConnectors?: () => void;
+  configuredVendorCount?: number;
+  totalVendorCount?: number;
   isMobileViewport: boolean;
   onOpenInbox: () => void;
   onTriggerFreeze: (mode: 'FREEZE_HOLD' | 'FREEZE_ROLLBACK', actor: string, reason: string) => Promise<void>;
@@ -33,6 +36,9 @@ export const CommandBar: React.FC<CommandBarProps> = ({
   smartcardBarEnabled,
   onToggleSmartcardBar,
   onOpenLiveFeeds,
+  onOpenVendorConnectors,
+  configuredVendorCount = 0,
+  totalVendorCount = 18,
   isMobileViewport,
   onOpenInbox,
   onTriggerFreeze,
@@ -201,6 +207,24 @@ export const CommandBar: React.FC<CommandBarProps> = ({
             <Shield className="w-3.5 h-3.5" />
             <span>Witness: {scoreboard.witness_mode || 'IN_PROCESS_LOCAL'}</span>
           </span>
+
+          {onOpenVendorConnectors && (
+            <button
+              type="button"
+              onClick={onOpenVendorConnectors}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded border text-xs font-mono font-semibold transition ${
+                configuredVendorCount > 1
+                  ? 'bg-emerald-50 border-emerald-400 text-emerald-950 hover:bg-emerald-100'
+                  : 'bg-slate-100 border-slate-300 text-slate-700 hover:bg-slate-200'
+              }`}
+              title="Configure 18 Connected Estate & Patch Vendor Systems (or Attach Demo Estate Mock)"
+            >
+              <PlugZap className={`w-3.5 h-3.5 ${configuredVendorCount > 1 ? 'text-emerald-700' : 'text-slate-600'}`} />
+              <span>
+                Vendors: {configuredVendorCount}/{totalVendorCount} Ready
+              </span>
+            </button>
+          )}
 
           <button
             type="button"

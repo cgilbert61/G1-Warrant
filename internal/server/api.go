@@ -117,6 +117,7 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			"pending_sponsor_transfers": pendingSponsorTransfers,
 			"distributors":              distDescriptors,
 			"estate_sources":            estateSources,
+			"vendor_connectors":         o.ListVendorConnectorStatuses(ctx),
 			"estate_evidence":           estateEvidence,
 			"deployment_orders":         distOrders,
 			"deployment_results":        distResults,

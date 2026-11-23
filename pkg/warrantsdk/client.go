@@ -827,6 +827,46 @@ func (c *Client) ListEstateEvidence(ctx context.Context, sourceSystem, warrantID
 	return out, nil
 }
 
+// ListVendorConnectors returns masked Read & WN-8 Dispatch configuration status for all 18 connected systems.
+func (c *Client) ListVendorConnectors(ctx context.Context) ([]VendorConnectorConfigStatus, error) {
+	var out []VendorConnectorConfigStatus
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/estate-loader/connectors", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// UpdateVendorConnector updates read and/or dispatch URLs and distinct tokens for a connected system at runtime.
+func (c *Client) UpdateVendorConnector(ctx context.Context, systemID string, req VendorConnectorUpdateReq) (*VendorConnectorConfigStatus, error) {
+	var out VendorConnectorConfigStatus
+	if err := c.doJSON(ctx, http.MethodPut, "/api/v1/estate-loader/connectors/"+url.PathEscape(systemID), req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ConnectDemoEstateMock wires one system (or "*" for all 18 systems) to fleet-sim's Demo Estate mock endpoints in sandbox mode.
+func (c *Client) ConnectDemoEstateMock(ctx context.Context, systemID string) ([]VendorConnectorConfigStatus, error) {
+	var out []VendorConnectorConfigStatus
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/estate-loader/connectors/demo-mock", map[string]string{"system_id": systemID}, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// TestVendorConnectorRead executes an ephemeral connectivity & server-discovery read against a connected system.
+func (c *Client) TestVendorConnectorRead(ctx context.Context, systemID, warrantClass string, scopeServices []string) (*VendorConnectorTestResult, error) {
+	var out VendorConnectorTestResult
+	body := map[string]any{
+		"warrant_class":  warrantClass,
+		"scope_services": scopeServices,
+	}
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/estate-loader/connectors/"+url.PathEscape(systemID)+"/test", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func (c *Client) doJSON(ctx context.Context, method, path string, reqBody any, dst any) error {
 	return c.doJSONWithHeaders(ctx, method, path, reqBody, dst, nil)
 }

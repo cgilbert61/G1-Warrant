@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { FileCheck2, Gauge, UserX, Usb, CheckCircle2, AlertTriangle } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { FileCheck2, Gauge, UserX, Usb, CheckCircle2, AlertTriangle, PlugZap, Server } from 'lucide-react';
 import type {
   AgentIdentity,
   ApprovalPressureStat,
@@ -9,11 +9,13 @@ import type {
   DeclaredCloneSource,
   DSSEEnvelope,
   EstateProposalResponse,
+  EstateSelectableServer,
   EstateService,
   EstateSourceDescriptor,
   PendingSponsorTransfer,
   Principal,
   TestSmartcardPersona,
+  VendorConnectorConfigStatus,
   WarrantRecord,
 } from '../types';
 import { formatExceptionImpactTemplate, shortHash } from '../lib/templates';
@@ -42,6 +44,10 @@ interface View2WarrantDeskProps {
   agents?: AgentIdentity[];
   pendingSponsorTransfers?: PendingSponsorTransfer[];
   estateSources?: EstateSourceDescriptor[];
+  vendorConnectors?: VendorConnectorConfigStatus[];
+  preferredProposeSource?: string;
+  onOpenVendorConnectors?: () => void;
+  onRefreshBootstrap?: () => Promise<void>;
   nowMs?: number;
   testPersonas: TestSmartcardPersona[];
   rpId: string;
@@ -71,6 +77,10 @@ export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
   agents = [],
   pendingSponsorTransfers = [],
   estateSources = [],
+  vendorConnectors = [],
+  preferredProposeSource,
+  onOpenVendorConnectors,
+  onRefreshBootstrap,
   nowMs = Date.now(),
   testPersonas,
   rpId,
@@ -94,20 +104,55 @@ export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
   const [verifyMsg, setVerifyMsg] = useState<Record<string, string>>({});
   const [revokeError, setRevokeError] = useState<string | null>(null);
 
-  // v1.4.0 Estate Loader Proposal & Clone-Source Declaration state
+  // v1.4.0 / v1.4.1 Estate Loader Proposal, Vendor Configurator & Server-to-Twin Selection state
   const [proposeSource, setProposeSource] = useState('k8s-cilium-native');
   const [corroborateScanner, setCorroborateScanner] = useState('');
   const [estateReadTokenInput, setEstateReadTokenInput] = useState('');
   const [driftPolicy, setDriftPolicy] = useState<'RECORD_ONLY' | 'FAIL_CLOSED'>('RECORD_ONLY');
   const [driftTolerancePct, setDriftTolerancePct] = useState(10.0);
   const [estateProposal, setEstateProposal] = useState<EstateProposalResponse | null>(null);
+  const [selectedServerIds, setSelectedServerIds] = useState<string[]>([]);
   const [confirmedCloneSources, setConfirmedCloneSources] = useState<DeclaredCloneSource[]>([]);
   const [manualCloneSystem, setManualCloneSystem] = useState('');
   const [manualCloneImage, setManualCloneImage] = useState('');
   const [proposalLoading, setProposalLoading] = useState(false);
   const [proposalError, setProposalError] = useState<string | null>(null);
 
-  const handleFetchEstateProposal = async () => {
+  useEffect(() => {
+    if (preferredProposeSource && preferredProposeSource.trim() !== '') {
+      setProposeSource(preferredProposeSource.trim());
+    }
+  }, [preferredProposeSource]);
+
+  const buildCloneSourcesFromSelectedServers = (
+    prop: EstateProposalResponse,
+    chosenIds: string[]
+  ): DeclaredCloneSource[] => {
+    const servers = prop.selectable_servers || [];
+    const chosenSet = new Set(chosenIds);
+    const nowIso = new Date().toISOString();
+    const out: DeclaredCloneSource[] = [];
+    for (const sv of servers) {
+      if (!chosenSet.has(sv.server_id)) continue;
+      out.push({
+        source_system: prop.primary_snapshot.source_system,
+        image_identity: sv.twin_image_identity,
+        platform_family: sv.platform_family,
+        selected_server_id: sv.server_id,
+        selected_server_hostname: sv.hostname,
+        snapshot_sha256: prop.proposed_estate_snapshot_sha256,
+        query_identity: prop.primary_snapshot.query_identity,
+        source_mode: 'ESTATE_LOADER',
+        image_created_at: sv.image_created_at,
+        image_age_seconds_at_sign: sv.image_age_seconds,
+        declared_at: nowIso,
+      });
+    }
+    return out;
+  };
+
+  const handleFetchEstateProposal = async (overrideSource?: string) => {
+    const targetSrc = overrideSource || proposeSource;
     setProposalLoading(true);
     setProposalError(null);
     try {
@@ -119,7 +164,7 @@ export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
         method: 'POST',
         headers,
         body: JSON.stringify({
-          source_system: proposeSource,
+          source_system: targetSrc,
           corroborating_scanner: corroborateScanner || undefined,
           warrant_class: warrantClass,
           scope_services: selectedServices,
@@ -133,17 +178,67 @@ export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
       }
       const prop = body as EstateProposalResponse;
       setEstateProposal(prop);
-      setConfirmedCloneSources(prop.proposed_clone_sources || []);
+      const servers: EstateSelectableServer[] = prop.selectable_servers || [];
+      if (servers.length > 0) {
+        const defaultIds = [servers[0].server_id];
+        setSelectedServerIds(defaultIds);
+        setConfirmedCloneSources(buildCloneSourcesFromSelectedServers(prop, defaultIds));
+      } else {
+        setSelectedServerIds([]);
+        setConfirmedCloneSources(prop.proposed_clone_sources || []);
+      }
       if (prop.recommended_drift_policy) {
         setDriftPolicy(prop.recommended_drift_policy);
       }
     } catch (err) {
       setEstateProposal(null);
+      setSelectedServerIds([]);
       setConfirmedCloneSources([]);
       setProposalError(err instanceof Error ? err.message : 'Estate read failed');
     } finally {
       setProposalLoading(false);
     }
+  };
+
+  const handleConnectDemoAndBrowse = async () => {
+    setProposalLoading(true);
+    setProposalError(null);
+    try {
+      const res = await fetch('/api/v1/estate-loader/connectors/demo-mock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ system_id: proposeSource }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        throw new Error(body.error || body.reason || `HTTP ${res.status}`);
+      }
+      if (onRefreshBootstrap) {
+        await onRefreshBootstrap();
+      }
+      await handleFetchEstateProposal(proposeSource);
+    } catch (err) {
+      setProposalLoading(false);
+      setProposalError(err instanceof Error ? err.message : 'Demo Estate connection failed');
+    }
+  };
+
+  const toggleSelectedServer = (serverId: string) => {
+    if (!estateProposal) return;
+    setSelectedServerIds((prev) => {
+      const next = prev.includes(serverId) ? prev.filter((id) => id !== serverId) : [...prev, serverId];
+      setConfirmedCloneSources(buildCloneSourcesFromSelectedServers(estateProposal, next));
+      return next;
+    });
+  };
+
+  const selectAllOrFirstServers = (all: boolean) => {
+    if (!estateProposal || !estateProposal.selectable_servers) return;
+    const ids = all
+      ? estateProposal.selectable_servers.map((s) => s.server_id)
+      : estateProposal.selectable_servers.slice(0, 1).map((s) => s.server_id);
+    setSelectedServerIds(ids);
+    setConfirmedCloneSources(buildCloneSourcesFromSelectedServers(estateProposal, ids));
   };
 
   const toggleConfirmedCloneSource = (imgId: string) => {
@@ -161,6 +256,7 @@ export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
   const handleApplyManualCloneOverride = () => {
     if (!manualCloneSystem.trim() || !manualCloneImage.trim()) return;
     setEstateProposal(null);
+    setSelectedServerIds([]);
     setProposalError(null);
     setConfirmedCloneSources([
       {
@@ -171,6 +267,8 @@ export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
       },
     ]);
   };
+
+  const selectedConnector = vendorConnectors.find((c) => c.source_system === proposeSource);
 
   // WebAuthn Hardware Enrollment form
   const [hwName, setHwName] = useState('Hardware Signer');
@@ -476,20 +574,42 @@ export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <span className="font-bold uppercase tracking-wider text-slate-900">
-                  Estate Loader Proposal &amp; Clone-Source Declaration (v1.4.0)
+                  Estate Loader &amp; Server-to-Twin Selection (v1.4.1)
                 </span>
                 <p className="text-[11px] text-slate-600">
-                  Bounded decision-time read (zero asset replication). Proposes clone sources from Tier A/B systems for human SO+AO confirmation before signing.
+                  Connect to any of the 18 vendor systems (or Demo Estate Mock), browse live servers in memory (zero DB replication), and select which server(s) to clone as your QA Twin.
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={handleFetchEstateProposal}
-                disabled={proposalLoading || selectedServices.length === 0}
-                className="px-3 py-1.5 rounded bg-slate-900 text-white font-semibold hover:bg-slate-800 disabled:opacity-50"
-              >
-                {proposalLoading ? 'Reading Estate...' : 'Read Estate Proposal'}
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                {onOpenVendorConnectors && (
+                  <button
+                    type="button"
+                    onClick={onOpenVendorConnectors}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded border border-slate-300 bg-white hover:bg-slate-100 text-slate-800 font-semibold"
+                  >
+                    <PlugZap className="w-3.5 h-3.5" />
+                    <span>Configure 18 Vendors</span>
+                  </button>
+                )}
+                {selectedConnector && !selectedConnector.read_configured && selectedConnector.demo_mock_available && (
+                  <button
+                    type="button"
+                    onClick={handleConnectDemoAndBrowse}
+                    disabled={proposalLoading || selectedServices.length === 0}
+                    className="px-3 py-1.5 rounded bg-emerald-700 text-white font-semibold hover:bg-emerald-800 disabled:opacity-50"
+                  >
+                    {proposalLoading ? 'Connecting...' : `Connect ${proposeSource} Demo & Browse Servers`}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => handleFetchEstateProposal()}
+                  disabled={proposalLoading || selectedServices.length === 0}
+                  className="px-3 py-1.5 rounded bg-slate-900 text-white font-semibold hover:bg-slate-800 disabled:opacity-50"
+                >
+                  {proposalLoading ? 'Reading Estate...' : 'Connect & Load Estate Servers'}
+                </button>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
@@ -511,11 +631,15 @@ export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
                         { source_system: 'ms-intune', source_tier: 'TIER_A_MACHINE' },
                         { source_system: 'aws-ssm', source_tier: 'TIER_A_MACHINE' },
                       ]
-                  ).map((s) => (
-                    <option key={s.source_system} value={s.source_system}>
-                      {s.source_system} ({s.source_tier})
-                    </option>
-                  ))}
+                  ).map((s) => {
+                    const conn = vendorConnectors.find((vc) => vc.source_system === s.source_system);
+                    const tag = conn ? conn.connection_mode : s.source_tier;
+                    return (
+                      <option key={s.source_system} value={s.source_system}>
+                        {s.source_system} [{tag}]
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
               <div>
@@ -617,7 +741,7 @@ export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
             )}
 
             {estateProposal && (
-              <div className="border border-emerald-300 bg-white rounded p-2.5 space-y-2">
+              <div className="border border-emerald-300 bg-white rounded p-2.5 space-y-2.5">
                 <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-[11px]">
                   <span className="font-bold text-emerald-900">
                     Snapshot {shortHash(estateProposal.proposed_estate_snapshot_sha256)} ({estateProposal.primary_snapshot.source_system})
@@ -631,34 +755,113 @@ export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
                     Tier C Census: {estateProposal.census_advisory}
                   </div>
                 )}
-                <div className="space-y-1">
-                  <div className="text-[11px] font-semibold text-slate-700">
-                    Confirm Candidate Clone Sources to Bind into 2-of-2 Warrant ({confirmedCloneSources.length} selected):
-                  </div>
-                  {estateProposal.proposed_clone_sources.map((cand) => {
-                    const isChecked = confirmedCloneSources.some((c) => c.image_identity === cand.image_identity);
-                    return (
-                      <label key={cand.image_identity} className="flex items-center gap-2 font-mono text-[11px] text-slate-800">
-                        <input
-                          type="checkbox"
-                          checked={isChecked}
-                          onChange={() => toggleConfirmedCloneSource(cand.image_identity)}
-                        />
-                        <span>{cand.image_identity}</span>
-                        <span className="text-slate-500">
-                          ({cand.platform_family || 'workload'} · age={cand.image_age_seconds_at_sign ?? 0}s)
+
+                {estateProposal.selectable_servers && estateProposal.selectable_servers.length > 0 ? (
+                  <div className="space-y-1.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-[11px] font-bold text-slate-900 inline-flex items-center gap-1">
+                        <Server className="w-3.5 h-3.5 text-emerald-700" />
+                        <span>
+                          Select Server(s) from {estateProposal.primary_snapshot.source_system} to Clone as QA Twin ({selectedServerIds.length} of {estateProposal.selectable_servers.length} selected):
                         </span>
-                      </label>
-                    );
-                  })}
-                </div>
+                      </span>
+                      <div className="flex items-center gap-1.5 text-[11px]">
+                        <button
+                          type="button"
+                          onClick={() => selectAllOrFirstServers(false)}
+                          className="px-2 py-0.5 rounded border border-slate-300 bg-slate-50 hover:bg-slate-100 text-slate-800 font-semibold"
+                        >
+                          1st Server Only
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => selectAllOrFirstServers(true)}
+                          className="px-2 py-0.5 rounded border border-slate-300 bg-slate-50 hover:bg-slate-100 text-slate-800 font-semibold"
+                        >
+                          Select All ({estateProposal.selectable_servers.length})
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-1.5 max-h-56 overflow-y-auto pr-1">
+                      {estateProposal.selectable_servers.map((sv) => {
+                        const checked = selectedServerIds.includes(sv.server_id);
+                        const inputId = `twin-srv-${sv.server_id}`;
+                        return (
+                          <label
+                            key={sv.server_id}
+                            htmlFor={inputId}
+                            className={`flex flex-wrap items-center justify-between gap-2 p-2 rounded border font-mono text-[11px] cursor-pointer ${
+                              checked
+                                ? 'border-emerald-500 bg-emerald-50/70 text-slate-900'
+                                : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2">
+                              <input
+                                id={inputId}
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleSelectedServer(sv.server_id)}
+                              />
+                              <div>
+                                <div className="font-bold text-slate-900">
+                                  {sv.hostname}{' '}
+                                  <span className="font-normal text-slate-600">
+                                    ({sv.server_id}{sv.service_id ? ` · ${sv.service_id}` : ''})
+                                  </span>
+                                </div>
+                                <div className="text-slate-600">
+                                  {sv.os_family} {sv.os_version_or_build}
+                                  {sv.kernel_release ? ` · kernel ${sv.kernel_release}` : ''}
+                                  {sv.primary_package ? ` · ${sv.primary_package}` : ''}
+                                </div>
+                              </div>
+                            </div>
+                            <span className="px-2 py-0.5 rounded bg-white border border-slate-300 text-slate-800 font-semibold">
+                              Twin: {sv.twin_image_identity}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    <div className="text-[11px] font-semibold text-slate-700">
+                      Confirm Candidate Clone Sources to Bind into 2-of-2 Warrant ({confirmedCloneSources.length} selected):
+                    </div>
+                    {estateProposal.proposed_clone_sources.map((cand) => {
+                      const isChecked = confirmedCloneSources.some((c) => c.image_identity === cand.image_identity);
+                      return (
+                        <label key={cand.image_identity} className="flex items-center gap-2 font-mono text-[11px] text-slate-800">
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={() => toggleConfirmedCloneSource(cand.image_identity)}
+                          />
+                          <span>{cand.image_identity}</span>
+                          <span className="text-slate-500">
+                            ({cand.platform_family || 'workload'} · age={cand.image_age_seconds_at_sign ?? 0}s)
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
 
-            {!estateProposal && confirmedCloneSources.length > 0 && (
+            {confirmedCloneSources.length > 0 && (
               <div className="text-[11px] font-mono text-slate-800 bg-white border border-slate-300 rounded px-2.5 py-1.5">
-                Confirmed Clone Sources ({confirmedCloneSources[0].source_mode}):{' '}
-                {confirmedCloneSources.map((c) => `${c.source_system}=${c.image_identity}`).join(', ')}
+                Bound Twin Clone Sources ({confirmedCloneSources[0].source_mode}):{' '}
+                {confirmedCloneSources
+                  .map((c) =>
+                    c.selected_server_hostname
+                      ? `${c.selected_server_hostname} -> ${c.image_identity}`
+                      : `${c.source_system}=${c.image_identity}`
+                  )
+                  .join(' · ')}
               </div>
             )}
           </div>
@@ -865,6 +1068,21 @@ export const View2WarrantDesk: React.FC<View2WarrantDeskProps> = ({
                 {w.max_blast_radius_replicas} · BridgeSLA={w.sla_bridge_minutes}m · Expires{' '}
                 {new Date(w.expires_at).toLocaleDateString()}
               </div>
+
+              {w.clone_sources && w.clone_sources.length > 0 && (
+                <div className="text-[11px] font-mono px-2.5 py-1.5 rounded border border-emerald-300 bg-emerald-50/60 text-slate-900">
+                  <span className="font-bold text-emerald-950">
+                    Bound Twin Sources ({w.clone_sources[0].source_mode} · {w.estate_drift_policy || 'RECORD_ONLY'}):
+                  </span>{' '}
+                  {w.clone_sources
+                    .map((cs) =>
+                      cs.selected_server_hostname
+                        ? `${cs.selected_server_hostname} -> ${cs.image_identity}`
+                        : `${cs.source_system}:${cs.image_identity}`
+                    )
+                    .join(' · ')}
+                </div>
+              )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] font-mono">
                 <div className="border border-slate-200 rounded p-2 bg-slate-50">

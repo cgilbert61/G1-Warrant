@@ -69,6 +69,8 @@ type k8sInventoryWirePayload struct {
 			Name              string `json:"name"`
 			Namespace         string `json:"namespace"`
 			CreationTimestamp string `json:"creationTimestamp"`
+			UID               string `json:"uid"`
+			ServiceID         string `json:"serviceId"`
 		} `json:"metadata"`
 		Spec struct {
 			Replicas int `json:"replicas"`
@@ -139,10 +141,12 @@ func (k *KubernetesFamilyEstateReader) ReadEstateSnapshot(ctx context.Context, q
 				Count:         im.Count,
 			})
 		}
+		seenStaging := map[string]bool{}
 		for _, st := range wire.StagingSources {
 			if strings.TrimSpace(st.ImageID) == "" {
 				continue
 			}
+			seenStaging[st.ImageID] = true
 			snap.CandidateCloneSources = append(snap.CandidateCloneSources, models.CloneSourceCandidate{
 				SourceSystem:      k.sourceSystem,
 				ImageIdentity:     st.ImageID,
@@ -152,12 +156,13 @@ func (k *KubernetesFamilyEstateReader) ReadEstateSnapshot(ctx context.Context, q
 				Tags:              st.Tags,
 			})
 		}
-		for _, item := range wire.Items {
+		itemPodSum := 0
+		for idx, item := range wire.Items {
 			reps := item.Status.ReadyReplicas
 			if reps <= 0 {
 				reps = maxInt(item.Spec.Replicas, 1)
 			}
-			snap.ClassMembershipCount += reps
+			itemPodSum += reps
 			snap.OSBuildKernelDistribution = append(snap.OSBuildKernelDistribution, models.OSKernelBucket{
 				OSFamily:         "CONTAINER_LINUX",
 				OSVersionOrBuild: "distroless-static-debian12",
@@ -174,16 +179,36 @@ func (k *KubernetesFamilyEstateReader) ReadEstateSnapshot(ctx context.Context, q
 				})
 			}
 			candDigest := firstStr(item.Status.StagingDigest, item.Status.ImageID)
-			if candDigest != "" {
+			createdAt := firstStr(item.Metadata.CreationTimestamp, now.Add(-6*time.Hour).Format(time.RFC3339))
+			if candDigest != "" && !seenStaging[candDigest] {
+				seenStaging[candDigest] = true
 				snap.CandidateCloneSources = append(snap.CandidateCloneSources, models.CloneSourceCandidate{
 					SourceSystem:      k.sourceSystem,
 					ImageIdentity:     candDigest,
 					PlatformFamily:    "CONTAINER_LINUX",
 					PatchTargetLayers: []string{models.PatchTargetLayerUserspace},
-					CreatedAt:         firstStr(item.Metadata.CreationTimestamp, now.Add(-6*time.Hour).Format(time.RFC3339)),
+					CreatedAt:         createdAt,
 					Tags:              map[string]string{"namespace": item.Metadata.Namespace, "deployment": item.Metadata.Name},
 				})
 			}
+			if candDigest != "" && item.Metadata.Name != "" {
+				snap.EphemeralServers = append(snap.EphemeralServers, models.EstateSelectableServer{
+					ServerID:          firstStr(item.Metadata.UID, fmt.Sprintf("%s-wl-%02d", k.sourceSystem, idx+1)),
+					Hostname:          item.Metadata.Name,
+					ServiceID:         firstStr(item.Metadata.ServiceID, item.Metadata.Name),
+					SourceSystem:      k.sourceSystem,
+					OSFamily:          "CONTAINER_LINUX",
+					OSVersionOrBuild:  "distroless-static-debian12",
+					KernelRelease:     firstStr(item.Status.NodeKernel, "6.6.32-k8s"),
+					PrimaryPackage:    item.Status.ImageID,
+					TwinImageIdentity: candDigest,
+					PlatformFamily:    "CONTAINER_LINUX",
+					ImageCreatedAt:    createdAt,
+				})
+			}
+		}
+		if snap.ClassMembershipCount == 0 {
+			snap.ClassMembershipCount = itemPodSum
 		}
 		snap.SourceInventoryFreshnessAt = parseFlexibleTimestamp(wire.FreshnessAt, now)
 		if err := FinalizeEstateSnapshot(snap, now); err != nil {
@@ -233,6 +258,19 @@ func (k *KubernetesFamilyEstateReader) ReadEstateSnapshot(ctx context.Context, q
 				PatchTargetLayers: []string{models.PatchTargetLayerUserspace},
 				CreatedAt:         createdTs.UTC().Format(time.RFC3339),
 				Tags:              map[string]string{"namespace": svc.Namespace, "service_id": svc.ServiceID},
+			})
+			snap.EphemeralServers = append(snap.EphemeralServers, models.EstateSelectableServer{
+				ServerID:          "k8s-deploy-" + svc.ServiceID,
+				Hostname:          fmt.Sprintf("%s.%s.svc.cluster.local", svc.ServiceID, firstStr(svc.Namespace, "prod")),
+				ServiceID:         svc.ServiceID,
+				SourceSystem:      k.sourceSystem,
+				OSFamily:          "CONTAINER_LINUX",
+				OSVersionOrBuild:  "distroless-debian12",
+				KernelRelease:     "6.6.32-k8s",
+				PrimaryPackage:    firstStr(svc.CurrentPURL, svc.CurrentDigest),
+				TwinImageIdentity: svc.CurrentDigest,
+				PlatformFamily:    "CONTAINER_LINUX",
+				ImageCreatedAt:    createdTs.UTC().Format(time.RFC3339),
 			})
 		}
 		snap.ClassMembershipCount = totalReplicas
