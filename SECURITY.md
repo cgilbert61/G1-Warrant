@@ -15,4 +15,4 @@
 
 ## Reporting a Vulnerability
 
-Please report security vulnerabilities responsibly to **security@g1163rt.sec** or via GitHub Private Vulnerability Reporting on `cgilbert61/G1-Warrant`. Do not open public issues for undisclosed vulnerabilities.
+Please report security vulnerabilities responsibly to **ops@g1163rt.ai** or via GitHub Private Vulnerability Reporting on `cgilbert61/G1-Warrant`. Do not open public issues for undisclosed vulnerabilities.
