@@ -130,6 +130,8 @@ export function formatBridgeBlockerReason(b: ContainmentBridge): string {
   const map: Record<string, string> = {
     AWAITING_UPSTREAM_VENDOR_PATCH: 'Awaiting Upstream Vendor Patch (KEV Contained at L7)',
     AUTONOMOUS_CANARY_IN_PROGRESS: 'Active Containment During Differential Canary Rollout',
+    CONTAINED_AWAITING_DISTRIBUTOR_DISPATCH:
+      'Shield Armed — Contained Pending Governed WN-8 Distributor Dispatch',
     PATCH_ATTESTED_AND_LOCKED_OUT: 'Retired Following Twin Replay + ValidatingAdmissionPolicy Lockout',
     RUNTIME_DRIFT_BANNED_DIGEST_REARMED: 'Auto Re-Armed by N3 Watcher Due to Runtime Digest Drift',
     NO_VALID_STANDING_WARRANT_FAIL_CLOSED: 'Fail-Closed Containment — Awaiting Co-Signed Standing Warrant',

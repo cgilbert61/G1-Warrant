@@ -76,7 +76,7 @@ export const View4ContainmentLockout: React.FC<View4ContainmentLockoutProps> = (
           <div className="flex items-center gap-2">
             <Shield className="w-4 h-4 text-amber-600" />
             <h2 className="text-xs font-bold uppercase tracking-wider text-slate-900">
-              Containment Bridges Matrix (Cilium L7 NetworkPolicy · K8s NetPol · Envoy SPIFFE mTLS)
+              Multi-Substrate Containment Bridges Matrix (K8s Cilium/Envoy · AWS SG+IMDSv2 · Azure NSG · GCP FW · Linux nftables · Windows WFP)
             </h2>
           </div>
           <span className="text-xs font-mono text-slate-600">
@@ -103,7 +103,10 @@ export const View4ContainmentLockout: React.FC<View4ContainmentLockoutProps> = (
                   <tr key={b.bridge_id} className="hover:bg-slate-50">
                     <td className="p-2.5 font-mono">
                       <div className="font-bold text-slate-900">{b.bridge_id}</div>
-                      <div className="text-[11px] text-slate-500">{b.bridge_type}</div>
+                      <div className="text-[11px] text-slate-500">
+                        {b.bridge_type}
+                        {b.substrate_family && b.substrate_family !== 'KUBERNETES' ? ` · ${b.substrate_family}` : ''}
+                      </div>
                     </td>
                     <td className="p-2.5 font-mono font-semibold text-slate-900">{b.service_id}</td>
                     <td className="p-2.5 font-mono font-bold text-slate-900">{b.cve_id}</td>
@@ -126,16 +129,21 @@ export const View4ContainmentLockout: React.FC<View4ContainmentLockoutProps> = (
                     <td className="p-2.5">
                       <button
                         type="button"
-                        onClick={() =>
+                        onClick={() => {
+                          const isNonK8s = b.substrate_family && b.substrate_family !== 'KUBERNETES';
                           setManifestModal({
-                            title: `Declarative Containment Manifests — ${b.bridge_id} (${b.service_id})`,
-                            primary: b.cilium_manifest_yaml,
-                            secondary: `# Kubernetes NetworkPolicy\n${b.k8s_netpol_yaml}\n# Envoy HTTP RBAC + mTLS Filter JSON\n${b.envoy_filter_json}`,
-                          })
-                        }
+                            title: isNonK8s
+                              ? `Multi-Substrate Shield (${b.substrate_family} · ${b.bridge_type}) — ${b.bridge_id} (${b.service_id})`
+                              : `Declarative Containment Manifests — ${b.bridge_id} (${b.service_id})`,
+                            primary: b.native_shield_manifest || b.cilium_manifest_yaml,
+                            secondary: isNonK8s
+                              ? `# Symmetric Stage 04 Retirement Spec\n${b.native_retire_spec || b.k8s_netpol_yaml}\n# Canonical Bridge Summary JSON\n${b.envoy_filter_json}`
+                              : `# Kubernetes NetworkPolicy\n${b.k8s_netpol_yaml}\n# Envoy HTTP RBAC + mTLS Filter JSON\n${b.envoy_filter_json}`,
+                          });
+                        }}
                         className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-300 bg-white hover:bg-slate-100 font-mono text-[11px] font-semibold text-slate-800"
                       >
-                        <Code2 className="w-3.5 h-3.5" /> Inspect YAML
+                        <Code2 className="w-3.5 h-3.5" /> {b.substrate_family && b.substrate_family !== 'KUBERNETES' ? 'Inspect Rules' : 'Inspect YAML'}
                       </button>
                     </td>
                   </tr>

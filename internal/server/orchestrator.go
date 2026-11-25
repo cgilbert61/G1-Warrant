@@ -23,6 +23,7 @@ import (
 	"github.com/cgilbert61/G1-Warrant/internal/adapters"
 	"github.com/cgilbert61/G1-Warrant/internal/adapters/distributors"
 	"github.com/cgilbert61/G1-Warrant/internal/adapters/estatereader"
+	"github.com/cgilbert61/G1-Warrant/internal/adapters/shields"
 	"github.com/cgilbert61/G1-Warrant/internal/adapters/vmtwins"
 	"github.com/cgilbert61/G1-Warrant/internal/agentcp"
 	"github.com/cgilbert61/G1-Warrant/internal/crypto"
@@ -798,13 +799,6 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 	}
 	sarifIn := adapters.NewSARIFIntakeAdapter(n4)
 
-	n2 := gate.NewEngine(store, pol, n1, n4, deploy, broker.Broadcast)
-	n3 := verify.NewEngine(store, pol, n1, n4, shield, deploy, twin, broker.Broadcast, rulepacks)
-	if vmTwinProv, vmErr := vmtwins.NewVMTwinProviderFromEnv(n4.NewGovernedRoundTripper("distributor-gateway", nil), os.Getenv); vmErr != nil {
-		return nil, fmt.Errorf("initialize VMTwinProvider: %w", vmErr)
-	} else if vmTwinProv != nil {
-		n3.SetVMTwinProvider(vmTwinProv)
-	}
 	connPersistPath := strings.TrimSpace(os.Getenv("WARRANT_CONNECTOR_CONFIG_PATH"))
 	connOverrides := map[string]string{}
 	if connPersistPath != "" {
@@ -822,6 +816,17 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 			return v
 		}
 		return envseal.Getenv(k)
+	}
+
+	// Wrap base K8s/Cilium ShieldEnforcer in the Multi-Substrate Shield Router (Kubernetes + AWS EC2 SG/IMDSv2 + Azure NSG + GCP Firewall + Linux nftables + Windows WFP)
+	shield = shields.NewMultiSubstrateShieldRouter(shield, n4.NewGovernedRoundTripper("cilium-shield", nil), rulepacks, initGetenv)
+
+	n2 := gate.NewEngine(store, pol, n1, n4, deploy, broker.Broadcast)
+	n3 := verify.NewEngine(store, pol, n1, n4, shield, deploy, twin, broker.Broadcast, rulepacks)
+	if vmTwinProv, vmErr := vmtwins.NewVMTwinProviderFromEnv(n4.NewGovernedRoundTripper("distributor-gateway", nil), os.Getenv); vmErr != nil {
+		return nil, fmt.Errorf("initialize VMTwinProvider: %w", vmErr)
+	} else if vmTwinProv != nil {
+		n3.SetVMTwinProvider(vmTwinProv)
 	}
 
 	n5 := ledger.NewEngine(store, pol, n1, signer, broker.Broadcast)

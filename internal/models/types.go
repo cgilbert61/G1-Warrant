@@ -87,10 +87,26 @@ const (
 	AutonomyTier3ContainAndCAB  = "TIER_3_CONTAIN_AND_CAB"
 )
 
-// Containment Modes Separating Coarse Zero-Prose Quarantine from Signed L7 Rulepacks (N3)
+// Containment Modes & Multi-Substrate Shield Families Separating Coarse Zero-Prose Quarantine from Signed L7 Rulepacks (N3)
 const (
 	ContainmentModeZeroProseQuarantine = "ZERO_PROSE_EGRESS_MESH_QUARANTINE"
 	ContainmentModeSignedRulepackL7    = "SIGNED_RULEPACK_L7_SHIELD"
+
+	ShieldSubstrateKubernetes  = "KUBERNETES"
+	ShieldSubstrateAWSEC2      = "AWS_EC2"
+	ShieldSubstrateAzureVM     = "AZURE_VM"
+	ShieldSubstrateGCPGCE      = "GCP_GCE"
+	ShieldSubstrateLinuxHost   = "LINUX_HOST"
+	ShieldSubstrateWindowsHost = "WINDOWS_HOST"
+
+	BridgeTypeCiliumL7Netpol    = "CILIUM_L7_NETPOL"
+	BridgeTypeEnvoyMTLSWAF      = "ENVOY_MTLS_WAF"
+	BridgeTypeK8sNetpol         = "K8S_NETPOL"
+	BridgeTypeAWSEC2SGIMDS      = "AWS_EC2_SG_IMDS"
+	BridgeTypeAzureNSG          = "AZURE_NSG_QUARANTINE"
+	BridgeTypeGCPVPCFirewall    = "GCP_VPC_FIREWALL"
+	BridgeTypeLinuxNftables     = "LINUX_NFTABLES_SHIELD"
+	BridgeTypeWindowsNetFW      = "WINDOWS_WFP_NETFIREWALL"
 )
 
 // Closure Assurance Tiers Distinguishing Dispatch-Only, Passive Digest/SBOM Proof, Differential PoC Proof, and Secret Rotation (N3/N5)
@@ -737,18 +753,21 @@ type ContainmentBridge struct {
 	RemediationID      string     `json:"remediation_id"`
 	ServiceID          string     `json:"service_id"`
 	CVEID              string     `json:"cve_id"`
-	BridgeType         string     `json:"bridge_type"`      // "CILIUM_L7_NETPOL" | "ENVOY_MTLS_WAF" | "K8S_NETPOL"
+	BridgeType           string     `json:"bridge_type"`      // "CILIUM_L7_NETPOL" | "ENVOY_MTLS_WAF" | "K8S_NETPOL" | "AWS_EC2_SG_IMDS" | "AZURE_NSG_QUARANTINE" | "GCP_VPC_FIREWALL" | "LINUX_NFTABLES_SHIELD" | "WINDOWS_WFP_NETFIREWALL"
+	SubstrateFamily      string     `json:"substrate_family"` // "KUBERNETES" | "AWS_EC2" | "AZURE_VM" | "GCP_GCE" | "LINUX_HOST" | "WINDOWS_HOST"
 	ContainmentMode      string     `json:"containment_mode"` // "ZERO_PROSE_EGRESS_MESH_QUARANTINE" | "SIGNED_RULEPACK_L7_SHIELD"
 	RulepackID           string     `json:"rulepack_id,omitempty"`
 	MetadataPlaneBlocked bool       `json:"metadata_plane_blocked"`
 	AllowedEgressPeers   []string   `json:"allowed_egress_peers,omitempty"`
 	Status               string     `json:"status"` // "ARMED" | "RETIRED" | "REARMED_DRIFT"
-	SLABridgeMinutes   int        `json:"sla_minutes"`
-	BlockerReasonCode  string     `json:"blocker_reason_code"`
-	CiliumManifestYAML string     `json:"cilium_manifest_yaml"`
-	K8sNetpolYAML      string     `json:"k8s_netpol_yaml"`
-	EnvoyFilterJSON    string     `json:"envoy_filter_json"`
-	ArmedAt            time.Time  `json:"armed_at"`
+	SLABridgeMinutes     int        `json:"sla_minutes"`
+	BlockerReasonCode    string     `json:"blocker_reason_code"`
+	CiliumManifestYAML   string     `json:"cilium_manifest_yaml"`
+	K8sNetpolYAML        string     `json:"k8s_netpol_yaml"`
+	EnvoyFilterJSON      string     `json:"envoy_filter_json"`
+	NativeShieldManifest string     `json:"native_shield_manifest,omitempty"`
+	NativeRetireSpec     string     `json:"native_retire_spec,omitempty"`
+	ArmedAt              time.Time  `json:"armed_at"`
 	RetiredAt          *time.Time `json:"retired_at,omitempty"`
 	RearmedCount       int        `json:"rearmed_count"`
 }

@@ -43,8 +43,14 @@ flowchart LR
 > **Why items accumulate here:** Every finding gets an immediate containment shield in seconds. Items without pre-negotiated autonomous authority—or patches requiring human Four-Eyes review—wait safely behind active containment here until authorized.
 
 ### What Runs Automatically
-1. **Immediate Containment Shield (`cilium_shield`):**
-   - Compiles and applies `CiliumNetworkPolicy`, Kubernetes `NetworkPolicy`, and Envoy SPIFFE mTLS quarantine rules (blocking cloud metadata `169.254.169.254`, unauthorized `kube-apiserver` / lateral egress, or applying publisher-signed L7 rulepacks) and starts the bridge SLA timer (`BridgeSLAMIN`).
+1. **Immediate Multi-Substrate Containment Shield (`MultiSubstrateShieldRouter`):**
+   - Deterministically routes Stage `02` containment across all **6 substrates** based on asset identity and distributor target, blocking cloud metadata (`169.254.169.254`, `168.63.129.16`, `fd00:ec2::254`), external C2/reverse-shell egress, and optional untrusted exploit ports in sub-second time:
+     - **`KUBERNETES`:** `CiliumNetworkPolicy`, Kubernetes `NetworkPolicy`, and Envoy SPIFFE mTLS (`CILIUM_L7_NETPOL` / `ENVOY_MTLS_WAF` / `K8S_NETPOL`).
+     - **`AWS_EC2` (`AWS_EC2_SG_IMDS`):** Snapshots original SecurityGroupIds, attaches Quarantine SG (`ModifyInstanceAttribute`), and clamps `IMDSv2` (`ModifyInstanceMetadataOptions` `HttpTokens=required`, `HopLimit=1`) via AWS SigV4; symmetrically restores original SGs at Stage `04`.
+     - **`AZURE_VM` (`AZURE_NSG_QUARANTINE`):** Applies ARM `Microsoft.Network/networkSecurityGroups/securityRules` Priority-100 outbound/metadata deny rule (`DELETE` at Stage `04`).
+     - **`GCP_GCE` (`GCP_VPC_FIREWALL`):** Inserts Compute Engine v1 `compute#firewall` Priority-100 deny rule (`DELETE` at Stage `04`).
+     - **`LINUX_HOST` (`LINUX_NFTABLES_SHIELD`):** Compiles an isolated atomic `nft -f` table (`table inet g1_warrant_<id>`) retired via `nft delete table inet g1_warrant_<id>` without touching existing host firewall tables.
+     - **`WINDOWS_HOST` (`WINDOWS_WFP_NETFIREWALL`):** Compiles a grouped Windows Filtering Platform rule set (`New-NetFirewallRule -Group 'G1-Warrant-Bridge-<id>'`) retired via `Remove-NetFirewallRule -Group`.
 2. **`N1` Standing Warrant Lookup (`internal/server/orchestrator.go`):**
    - Checks for an active, unrevoked `2-of-2` DSSE Standing Warrant covering `(service_id, cvss_score <= max_cvss, cwe_id)` (or `AuthorizedVendorDetections` for unmapped scanner QIDs/Plugins).
    - If none matches, the item stays **passively contained** (`StatusHealth = "BRIDGED"`, `ClassBindingStatus = "UNBOUND"`, **`0`** Four-Eyes exception rows created).

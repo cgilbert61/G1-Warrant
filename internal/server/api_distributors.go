@@ -429,7 +429,7 @@ func (o *ControlPlaneOrchestrator) ExecuteFinderIntakeRemediation(
 			OccurredAt: now,
 		})
 
-		// Stage 2: Bridge Before Patch — immediately arm containment bridge even for unmapped/unwarranted findings!
+		// Stage 2: Bridge Before Patch — immediately arm containment bridge across K8s/Cloud/Linux/Windows even for unmapped/unwarranted findings!
 		bridgeID := "brg-" + uuid.NewString()[:8]
 		blockerReason := "AUTONOMOUS_CANARY_IN_PROGRESS"
 		if f.CVEMappingStatus == models.CVEMappingStatusUnmappedVendor && wErr != nil {
@@ -438,6 +438,8 @@ func (o *ControlPlaneOrchestrator) ExecuteFinderIntakeRemediation(
 			blockerReason = "NO_VALID_STANDING_WARRANT_FAIL_CLOSED"
 		} else if patchProfile == "UPSTREAM_VENDOR_PENDING" {
 			blockerReason = "AWAITING_UPSTREAM_VENDOR_PATCH"
+		} else if strings.TrimSpace(distributorID) == "" {
+			blockerReason = "CONTAINED_AWAITING_DISTRIBUTOR_DISPATCH"
 		}
 		bridge, err := o.Shield.CompileAndApplyBridge(ctx, adapters.BridgeApplyRequest{
 			BridgeID:                 bridgeID,
@@ -453,6 +455,8 @@ func (o *ControlPlaneOrchestrator) ExecuteFinderIntakeRemediation(
 			AllowKubeAPIServerEgress: svc.AllowKubeAPIServerEgress,
 			SLABridgeMinutes:         item.BridgeSLAMIN,
 			BlockerReasonCode:        blockerReason,
+			DistributorID:            strings.TrimSpace(distributorID),
+			AssetIdentity:            f.AssetIdentity,
 		})
 		if err != nil {
 			return nil, err

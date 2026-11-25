@@ -660,30 +660,38 @@ func (s *Store) UpsertBridge(ctx context.Context, b models.ContainmentBridge) er
 	if b.ContainmentMode == "" {
 		b.ContainmentMode = models.ContainmentModeZeroProseQuarantine
 	}
+	if b.SubstrateFamily == "" {
+		b.SubstrateFamily = models.ShieldSubstrateKubernetes
+	}
 	peersJSON, _ := json.Marshal(b.AllowedEgressPeers)
 	if len(b.AllowedEgressPeers) == 0 {
 		peersJSON = []byte(`["kube-dns.kube-system.svc.cluster.local"]`)
 	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO containment_bridges (
-			bridge_id, remediation_id, service_id, cve_id, bridge_type, containment_mode, rulepack_id,
+			bridge_id, remediation_id, service_id, cve_id, bridge_type, substrate_family, containment_mode, rulepack_id,
 			metadata_plane_blocked, allowed_egress_peers, status,
 			sla_minutes, blocker_reason_code, cilium_manifest_yaml, k8s_netpol_yaml, envoy_filter_json,
+			native_shield_manifest, native_retire_spec,
 			armed_at, retired_at, rearmed_count
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
 		ON CONFLICT (bridge_id) DO UPDATE SET
+			substrate_family = EXCLUDED.substrate_family,
 			containment_mode = EXCLUDED.containment_mode,
 			rulepack_id = EXCLUDED.rulepack_id,
 			metadata_plane_blocked = EXCLUDED.metadata_plane_blocked,
 			allowed_egress_peers = EXCLUDED.allowed_egress_peers,
 			status = EXCLUDED.status,
 			blocker_reason_code = EXCLUDED.blocker_reason_code,
+			native_shield_manifest = EXCLUDED.native_shield_manifest,
+			native_retire_spec = EXCLUDED.native_retire_spec,
 			retired_at = EXCLUDED.retired_at,
 			rearmed_count = EXCLUDED.rearmed_count
 	`,
-		b.BridgeID, b.RemediationID, b.ServiceID, b.CVEID, b.BridgeType, b.ContainmentMode, b.RulepackID,
+		b.BridgeID, b.RemediationID, b.ServiceID, b.CVEID, b.BridgeType, b.SubstrateFamily, b.ContainmentMode, b.RulepackID,
 		b.MetadataPlaneBlocked, peersJSON, b.Status,
 		b.SLABridgeMinutes, b.BlockerReasonCode, b.CiliumManifestYAML, b.K8sNetpolYAML, b.EnvoyFilterJSON,
+		b.NativeShieldManifest, b.NativeRetireSpec,
 		b.ArmedAt, b.RetiredAt, b.RearmedCount,
 	)
 	return err
@@ -692,9 +700,10 @@ func (s *Store) UpsertBridge(ctx context.Context, b models.ContainmentBridge) er
 // ListBridges lists all containment bridges ordered by active status then armed_at.
 func (s *Store) ListBridges(ctx context.Context) ([]models.ContainmentBridge, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT bridge_id, remediation_id, service_id, cve_id, bridge_type, containment_mode, rulepack_id,
+		SELECT bridge_id, remediation_id, service_id, cve_id, bridge_type, substrate_family, containment_mode, rulepack_id,
 		       metadata_plane_blocked, allowed_egress_peers, status,
 		       sla_minutes, blocker_reason_code, cilium_manifest_yaml, k8s_netpol_yaml, envoy_filter_json,
+		       native_shield_manifest, native_retire_spec,
 		       armed_at, retired_at, rearmed_count
 		FROM containment_bridges
 		ORDER BY CASE WHEN status = 'REARMED_DRIFT' THEN 0 WHEN status = 'ARMED' THEN 1 ELSE 2 END, armed_at ASC
@@ -708,12 +717,16 @@ func (s *Store) ListBridges(ctx context.Context) ([]models.ContainmentBridge, er
 		var b models.ContainmentBridge
 		var peersRaw []byte
 		if err := rows.Scan(
-			&b.BridgeID, &b.RemediationID, &b.ServiceID, &b.CVEID, &b.BridgeType, &b.ContainmentMode, &b.RulepackID,
+			&b.BridgeID, &b.RemediationID, &b.ServiceID, &b.CVEID, &b.BridgeType, &b.SubstrateFamily, &b.ContainmentMode, &b.RulepackID,
 			&b.MetadataPlaneBlocked, &peersRaw, &b.Status,
 			&b.SLABridgeMinutes, &b.BlockerReasonCode, &b.CiliumManifestYAML, &b.K8sNetpolYAML, &b.EnvoyFilterJSON,
+			&b.NativeShieldManifest, &b.NativeRetireSpec,
 			&b.ArmedAt, &b.RetiredAt, &b.RearmedCount,
 		); err != nil {
 			return nil, err
+		}
+		if b.SubstrateFamily == "" {
+			b.SubstrateFamily = models.ShieldSubstrateKubernetes
 		}
 		_ = json.Unmarshal(peersRaw, &b.AllowedEgressPeers)
 		out = append(out, b)

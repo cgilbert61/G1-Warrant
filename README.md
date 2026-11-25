@@ -95,8 +95,8 @@ Evaluates progressive canary rollouts using order-sensitive JSON payload diffing
 
 ![G1-Warrant Shadow and Estate Readiness Demo](docs/assets/screenshots/G1-Warrant-Shadow-Estate-Demo.gif)
 
-### 4. Containment Bridges Matrix & Sub-Second Runtime Drift Lockout (`N3`)
-Manages active CiliumNetworkPolicy, Kubernetes NetworkPolicy, and Envoy SPIFFE mTLS containment shields (`169.254.169.254` metadata & `kube-apiserver` quarantine) alongside `ValidatingAdmissionPolicy` image lockouts and automatic sub-second bridge re-arming upon runtime drift.
+### 4. Multi-Substrate Containment Bridges Matrix & Sub-Second Runtime Drift Lockout (`N3`)
+Enforces sub-second **"Contain in Seconds Everywhere"** quarantine across **6 substrates** (`MultiSubstrateShieldRouter` in `internal/adapters/shields/`): Kubernetes (`CiliumNetworkPolicy`, `NetworkPolicy`, Envoy SPIFFE mTLS), Cloud VMs (**AWS EC2** SigV4 Quarantine Security Group + `IMDSv2 HttpTokens=required`, **Azure ARM NSG** Priority-100 rules, **GCP VPC Firewall** Priority-100 rules), **Linux Hosts** (atomic isolated `nftables` `table inet g1_warrant_*`), and **Windows Hosts** (PowerShell `NetSecurity` WFP `-Group` rules)—paired with `ValidatingAdmissionPolicy` image lockouts and automatic sub-second bridge re-arming upon runtime drift. *(Non-Kubernetes cloud/host shield endpoints are verified against wire-accurate SigV4/ARM/GCE/agent HTTP doubles.)*
 
 ![G1-Warrant Containment Lockouts Demo](docs/assets/screenshots/G1-Warrant-Containment-Lockouts-Demo.gif)
 

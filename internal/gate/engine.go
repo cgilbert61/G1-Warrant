@@ -533,7 +533,7 @@ func (e *Engine) EvaluateAndRollout(ctx context.Context, item *models.Remediatio
 		)
 
 		report, shadowGate, err := e.EvalStagePromotion(
-			ctx, item.RemediationID, weight, curFreeze.Mode, preGate.AutonomyTier, w, svc, patchMeta, stageResp,
+			ctx, item.RemediationID, weight, curFreeze.Mode, preGate.AutonomyTier, w, svc, patchMeta, stageResp, exceptionApproved,
 		)
 		if err != nil {
 			return err
@@ -595,6 +595,7 @@ func (e *Engine) EvalStagePromotion(
 	svc *models.EstateService,
 	patchMeta *models.ExtractedPatchMetadata,
 	stageResp *fleetsim.StageRolloutResponse,
+	exceptionApproved ...bool,
 ) (models.ShadowComparisonReport, *policy.GateDecision, error) {
 	if w == nil || svc == nil || stageResp == nil {
 		return models.ShadowComparisonReport{}, nil, fmt.Errorf("CANARY_EVAL_INVALID_INPUT: warrant, service, and stage telemetry are required")
@@ -698,12 +699,13 @@ func (e *Engine) EvalStagePromotion(
 		return models.ShadowComparisonReport{}, nil, err
 	}
 
+	approvedOverride := len(exceptionApproved) > 0 && exceptionApproved[0]
 	floorsOK := len(floorReasons) == 0
 	schemaOK := breakingCount == 0
 	syscallOK := len(shadowGate.UnauthorizedSyscalls) == 0
 	isolationOK := (stageResp.ReadonlyDBBound && stageResp.OutboundMutationSinkActive) || autonomyTier == models.AutonomyTier2GuardedCanary
-	statelessOK := shadowGate.PatchStateless || w.AllowStatefulPatches
-	serviceOK := shadowGate.ServiceEligible || (w.AllowGuardedCanary && shadowGate.GuardedCanaryEligible)
+	statelessOK := shadowGate.PatchStateless || w.AllowStatefulPatches || approvedOverride
+	serviceOK := shadowGate.ServiceEligible || (w.AllowGuardedCanary && shadowGate.GuardedCanaryEligible) || approvedOverride
 	passed := floorsOK && shadowGate.ShadowSafe && isolationOK && statelessOK && serviceOK && !shadowGate.FreezeBlocked && !blastExceeded
 
 	failureCode := ""

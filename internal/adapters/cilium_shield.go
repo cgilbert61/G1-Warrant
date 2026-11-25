@@ -332,6 +332,7 @@ func (c *CiliumShieldAdapter) CompileAndApplyBridge(ctx context.Context, req Bri
 		ServiceID:            req.ServiceID,
 		CVEID:                req.CVEID,
 		BridgeType:           bridgeType,
+		SubstrateFamily:      models.ShieldSubstrateKubernetes,
 		ContainmentMode:      containmentMode,
 		RulepackID:           rulepackID,
 		MetadataPlaneBlocked: true,

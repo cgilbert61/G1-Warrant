@@ -347,6 +347,7 @@ export interface ContainmentBridge {
   service_id: string;
   cve_id: string;
   bridge_type: string;
+  substrate_family?: string;
   containment_mode?: string;
   rulepack_id?: string;
   metadata_plane_blocked?: boolean;
@@ -357,6 +358,8 @@ export interface ContainmentBridge {
   cilium_manifest_yaml: string;
   k8s_netpol_yaml: string;
   envoy_filter_json: string;
+  native_shield_manifest?: string;
+  native_retire_spec?: string;
   armed_at: string;
   retired_at?: string;
   rearmed_count: number;

@@ -34,6 +34,9 @@ type BridgeApplyRequest struct {
 	SLABridgeMinutes         int
 	BlockerReasonCode        string
 	RearmCount               int
+	SubstrateHint            string                 // Optional explicit substrate: "KUBERNETES" | "AWS_EC2" | "AZURE_VM" | "GCP_GCE" | "LINUX_HOST" | "WINDOWS_HOST"
+	DistributorID            string                 // Optional WN-8 distributor ID hinting target substrate (e.g., "aws-ssm", "ms-intune", "ansible-awx")
+	AssetIdentity            *models.AssetIdentity  // Optional normalized host/cloud asset identity
 }
 
 // ScannerIntake ingests untrusted vulnerability scan reports via N4 + warrant-extractor.
