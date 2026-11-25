@@ -1,4 +1,4 @@
-# G1-Warrant — 5-Stage Autonomous Race Pipeline Walkthrough (`01` → `05`)
+# G1-Warrant 5-Stage Autonomous Race Pipeline Walkthrough (`01` → `05`)
 
 This guide walks step-by-step through how every vulnerability or secret-exposure finding enters **G1-Warrant**, what deterministic engine (`N1`–`N5`) executes inside each of the 5 Race Pipeline columns, what cryptographic/OPA gate promotes a card to the next column, and how operators advance items that pause fail-closed at a gate.
 
