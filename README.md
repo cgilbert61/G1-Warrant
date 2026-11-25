@@ -17,19 +17,27 @@
 
 **Deterministic Autonomous Remediation, Virtual Containment & NIST OSCAL 1.1.2 Attestation Control Plane (`v1.4.1`) — G1163RT Security Labs, Inc.**
 
-> **Core Operational Principle:** **Contain in seconds; verify and roll out safely in minutes.**
+> **Core Operational Principle:** **Zero-downtime Storm Shelter in seconds; Twin-proven permanent closure in minutes.**
 
 ---
 
 ## What Is G1-Warrant & What Problem Does It Solve?
 
-**G1-Warrant** is a deterministic remediation, containment, and cryptographic attestation control plane built to outpace autonomous/agentic intrusions—enforcing KEV-driven remediation, egress/metadata quarantine, and externally Merkle-anchored cryptographic audit trails across production execution environments.
+**G1-Warrant** is a deterministic remediation, **Storm Shelter** containment, and cryptographic attestation control plane built to level the playing field against AI-accelerated exploitation—enforcing KEV-driven remediation, egress/metadata quarantine, and externally Merkle-anchored cryptographic audit trails across production execution environments.
 
-> **Threat Context:** Standard perimeter and IAM controls fail when compromised workloads or autonomous agents inherit ambient credentials and unrestricted metadata/egress paths. G1-Warrant exists to enforce hard, fail-closed execution boundaries against active exploitation patterns—specifically addressing the attack primitives detailed in **FBI Flash Advisory `FLASH-20261113-001` (`ARTEX`)**—without relying on probabilistic detection.
+> **Closing the AI Exploit Gap Without Breaking Production (`FLASH-20261113-001` / `ARTEX`):**
+> Autonomous and AI-assisted exploit tooling has compressed **CVE-to-Exploit** from weeks to **minutes** (automatically diffing upstream commits and synthesizing working exploits), while enterprise and federal **CVE-to-Patch** still averages **hours to 43 days** behind manual Change Advisory Boards (`CAB`), reboot windows, and staging queues. You cannot safely recompile and reboot 5,000 production nodes in ten seconds—and blindly blocking port `443` takes down your own business.
 
-Modern vulnerability scanners (`Qualys VMDR`, `Tenable.io` / `Tenable.sc`, `Rapid7 InsightVM`, `Wiz`, `Trivy`, `Semgrep`, `Snyk`) and threat feeds (`CISA KEV`, `Google OSV.dev`) detect critical vulnerabilities in **seconds**, and upstream build pipelines or automated fix generators can produce signed candidate patches in **minutes**. Yet across enterprise and federal production estates, the median time to remediate a Known Exploited Vulnerability (`KEV`) remains **43 days**.
+### How G1-Warrant Levels the Clock
 
-Remediation stalls in that merge-to-production gap for four structural reasons:
+| Phase | AI-Driven Attackers | Traditional Enterprise Defense | G1-Warrant |
+| :--- | :--- | :--- | :--- |
+| **CVE Drops (`T + 0`)** | LLMs diff upstream commits & synthesize exploits automatically | Scanner runs on a nightly/weekly schedule | Zero-prose intake (`warrant-extractor`) strips untrusted scan data in milliseconds |
+| **`T + 2 Seconds`** | Scanning internet-facing targets | Ticket sitting in triage queue | **Storm Shelter Armed (`Stage 02`):** Outbound C2, reverse shells & `169.254.169.254` IAM credential theft severed across K8s, Cloud VMs, Linux & Windows; **customer port `443` stays online** |
+| **`T + 5–10 Minutes`** | Active exploitation begins | Emergency CAB / firewall ticket / 4+ hr scramble | **3-Clone QA Twin proved → Guarded Canary (`100%`) → Vulnerable digest permanently locked out → Storm Shelter retired → NIST OSCAL `1.1.2` sealed** |
+| **No Vendor Patch Yet (0-Day)** | Weeks of uncontested access | Blind WAF guesses (outages) or total exposure | Workload stays safely inside the **Storm Shelter** with zero production downtime until the vendor ships a signed fix |
+
+Modern vulnerability scanners (`Qualys VMDR`, `Tenable.io` / `Tenable.sc`, `Rapid7 InsightVM`, `Wiz`, `Trivy`, `Semgrep`, `Snyk`) and threat feeds (`CISA KEV`, `Google OSV.dev`) detect critical vulnerabilities in **seconds**, and upstream build pipelines can produce signed candidate patches in **minutes**—yet median KEV remediation remains **43 days** for four structural reasons:
 
 1. **No Pre-Negotiated Authority:** Autonomous tools cannot safely push production changes because security teams and service owners lack a cryptographic contract to pre-authorize *bounded* action ahead of an incident.
 2. **All-or-Nothing Rollout Cliffs:** Traditional automation either pushes patches blindly without statistical canary dwell/sampling or blocks brownfield workloads behind manual Change Advisory Boards (`CAB`).
