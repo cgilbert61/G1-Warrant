@@ -1,12 +1,15 @@
 package crypto
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -320,5 +323,76 @@ func TestSingleActivePrincipalCeremony_WebAuthnP256AndAlgorithmDowngradeBlock(t 
 	}
 	if s1.PublicKey().KeyID != s2.PublicKey().KeyID || s1.PublicKey().KeyFingerprint != s2.PublicKey().KeyFingerprint {
 		t.Fatalf("expected persisted kernel key to remain identical across restarts: %+v vs %+v", s1.PublicKey(), s2.PublicKey())
+	}
+}
+
+func TestWebAuthnCBORBoundsAndMaliciousAllocationRejection(t *testing.T) {
+	cfg := DefaultWebAuthnConfig()
+
+	// 1. Malicious 9-byte CBOR headers (CWE-789 uncontrolled allocation / integer overflow / depth bomb)
+	maliciousPayloads := []struct {
+		name string
+		raw  []byte
+	}{
+		{"oversized_array_1B", []byte{0x9b, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00}},
+		{"oversized_map_1B", []byte{0xbb, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00}},
+		{"uint64_max_bytes_overflow", []byte{0x5b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}},
+		{"uint64_max_text_overflow", []byte{0x7b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}},
+		{"excessive_nesting_depth", []byte{0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0x00}},
+	}
+	for _, tc := range maliciousPayloads {
+		b64 := base64.RawURLEncoding.EncodeToString(tc.raw)
+		if _, _, _, err := ParseWebAuthnRegistration(b64, "", "cred-dos", cfg); err == nil {
+			t.Fatalf("expected %s CBOR payload to fail closed, got nil error", tc.name)
+		}
+	}
+
+	// 2. Valid CBOR attestationObject with P-256 COSE_Key succeeds cleanly
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xBytes := priv.PublicKey.X.FillBytes(make([]byte, 32))
+	yBytes := priv.PublicKey.Y.FillBytes(make([]byte, 32))
+
+	// Encode COSE_Key map(5): {1: 2, 3: -7, -1: 1, -2: xBytes(32), -3: yBytes(32)}
+	var coseBuf bytes.Buffer
+	coseBuf.WriteByte(0xa5)                         // map(5)
+	coseBuf.Write([]byte{0x01, 0x02})               // 1 (kty): 2 (EC2)
+	coseBuf.Write([]byte{0x03, 0x26})               // 3 (alg): -7 (ES256)
+	coseBuf.Write([]byte{0x20, 0x01})               // -1 (crv): 1 (P-256)
+	coseBuf.Write([]byte{0x21, 0x58, 0x20})         // -2 (x): bstr(32)
+	coseBuf.Write(xBytes)
+	coseBuf.Write([]byte{0x22, 0x58, 0x20})         // -3 (y): bstr(32)
+	coseBuf.Write(yBytes)
+
+	rpHash := sha256.Sum256([]byte(cfg.RPID))
+	credID := []byte("cred-cbor-01")
+	var authData bytes.Buffer
+	authData.Write(rpHash[:])                       // 32B rpIdHash
+	authData.WriteByte(0x45)                        // flags: UP | UV | AT (0x40)
+	authData.Write([]byte{0, 0, 0, 1})              // signCount = 1
+	authData.Write(make([]byte, 16))                // 16B AAGUID
+	var lenBuf [2]byte
+	binary.BigEndian.PutUint16(lenBuf[:], uint16(len(credID)))
+	authData.Write(lenBuf[:])                       // 2B credIDLen
+	authData.Write(credID)                          // credID
+	authData.Write(coseBuf.Bytes())                 // COSE_Key
+
+	// Encode outer attestationObject map(1): {"authData": bstr(len)}
+	authRaw := authData.Bytes()
+	var attObj bytes.Buffer
+	attObj.WriteByte(0xa1)                          // map(1)
+	attObj.WriteByte(0x68)                          // tstr(8)
+	attObj.WriteString("authData")
+	attObj.Write([]byte{0x58, byte(len(authRaw))})  // bstr(uint8 len)
+	attObj.Write(authRaw)
+
+	alg, der, fp, err := ParseWebAuthnRegistration(base64.RawURLEncoding.EncodeToString(attObj.Bytes()), "", "cred-cbor-01", cfg)
+	if err != nil {
+		t.Fatalf("expected valid CBOR attestationObject to parse cleanly, got: %v", err)
+	}
+	if alg != AlgWebAuthnES256 || len(der) == 0 || len(fp) != 64 {
+		t.Fatalf("unexpected CBOR registration output: alg=%s len(der)=%d fp=%s", alg, len(der), fp)
 	}
 }

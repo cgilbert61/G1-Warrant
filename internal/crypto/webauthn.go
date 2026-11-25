@@ -13,8 +13,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"strings"
+)
+
+const (
+	maxWebAuthnCBORBytes = 64 * 1024
+	maxWebAuthnCBORItems = 256
+	maxWebAuthnCBORDepth = 8
 )
 
 // WebAuthnConfig defines the Relying Party verification parameters.
@@ -94,7 +101,10 @@ func ParseWebAuthnRegistration(attestationObjB64, publicKeySPKIB64, credentialID
 	if err != nil {
 		return "", nil, "", fmt.Errorf("decode attestationObject: %w", err)
 	}
-	val, _, err := decodeCBORItem(attBytes, 0)
+	if len(attBytes) > maxWebAuthnCBORBytes {
+		return "", nil, "", errors.New("attestationObject exceeds 64 KiB ceiling")
+	}
+	val, _, err := decodeCBORItem(attBytes, 0, 0)
 	if err != nil {
 		return "", nil, "", fmt.Errorf("parse attestationObject CBOR: %w", err)
 	}
@@ -119,7 +129,7 @@ func ParseWebAuthnRegistration(attestationObjB64, publicKeySPKIB64, credentialID
 	if len(authDataRaw) <= coseOffset {
 		return "", nil, "", errors.New("authData truncated before COSE_Key")
 	}
-	coseVal, _, err := decodeCBORItem(authDataRaw, coseOffset)
+	coseVal, _, err := decodeCBORItem(authDataRaw, coseOffset, 0)
 	if err != nil {
 		return "", nil, "", fmt.Errorf("decode COSE_Key: %w", err)
 	}
@@ -291,8 +301,14 @@ func CreateWebAuthnP256Assertion(priv *ecdsa.PrivateKey, credentialID string, rp
 }
 
 // Minimal RFC 8949 CBOR decoder sufficient for WebAuthn attestationObject and COSE_Key.
-func decodeCBORItem(data []byte, offset int) (any, int, error) {
-	if offset >= len(data) {
+func decodeCBORItem(data []byte, offset int, depth int) (any, int, error) {
+	if depth > maxWebAuthnCBORDepth {
+		return nil, offset, errors.New("cbor max nesting depth exceeded")
+	}
+	if len(data) > maxWebAuthnCBORBytes {
+		return nil, offset, errors.New("cbor input exceeds 64 KiB ceiling")
+	}
+	if offset < 0 || offset >= len(data) {
 		return nil, offset, errors.New("cbor unexpected EOF")
 	}
 	initial := data[offset]
@@ -342,27 +358,44 @@ func decodeCBORItem(data []byte, offset int) (any, int, error) {
 		return nil, offset, err
 	}
 
+	remaining := len(data) - offset
+
 	switch major {
 	case 0: // unsigned int
+		if arg > math.MaxInt64 {
+			return nil, offset, errors.New("cbor uint64 exceeds int64 ceiling")
+		}
 		return int64(arg), offset, nil
 	case 1: // negative int (-1 - arg)
+		if arg > math.MaxInt64 {
+			return nil, offset, errors.New("cbor negative int overflow")
+		}
 		return -1 - int64(arg), offset, nil
 	case 2: // byte string
-		if offset+int(arg) > len(data) {
-			return nil, offset, errors.New("cbor bytes EOF")
+		if remaining < 0 || arg > uint64(remaining) || arg > maxWebAuthnCBORBytes {
+			return nil, offset, errors.New("cbor bytes EOF or length exceeds ceiling")
 		}
-		out := append([]byte{}, data[offset:offset+int(arg)]...)
-		return out, offset + int(arg), nil
+		n := int(arg)
+		out := append([]byte{}, data[offset:offset+n]...)
+		return out, offset + n, nil
 	case 3: // text string
-		if offset+int(arg) > len(data) {
-			return nil, offset, errors.New("cbor text EOF")
+		if remaining < 0 || arg > uint64(remaining) || arg > maxWebAuthnCBORBytes {
+			return nil, offset, errors.New("cbor text EOF or length exceeds ceiling")
 		}
-		out := string(data[offset : offset+int(arg)])
-		return out, offset + int(arg), nil
+		n := int(arg)
+		out := string(data[offset : offset+n])
+		return out, offset + n, nil
 	case 4: // array
-		arr := make([]any, 0, int(arg))
-		for i := 0; i < int(arg); i++ {
-			elem, next, err := decodeCBORItem(data, offset)
+		if remaining < 0 || arg > uint64(remaining) || arg > maxWebAuthnCBORItems {
+			return nil, offset, errors.New("cbor array count exceeds buffer or ceiling")
+		}
+		count := int(arg)
+		if count < 0 || count > maxWebAuthnCBORItems {
+			return nil, offset, errors.New("cbor array count out of bounds")
+		}
+		arr := make([]any, 0, count)
+		for i := 0; i < count; i++ {
+			elem, next, err := decodeCBORItem(data, offset, depth+1)
 			if err != nil {
 				return nil, next, err
 			}
@@ -371,13 +404,20 @@ func decodeCBORItem(data []byte, offset int) (any, int, error) {
 		}
 		return arr, offset, nil
 	case 5: // map
-		m := make(map[any]any, int(arg))
-		for i := 0; i < int(arg); i++ {
-			k, next, err := decodeCBORItem(data, offset)
+		if remaining < 0 || arg > uint64(remaining/2) || arg > maxWebAuthnCBORItems {
+			return nil, offset, errors.New("cbor map count exceeds buffer or ceiling")
+		}
+		count := int(arg)
+		if count < 0 || count > maxWebAuthnCBORItems {
+			return nil, offset, errors.New("cbor map count out of bounds")
+		}
+		m := make(map[any]any, count)
+		for i := 0; i < count; i++ {
+			k, next, err := decodeCBORItem(data, offset, depth+1)
 			if err != nil {
 				return nil, next, err
 			}
-			v, next2, err := decodeCBORItem(data, next)
+			v, next2, err := decodeCBORItem(data, next, depth+1)
 			if err != nil {
 				return nil, next2, err
 			}

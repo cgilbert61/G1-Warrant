@@ -648,6 +648,8 @@ func (cs *ClusterSimulator) Handler() http.Handler {
 	})
 
 	mux.HandleFunc("POST /v1/twins/clone-proving", func(w http.ResponseWriter, r *http.Request) {
+		const maxSimCloneCount = 16
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		var req CloneTwinSimRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeSimJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -656,6 +658,10 @@ func (cs *ClusterSimulator) Handler() http.Handler {
 		cloneCount := req.CloneCount
 		if cloneCount <= 0 {
 			cloneCount = 3
+		}
+		if cloneCount > maxSimCloneCount {
+			writeSimJSON(w, http.StatusBadRequest, map[string]string{"error": "clone_count exceeds maximum simulator bound (16)"})
+			return
 		}
 		cs.mu.RLock()
 		prof := cs.profiles[req.CandidateDigest]
