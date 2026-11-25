@@ -58,23 +58,35 @@ var (
 )
 
 var allowedVectors = map[string]bool{
-	"HTTP_PATH_TRAVERSAL": true,
-	"JNDI_LOOKUP":         true,
-	"PROTO_DESERIALIZE":   true,
-	"TLS_HEARTBEAT":       true,
-	"HTTP2_RAPID_RESET":   true,
-	"SSRF_METADATA":       true,
-	"UNRESTRICTED_UPLOAD": true,
-	"ERROR_STACK_TRACE":   true,
-	"GENERIC_RCE":         true,
+	"HTTP_PATH_TRAVERSAL":  true,
+	"JNDI_LOOKUP":          true,
+	"PROTO_DESERIALIZE":    true,
+	"TLS_HEARTBEAT":        true,
+	"HTTP2_RAPID_RESET":    true,
+	"SSRF_METADATA":        true,
+	"UNRESTRICTED_UPLOAD":  true,
+	"ERROR_STACK_TRACE":    true,
+	"PHP_SESSION_LFI":      true,
+	"XXE_ENTITY_INJECTION": true,
+	"BOLA_IDOR":            true,
+	"BFLA_PRIV_ESC":        true,
+	"GENERIC_RCE":          true,
 }
 
 // chainedExploitCWEs are "medium" / non-RCE CWE classes actively weaponized by autonomous LLM intrusion
-// frameworks (ARTEX / GTIG / Phoenix findings) for compiler/SQL feedback, metadata pivoting, and webshell drops.
+// frameworks (ARTEX / GTIG / Phoenix findings) for compiler/SQL feedback, metadata pivoting,
+// LFI/session-upload-progress RCE chains, API BOLA/BFLA, and webshell drops.
 var chainedExploitCWEs = map[string]bool{
+	"CWE-22":  true, // Path Traversal / LFI
+	"CWE-98":  true, // Improper Control of Filename for Include/Require Statement in PHP (php2shell)
 	"CWE-209": true, // Generation of Error Message Containing Sensitive Information (stack traces)
-	"CWE-918": true, // Server-Side Request Forgery (SSRF -> 169.254.169.254 / internal APIs)
+	"CWE-287": true, // Improper Authentication
+	"CWE-347": true, // Improper Verification of Cryptographic Signature (JWT alg:none / key confusion)
 	"CWE-434": true, // Unrestricted Upload of File with Dangerous Type (JSP/PHP webshell drop)
+	"CWE-611": true, // Improper Restriction of XML External Entity Reference (XXE)
+	"CWE-639": true, // Authorization Bypass Through User-Controlled Key (BOLA / IDOR)
+	"CWE-863": true, // Incorrect Authorization (BFLA)
+	"CWE-918": true, // Server-Side Request Forgery (SSRF -> 169.254.169.254 / internal APIs)
 }
 
 // SelfBinaryDigest computes the SHA-256 hex digest of the running extractor binary.

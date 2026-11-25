@@ -15,6 +15,7 @@ import (
 
 	"github.com/cgilbert61/G1-Warrant/internal/crypto"
 	"github.com/cgilbert61/G1-Warrant/internal/models"
+	"github.com/cgilbert61/G1-Warrant/internal/netguard"
 	"github.com/google/uuid"
 )
 
@@ -57,9 +58,7 @@ func newBaseEstateHTTPClient(
 	sourceSystem, displayName, sourceTier, handlerFamily, readEnvPrefix, readURL, readToken, dispatchToken string,
 	rt http.RoundTripper,
 ) baseEstateHTTPClient {
-	if rt == nil {
-		rt = http.DefaultTransport
-	}
+	rt = netguard.NewGovernedRoundTripper(rt)
 	return baseEstateHTTPClient{
 		sourceSystem:  strings.TrimSpace(sourceSystem),
 		displayName:   strings.TrimSpace(displayName),
@@ -69,22 +68,14 @@ func newBaseEstateHTTPClient(
 		readURL:       strings.TrimRight(strings.TrimSpace(readURL), "/"),
 		readToken:     strings.TrimSpace(readToken),
 		dispatchToken: strings.TrimSpace(dispatchToken),
-		httpClient: &http.Client{
-			Transport: rt,
-			Timeout:   15 * time.Second,
-		},
+		httpClient:    netguard.NewSafeHTTPClient(15*time.Second, rt),
 	}
 }
 
 func (b *baseEstateHTTPClient) cloneWithTransport(rt http.RoundTripper) baseEstateHTTPClient {
 	cp := *b
-	if rt == nil {
-		rt = http.DefaultTransport
-	}
-	cp.httpClient = &http.Client{
-		Transport: rt,
-		Timeout:   15 * time.Second,
-	}
+	rt = netguard.NewGovernedRoundTripper(rt)
+	cp.httpClient = netguard.NewSafeHTTPClient(15*time.Second, rt)
 	return cp
 }
 

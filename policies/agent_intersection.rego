@@ -327,6 +327,18 @@ violations contains "SUBAGENT_PRIVILEGE_ESCALATION_DENIED" if {
 	subagent_escalation_detected
 }
 
+violations contains "AGENT_REMEDIATION_BUDGET_EXCEEDED" if {
+	max_rem := object.get(input, "max_exchanges_per_remediation", 0)
+	max_rem > 0
+	object.get(input, "remediation_exchange_count", 0) >= max_rem
+}
+
+violations contains "AGENT_WINDOW_BUDGET_EXCEEDED" if {
+	max_win := object.get(input, "max_exchanges_per_window", 0)
+	max_win > 0
+	object.get(input, "window_exchange_count", 0) >= max_win
+}
+
 allow if {
 	count(violations) == 0
 	effective_ttl_seconds > 0

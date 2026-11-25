@@ -16,6 +16,7 @@ import (
 	"github.com/cgilbert61/G1-Warrant/internal/crypto"
 	"github.com/cgilbert61/G1-Warrant/internal/db"
 	"github.com/cgilbert61/G1-Warrant/internal/models"
+	"github.com/cgilbert61/G1-Warrant/internal/netguard"
 	"github.com/google/uuid"
 )
 
@@ -43,7 +44,7 @@ func NewTransparencyAnchor(receiptPath, webhookURL string) *TransparencyAnchor {
 	return &TransparencyAnchor{
 		receiptPath: receiptPath,
 		webhookURL:  strings.TrimRight(webhookURL, "/"),
-		httpClient:  &http.Client{Timeout: 10 * time.Second},
+		httpClient:  netguard.NewSafeHTTPClient(10*time.Second, nil),
 	}
 }
 

@@ -131,6 +131,38 @@ func DefaultUnsignedRulepackTemplates() []SignedVirtualPatchRulepack {
 			BlockedPaths:   []string{"/upload/*.jsp", "/upload/*.jspx", "/upload/*.php"},
 			HasSignedProbe: true,
 		},
+		{
+			RulepackID:     "rpk-cwe98-php-session-lfi-v1",
+			CWEID:          "CWE-98",
+			ExploitVector:  "PHP_SESSION_LFI",
+			BlockedPaths:   []string{"/var/lib/php/sessions", "/tmp/sess_", "php://filter", "php://input"},
+			BlockedHeaders: []string{"X-PHP-Session-Upload-Progress: 1"},
+			HasSignedProbe: true,
+		},
+		{
+			RulepackID:     "rpk-cwe611-xxe-content-type-v1",
+			CWEID:          "CWE-611",
+			ExploitVector:  "XXE_ENTITY_INJECTION",
+			BlockedPaths:   []string{"/xmlrpc.php", "/soap"},
+			BlockedHeaders: []string{"Content-Type: application/xml", "Content-Type: text/xml"},
+			HasSignedProbe: true,
+		},
+		{
+			RulepackID:     "rpk-cwe639-bola-idor-guard-v1",
+			CWEID:          "CWE-639",
+			ExploitVector:  "BOLA_IDOR",
+			BlockedPaths:   []string{"/api/v1/internal/users/", "/api/v1/admin/export"},
+			BlockedHeaders: []string{"X-Original-URL: /admin", "X-Rewrite-URL: /admin"},
+			HasSignedProbe: true,
+		},
+		{
+			RulepackID:     "rpk-cwe863-bfla-method-override-v1",
+			CWEID:          "CWE-863",
+			ExploitVector:  "BFLA_PRIV_ESC",
+			BlockedPaths:   []string{"/v1/admin/", "/internal/admin/"},
+			BlockedHeaders: []string{"X-HTTP-Method-Override: DELETE", "X-Method-Override: PUT"},
+			HasSignedProbe: true,
+		},
 	}
 }
 

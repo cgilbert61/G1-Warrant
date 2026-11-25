@@ -18,6 +18,7 @@ import (
 	"github.com/cgilbert61/G1-Warrant/internal/db"
 	"github.com/cgilbert61/G1-Warrant/internal/extractor"
 	"github.com/cgilbert61/G1-Warrant/internal/models"
+	"github.com/cgilbert61/G1-Warrant/internal/netguard"
 	"github.com/google/uuid"
 )
 
@@ -84,11 +85,9 @@ func NewManager(ctx context.Context, store *db.Store, agentCP *agentcp.ControlPl
 		}
 	}
 	return &Manager{
-		store:   store,
-		agentCP: agentCP,
-		httpClient: &http.Client{
-			Timeout: 35 * time.Second,
-		},
+		store:      store,
+		agentCP:    agentCP,
+		httpClient: netguard.NewSafeHTTPClient(35*time.Second, netguard.NewGovernedRoundTripper(nil)),
 		onBroadcast: onBroadcast,
 		wakeCh:      make(chan struct{}, 1),
 	}, nil

@@ -68,7 +68,13 @@ func (c *CiliumShieldAdapter) CompileAndApplyBridge(ctx context.Context, req Bri
 	if len(allowedPeers) == 0 {
 		allowedPeers = []string{"kube-dns.kube-system.svc.cluster.local"}
 	}
-	metadataCIDRs := []string{"169.254.169.254/32", "169.254.170.2/32", "fd00:ec2::254/128"}
+	metadataCIDRs := []string{
+		"169.254.169.254/32", // AWS / GCP / Azure / OpenStack IMDS
+		"169.254.170.2/32",   // AWS ECS task metadata
+		"168.63.129.16/32",   // Azure WireServer
+		"100.100.100.200/32", // Alibaba Cloud metadata
+		"fd00:ec2::254/128",  // AWS IPv6 IMDS
+	}
 	allowKubeAPI := req.AllowKubeAPIServerEgress
 	for _, peer := range allowedPeers {
 		pLow := strings.ToLower(strings.TrimSpace(peer))
@@ -88,10 +94,12 @@ func (c *CiliumShieldAdapter) CompileAndApplyBridge(ctx context.Context, req Bri
 	bridgeType := "K8S_NETPOL"
 	var blockedPaths []string
 
+	var blockedHeaders []string
 	if matchedRP != nil {
 		containmentMode = models.ContainmentModeSignedRulepackL7
 		rulepackID = matchedRP.RulepackID
 		blockedPaths = matchedRP.BlockedPaths
+		blockedHeaders = matchedRP.BlockedHeaders
 		bridgeType = "CILIUM_L7_NETPOL"
 		if matchedRP.ExploitVector == "TLS_HEARTBEAT" {
 			bridgeType = "ENVOY_MTLS_WAF"
@@ -106,12 +114,58 @@ func (c *CiliumShieldAdapter) CompileAndApplyBridge(ctx context.Context, req Bri
 			{"port": strconv.Itoa(req.AffectedPort), "protocol": "TCP"},
 		},
 	}
-	if containmentMode == models.ContainmentModeSignedRulepackL7 && len(blockedPaths) > 0 {
-		// Apply L7 inspection only when backed by a verified publisher-signed rulepack
+	ciliumAnnotations := map[string]string{
+		"g1.warrant/blocked-metadata-cidrs": strings.Join(metadataCIDRs, ","),
+	}
+	if containmentMode == models.ContainmentModeSignedRulepackL7 && (len(blockedPaths) > 0 || len(blockedHeaders) > 0) {
+		// Apply L7 inspection only when backed by a verified publisher-signed rulepack.
+		// Compile explicit Envoy/Cilium HTTP path & header deny matchers alongside the rulepack marker.
+		httpRule := map[string]any{
+			"headers": []string{"X-G1-Signed-Rulepack: " + rulepackID},
+		}
+		if len(blockedPaths) > 0 {
+			escaped := make([]string, 0, len(blockedPaths))
+			for _, bp := range blockedPaths {
+				bp = strings.TrimSpace(bp)
+				if bp != "" {
+					escaped = append(escaped, bp)
+				}
+			}
+			if len(escaped) > 0 {
+				// Negative-lookahead path guard denies requests matching any signed rulepack blocked path
+				httpRule["path"] = "^(?!" + strings.Join(escaped, "|") + ").*$"
+				ciliumAnnotations["g1.warrant/blocked-paths"] = strings.Join(escaped, ",")
+			}
+		}
+		if len(blockedHeaders) > 0 {
+			headerMatches := make([]map[string]any, 0, len(blockedHeaders))
+			for _, bh := range blockedHeaders {
+				bh = strings.TrimSpace(bh)
+				if bh == "" {
+					continue
+				}
+				name, val, hasColon := strings.Cut(bh, ":")
+				if hasColon {
+					headerMatches = append(headerMatches, map[string]any{
+						"name":     strings.TrimSpace(name),
+						"value":    strings.TrimSpace(val),
+						"mismatch": "REPLACE",
+					})
+				} else {
+					headerMatches = append(headerMatches, map[string]any{
+						"name":     "X-G1-Deny-Pattern",
+						"value":    bh,
+						"mismatch": "LOG",
+					})
+				}
+			}
+			if len(headerMatches) > 0 {
+				httpRule["headerMatches"] = headerMatches
+				ciliumAnnotations["g1.warrant/blocked-headers"] = strings.Join(blockedHeaders, ",")
+			}
+		}
 		ingressPortSpec["rules"] = map[string]any{
-			"http": []map[string]any{
-				{"headers": []string{"X-G1-Signed-Rulepack: " + rulepackID}},
-			},
+			"http": []map[string]any{httpRule},
 		}
 	}
 
@@ -119,8 +173,9 @@ func (c *CiliumShieldAdapter) CompileAndApplyBridge(ctx context.Context, req Bri
 		"apiVersion": "cilium.io/v2",
 		"kind":       "CiliumNetworkPolicy",
 		"metadata": map[string]any{
-			"name":      fmt.Sprintf("g1-shield-%s", req.BridgeID),
-			"namespace": req.Namespace,
+			"name":        fmt.Sprintf("g1-shield-%s", req.BridgeID),
+			"namespace":   req.Namespace,
+			"annotations": ciliumAnnotations,
 			"labels": map[string]string{
 				"g1.warrant/bridge-id":        req.BridgeID,
 				"g1.warrant/remediation-id":   req.RemediationID,
@@ -182,7 +237,7 @@ func (c *CiliumShieldAdapter) CompileAndApplyBridge(ctx context.Context, req Bri
 			"name":      fmt.Sprintf("g1-netpol-%s", req.BridgeID),
 			"namespace": req.Namespace,
 			"annotations": map[string]string{
-				"g1.warrant/blocked-metadata-cidrs": "169.254.169.254/32,169.254.170.2/32,fd00:ec2::254/128",
+				"g1.warrant/blocked-metadata-cidrs": strings.Join(metadataCIDRs, ","),
 			},
 		},
 		"spec": map[string]any{

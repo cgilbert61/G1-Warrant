@@ -1104,6 +1104,9 @@ func main() {
 	case "distributors":
 		handleDistributorsCommand(ctx, cli, baseURL, opToken, autoToken, globalSignerPath, args, jsonOutput)
 
+	case "preflight", "anchor-check":
+		handlePreflightCommand(ctx, cli, args, jsonOutput)
+
 	default:
 		printUsage()
 		os.Exit(1)
@@ -1143,6 +1146,8 @@ Commands:
   warrant oscal [export <id> [out.json] | verify-offline <bundle.json> (--pubkey <b64> | --pubkey-file <kernel.pub> | --keyring-file <keyring.json> | --trust-embedded-keyring)]
   warrant auditor [mint-token --key <active.priv.json> --label <str> --ttl-hours <n> | inspect --token <g1aud_...>]
   warrant ledger [verify | actions | checkpoints | anchor]
+  warrant preflight [--anchor-url <url>] [--anchor-path <file>] [--kms-url <url> --kms-pubkey-b64 <b64>] [--skip-api]
+  warrant anchor-check [same flags as preflight]
   warrant events
 `, warrantsdk.Version)
 }

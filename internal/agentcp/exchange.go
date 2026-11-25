@@ -276,14 +276,20 @@ func (cp *ControlPlane) ExchangeAgentTaskToken(ctx context.Context, dsseReq cryp
 		ParentActor:             parentAct,
 	}
 
+	remCount, maxRem, winCount, maxWin := cp.budget.Snapshot(callerAgent.AgentID, req.RemediationID, now)
+
 	agentIn := policy.AgentInput{
-		NowUnix:                now.Unix(),
-		AuthorityMode:          authMode,
-		RequestedAction:        strings.TrimSpace(req.RequestedAction),
-		TargetAsset:            strings.TrimSpace(req.TargetAsset),
-		RequestedEgressProfile: reqEgress,
-		RequestedTTLSeconds:    req.RequestedTTLSeconds,
-		DelegationDepth:        depth,
+		NowUnix:                    now.Unix(),
+		AuthorityMode:              authMode,
+		RequestedAction:            strings.TrimSpace(req.RequestedAction),
+		TargetAsset:                strings.TrimSpace(req.TargetAsset),
+		RequestedEgressProfile:     reqEgress,
+		RequestedTTLSeconds:        req.RequestedTTLSeconds,
+		DelegationDepth:            depth,
+		RemediationExchangeCount:   remCount,
+		MaxExchangesPerRemediation: maxRem,
+		WindowExchangeCount:        winCount,
+		MaxExchangesPerWindow:      maxWin,
 		Agent: policy.AgentProfileInput{
 			AgentID:                      callerAgent.AgentID,
 			CommissioningFunctionID:      callerAgent.CommissioningFunctionID,
@@ -387,6 +393,7 @@ func (cp *ControlPlane) ExchangeAgentTaskToken(ctx context.Context, dsseReq cryp
 		ExecutedAt:              now,
 	}
 	_ = cp.store.AppendAgentAction(ctx, entry)
+	cp.budget.Record(callerAgent.AgentID, outPayload.RemediationID, now)
 	if cp.onBroadcast != nil {
 		cp.onBroadcast("AGENT_ACTION_LOGGED", entry)
 	}

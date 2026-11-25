@@ -211,8 +211,12 @@ type AgentInput struct {
 	TargetAsset            string                 `json:"target_asset"`
 	RequestedEgressProfile string                 `json:"requested_egress_profile"`
 	RequestedTTLSeconds    int                    `json:"requested_ttl_seconds"`
-	DelegationDepth        int                    `json:"delegation_depth"`
-	Agent                  AgentProfileInput      `json:"agent"`
+	DelegationDepth             int                    `json:"delegation_depth"`
+	RemediationExchangeCount    int                    `json:"remediation_exchange_count,omitempty"`
+	MaxExchangesPerRemediation  int                    `json:"max_exchanges_per_remediation,omitempty"`
+	WindowExchangeCount         int                    `json:"window_exchange_count,omitempty"`
+	MaxExchangesPerWindow       int                    `json:"max_exchanges_per_window,omitempty"`
+	Agent                       AgentProfileInput      `json:"agent"`
 	StandingWarrant        AgentWarrantScopeInput `json:"standing_warrant"`
 	ParentTask             AgentParentTaskInput   `json:"parent_task"`
 }

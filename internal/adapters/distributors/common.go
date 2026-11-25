@@ -14,6 +14,7 @@ import (
 	"github.com/cgilbert61/G1-Warrant/internal/adapters"
 	"github.com/cgilbert61/G1-Warrant/internal/crypto"
 	"github.com/cgilbert61/G1-Warrant/internal/models"
+	"github.com/cgilbert61/G1-Warrant/internal/netguard"
 	"github.com/google/uuid"
 )
 
@@ -38,7 +39,9 @@ func newBaseHTTPDistributor(
 	transport http.RoundTripper,
 ) baseHTTPDistributor {
 	if transport == nil {
-		transport = http.DefaultTransport
+		transport = netguard.NewGovernedRoundTripper(nil)
+	} else {
+		transport = netguard.NewGovernedRoundTripper(transport)
 	}
 	return baseHTTPDistributor{
 		id:          id,
@@ -47,10 +50,7 @@ func newBaseHTTPDistributor(
 		caps:        caps,
 		baseURL:     strings.TrimRight(strings.TrimSpace(baseURL), "/"),
 		bearerToken: strings.TrimSpace(bearerToken),
-		httpClient: &http.Client{
-			Transport: transport,
-			Timeout:   15 * time.Second,
-		},
+		httpClient:  netguard.NewSafeHTTPClient(15*time.Second, transport),
 		localOrders: make(map[string]models.DeploymentOrder),
 	}
 }
@@ -63,7 +63,9 @@ func (b *baseHTTPDistributor) EndpointConfigured() bool                  { retur
 
 func (b *baseHTTPDistributor) cloneWithTransport(rt http.RoundTripper) baseHTTPDistributor {
 	if rt == nil {
-		rt = http.DefaultTransport
+		rt = netguard.NewGovernedRoundTripper(nil)
+	} else {
+		rt = netguard.NewGovernedRoundTripper(rt)
 	}
 	b.mu.Lock()
 	copiedOrders := make(map[string]models.DeploymentOrder, len(b.localOrders))
@@ -78,10 +80,7 @@ func (b *baseHTTPDistributor) cloneWithTransport(rt http.RoundTripper) baseHTTPD
 		caps:        b.caps,
 		baseURL:     b.baseURL,
 		bearerToken: b.bearerToken,
-		httpClient: &http.Client{
-			Transport: rt,
-			Timeout:   15 * time.Second,
-		},
+		httpClient:  netguard.NewSafeHTTPClient(15*time.Second, rt),
 		localOrders: copiedOrders,
 	}
 }
