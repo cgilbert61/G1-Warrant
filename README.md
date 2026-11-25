@@ -81,7 +81,7 @@ Every distributor implements `DistributorTranslator` (`DispatchOrder`, `PollResu
 ## Operator Console Overview
 
 ### 1. 5-Stage Autonomous Race Pipeline & Live Fleet Drills
-Real-time visibility across `01 INTAKE & REPRO` → `02 BRIDGED / CONTAINED` → `03 SHADOW & CANARY` → `04 VERIFYING & LOCKING` → `05 ATTESTED & CLOSED`, with instant safety rollbacks, drift re-arm counters, and deterministic fleet drills.
+Real-time visibility across `01 INTAKE & REPRO` → `02 BRIDGED / CONTAINED` → `03 SHADOW & CANARY` → `04 VERIFYING & LOCKING` → `05 ATTESTED & CLOSED`, with instant safety rollbacks, drift re-arm counters, and deterministic fleet drills. See the complete stage-by-stage gate and unparking guide in [`docs/race_pipeline_walkthrough.md`](docs/race_pipeline_walkthrough.md).
 
 ![G1-Warrant Race Pipeline Demo](docs/assets/screenshots/G1-Warrant-Race-Pipeline-Demo.gif)
 
@@ -366,7 +366,7 @@ make docker-test
 - [`pkg/warrantsdk/`](pkg/warrantsdk/) & [`sdk/python/`](sdk/python/) — Official Go & Python Client SDKs and offline DSSE/OSCAL verifiers
 - [`k8s/`](k8s/) & [`deploy/aws/`](deploy/aws/) — Production Kubernetes Deployment, `NetworkPolicy` zero-egress isolation, RBAC manifests, and turnkey AWS PrivateLink `VM_TWIN` proving enclave CloudFormation stack
 - [`web/`](web/) — Embedded React 19 + TypeScript Section 508 / WCAG 2.1 AA 5-View Operator Console
-- [`docs/`](docs/) & [`reports/`](reports/) — [`g1_warrant_system_security_plan.md`](docs/g1_warrant_system_security_plan.md), [`sdk_and_cli_guide.md`](docs/sdk_and_cli_guide.md), OSCAL `1.1.2` component definitions, CycloneDX `1.5` SBOM, and 9-Gate DevSecOps audit artifacts
+- [`docs/`](docs/) & [`reports/`](reports/) — [`race_pipeline_walkthrough.md`](docs/race_pipeline_walkthrough.md), [`g1_warrant_system_security_plan.md`](docs/g1_warrant_system_security_plan.md), [`sdk_and_cli_guide.md`](docs/sdk_and_cli_guide.md), [`vendor_integration_reference.md`](docs/vendor_integration_reference.md), OSCAL `1.1.2` component definitions, CycloneDX `1.5` SBOM, and 9-Gate DevSecOps audit artifacts
 
 ---
 
