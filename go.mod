@@ -7,6 +7,7 @@ require (
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/open-policy-agent/opa v1.22.4
 	gopkg.in/yaml.v3 v3.0.1
+	mvdan.cc/sh/v3 v3.14.1
 )
 
 require (

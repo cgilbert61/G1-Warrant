@@ -18,12 +18,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cgilbert61/G1-Warrant/internal/cmdguard"
 	"github.com/cgilbert61/G1-Warrant/internal/crypto"
 	"github.com/cgilbert61/G1-Warrant/internal/db"
 	"github.com/cgilbert61/G1-Warrant/internal/models"
 	"github.com/cgilbert61/G1-Warrant/internal/policy"
 	"github.com/google/uuid"
 )
+
+// ValidateAgentShellCommand enforces deterministic Bash AST governance (mvdan.cc/sh/v3) on
+// N4 agent-submitted shell commands: recursive wrapper-unwrapping denylist + strict simple-command allowlist.
+func (c *ControlPlane) ValidateAgentShellCommand(script string, allowedPrefixes [][]string) error {
+	return cmdguard.ValidateAgentCommand(script, allowedPrefixes)
+}
 
 type internalWorkerKey struct {
 	identity models.AgentIdentity
@@ -41,6 +48,7 @@ type ControlPlane struct {
 	onBroadcast     func(eventType string, payload any)
 	internalWorkers map[string]*internalWorkerKey
 	workerManifests []models.AgentIdentity
+	budget          *ActionBudgetTracker
 }
 
 // NewControlPlane initializes the N4 Agent Control Plane backed by an EnvelopeSigner (KMS/HSM or ephemeral)
@@ -55,9 +63,19 @@ func NewControlPlane(store *db.Store, signer crypto.EnvelopeSigner, extractorURL
 		},
 		onBroadcast:     onBroadcast,
 		internalWorkers: map[string]*internalWorkerKey{},
+		budget:          NewActionBudgetTrackerFromEnv(),
 	}
 	cp.initInternalWorkers()
 	return cp
+}
+
+// SetActionBudgetLimits configures per-remediation and rolling-window token exchange ceilings in N4.
+func (cp *ControlPlane) SetActionBudgetLimits(maxPerRemediation, maxPerWindow int) {
+	if cp.budget == nil {
+		cp.budget = NewActionBudgetTracker(maxPerRemediation, maxPerWindow, 10*time.Minute)
+		return
+	}
+	cp.budget.SetLimits(maxPerRemediation, maxPerWindow)
 }
 
 // SetPolicyEngine wires the precompiled OPA Engine (data.warrant.agent) into N4.

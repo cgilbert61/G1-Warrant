@@ -14,6 +14,8 @@ import (
 	"github.com/cgilbert61/G1-Warrant/internal/adapters/distributors"
 	"github.com/cgilbert61/G1-Warrant/internal/adapters/estatereader"
 	"github.com/cgilbert61/G1-Warrant/internal/crypto"
+	"github.com/cgilbert61/G1-Warrant/internal/db"
+	"github.com/cgilbert61/G1-Warrant/internal/envseal"
 	"github.com/cgilbert61/G1-Warrant/internal/models"
 )
 
@@ -39,7 +41,7 @@ func (o *ControlPlaneOrchestrator) effectiveConnectorValLocked(overrides map[str
 			return v
 		}
 	}
-	return os.Getenv(key)
+	return envseal.Getenv(key)
 }
 
 func (o *ControlPlaneOrchestrator) reloadConnectorsLocked() error {
@@ -63,6 +65,16 @@ func (o *ControlPlaneOrchestrator) reloadConnectorsLocked() error {
 		); err != nil {
 			return err
 		}
+	}
+	if o.Store != nil {
+		pCtx, pCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		for k, v := range o.connectorOverrides {
+			if err := o.Store.UpsertVendorConnectorConfig(pCtx, k, "", v, db.IsConnectorSecretEnvKey(k)); err != nil {
+				pCancel()
+				return fmt.Errorf("persist encrypted connector config %q: %w", k, err)
+			}
+		}
+		pCancel()
 	}
 	if o.connectorPersistPath != "" {
 		if dir := filepath.Dir(o.connectorPersistPath); dir != "" && dir != "." {

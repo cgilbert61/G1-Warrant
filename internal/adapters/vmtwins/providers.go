@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/cgilbert61/G1-Warrant/internal/adapters"
+	"github.com/cgilbert61/G1-Warrant/internal/cmdguard"
 	"github.com/cgilbert61/G1-Warrant/internal/crypto"
 	"github.com/cgilbert61/G1-Warrant/internal/models"
 )
@@ -86,6 +87,18 @@ func parseCloneResultMarker(rawOutput string) (*vmCloneRawOutcome, bool) {
 	return nil, false
 }
 
+// ValidateLinuxGuestProvingCommands enforces Bash AST command governance (mvdan.cc/sh/v3) on
+// VM_TWIN smoke and acceptance commands before embedding them into guest proving scripts.
+func ValidateLinuxGuestProvingCommands(smokeCmd, acceptCmd string) error {
+	if err := cmdguard.ValidateProvingScriptCommand(smokeCmd); err != nil {
+		return fmt.Errorf("VM_TWIN_SMOKE_CMD_DENIED: %w", err)
+	}
+	if err := cmdguard.ValidateProvingScriptCommand(acceptCmd); err != nil {
+		return fmt.Errorf("VM_TWIN_ACCEPT_CMD_DENIED: %w", err)
+	}
+	return nil
+}
+
 // buildLinuxGuestProvingScript generates the deterministic bash script executed inside Linux QA VM clones
 // (supports dnf/yum/apt-get package updates, two-phase reboot verification, HTTP/systemd readiness, smoke & acceptance).
 func buildLinuxGuestProvingScript(req adapters.CloneTwinProvingRequest, smokeCmd, acceptCmd string, allowInlineRebootExit194 bool) string {
@@ -94,6 +107,10 @@ func buildLinuxGuestProvingScript(req adapters.CloneTwinProvingRequest, smokeCmd
 	}
 	if strings.TrimSpace(acceptCmd) == "" {
 		acceptCmd = "uname -r"
+	}
+	if err := ValidateLinuxGuestProvingCommands(smokeCmd, acceptCmd); err != nil {
+		// Fail closed inside guest script if an unvalidated denied command ever reaches script generation.
+		return fmt.Sprintf("#!/usr/bin/env bash\necho %q >&2\nexit 126\n", err.Error())
 	}
 	pkg := strings.TrimSpace(req.PackageNEVRA)
 	rebootBlock := ""

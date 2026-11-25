@@ -192,6 +192,18 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 	warrantEnvHash, _, _ := crypto.CanonicalSHA256Hex(w.DSSEEnvelope)
 	commFuncID, agentID, authMode, builderDigest, builderFP, sponsorState, actLineage := e.resolveAgentObservationLineage(ctx, item.RemediationID, w.WarrantID)
 
+	staleEvidence := bundle.StaleEvidence || (bundle.EvidenceVersion != bundle.ReportEvidenceVersion)
+	untestedSurfaceVal := "none"
+	if len(bundle.UntestedSurface) > 0 {
+		untestedSurfaceVal = strings.Join(bundle.UntestedSurface, ",")
+	}
+	wireReceiptStatus := verify.WireReceiptStatusNotAssessed
+	wireReceiptBlobSHA := ""
+	if bundle.WireReceipt != nil {
+		wireReceiptStatus = bundle.WireReceipt.Status
+		wireReceiptBlobSHA = bundle.WireReceipt.BlobSHA256
+	}
+
 	oscalDoc := map[string]any{
 		"plan-of-action-and-milestones": map[string]any{
 			"uuid": deterministicUUID("poam-doc:" + attID),
@@ -209,6 +221,12 @@ func (e *Engine) MintOSCALAttestation(ctx context.Context, item *models.Remediat
 					{"name": "signer-backend", "value": e.signer.BackendMode()},
 					{"name": "attestation-id", "value": attID},
 					{"name": "reverification-expires-at", "value": reverifyExpiry.Format(time.RFC3339)},
+					{"name": "wire-receipt-status", "value": wireReceiptStatus},
+					{"name": "wire-receipt-blob-sha256", "value": wireReceiptBlobSHA},
+					{"name": "untested-surface", "value": untestedSurfaceVal},
+					{"name": "evidence-version", "value": fmt.Sprintf("%d", bundle.EvidenceVersion)},
+					{"name": "report-evidence-version", "value": fmt.Sprintf("%d", bundle.ReportEvidenceVersion)},
+					{"name": "stale-evidence", "value": fmt.Sprintf("%t", staleEvidence)},
 				},
 				"parties": []map[string]any{
 					{

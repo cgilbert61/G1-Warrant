@@ -12,15 +12,25 @@ import (
 
 	"github.com/cgilbert61/G1-Warrant/internal/crypto"
 	"github.com/cgilbert61/G1-Warrant/internal/db"
+	"github.com/cgilbert61/G1-Warrant/internal/envseal"
 	"github.com/cgilbert61/G1-Warrant/internal/server"
 )
 
 func main() {
-	if err := server.ValidateStartupSecurityGuards(os.Getenv); err != nil {
+	sealedEnv, sealErr := envseal.SealAndReexec()
+	if sealErr != nil {
+		log.Printf("warrantd FAIL-CLOSED: linux environ secret sealing failed: %v", sealErr)
+		os.Exit(1)
+	}
+	if sealedEnv.Sealed() {
+		log.Printf("warrantd /proc/self/environ secret sealing ACTIVE (%d secret env vars scrubbed into memory)", sealedEnv.Count())
+	}
+
+	if err := server.ValidateStartupSecurityGuards(envseal.Getenv); err != nil {
 		log.Printf("%v", err)
 		os.Exit(1)
 	}
-	if warn := server.ExternalAnchorStartupWarning(os.Getenv); warn != "" {
+	if warn := server.ExternalAnchorStartupWarning(envseal.Getenv); warn != "" {
 		log.Printf("================================================================================")
 		log.Printf("%s", warn)
 		log.Printf("================================================================================")
@@ -30,17 +40,17 @@ func main() {
 	defer stop()
 
 	listenAddr := envOrDefault("WARRANTD_LISTEN_ADDR", ":8080")
-	dbURL, err := server.ResolveAndValidateDatabaseURL(os.Getenv)
+	dbURL, err := server.ResolveAndValidateDatabaseURL(envseal.Getenv)
 	if err != nil {
 		log.Printf("%v", err)
 		os.Exit(1)
 	}
-	if strings.TrimSpace(os.Getenv("DATABASE_URL")) == "" && strings.TrimSpace(os.Getenv("DATABASE_URL_FILE")) == "" {
+	if strings.TrimSpace(envseal.Getenv("DATABASE_URL")) == "" && strings.TrimSpace(envseal.Getenv("DATABASE_URL_FILE")) == "" {
 		log.Printf("[SANDBOX POSTURE] DATABASE_URL unset — generated ephemeral random per-installation database credentials")
 	}
 	extractorURL := envOrDefault("EXTRACTOR_URL", "http://warrant-extractor:8090")
 	fleetURL := envOrDefault("FLEET_SIM_URL", "http://fleet-sim:8095")
-	kernelSeed := strings.TrimSpace(os.Getenv("KERNEL_ATTESTATION_SEED"))
+	kernelSeed := strings.TrimSpace(envseal.Getenv("KERNEL_ATTESTATION_SEED"))
 	rpID := envOrDefault("WEBAUTHN_RP_ID", "localhost")
 	rpOrigin := envOrDefault("WEBAUTHN_RP_ORIGIN", "http://localhost:8080")
 

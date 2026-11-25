@@ -4,20 +4,36 @@ import (
 	"context"
 	"log"
 	"net/http"
-	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/cgilbert61/G1-Warrant/internal/envseal"
 	"github.com/cgilbert61/G1-Warrant/internal/extractor"
 )
 
 func main() {
-	addr := os.Getenv("EXTRACTOR_LISTEN_ADDR")
+	sealedEnv, sealErr := envseal.SealAndReexec()
+	if sealErr != nil {
+		log.Fatalf("warrant-extractor FAIL-CLOSED: linux environ secret sealing failed: %v", sealErr)
+	}
+	if sealedEnv.Sealed() {
+		log.Printf("warrant-extractor /proc/self/environ secret sealing ACTIVE (%d secret env vars scrubbed into memory)", sealedEnv.Count())
+	}
+	addr := envseal.Getenv("EXTRACTOR_LISTEN_ADDR")
 	if addr == "" {
 		addr = ":8090"
 	}
 	digest := extractor.SelfBinaryDigest()
+	if extractor.ShouldEnforceIsolationSelfTestFromEnv() {
+		isoCtx, isoCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		rep, isoErr := extractor.RunIsolationSelfTest(isoCtx, extractor.DefaultIsolationSelfTestConfigFromEnv())
+		isoCancel()
+		if isoErr != nil {
+			log.Fatalf("warrant-extractor FAIL-CLOSED: startup isolation self-test failed: %v", isoErr)
+		}
+		log.Printf("warrant-extractor isolation self-test PASSED (%d checks verified)", len(rep.Checks))
+	}
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           extractor.NewHTTPHandler(digest),

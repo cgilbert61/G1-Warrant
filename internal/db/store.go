@@ -35,6 +35,7 @@ const (
 type Store struct {
 	pool         *pgxpool.Pool
 	webauthnCfg  crypto.WebAuthnConfig
+	secretBox    *crypto.SecretBox
 	sealAnchorFn func(ctx context.Context) (*models.LedgerCheckpoint, error)
 }
 

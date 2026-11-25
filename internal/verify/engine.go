@@ -50,6 +50,13 @@ type VerificationBundle struct {
 
 	// v1.3.0 Clone-Twin Proving Ground Manifest
 	CloneTwinProving *models.CloneTwinProvingManifest
+
+	// v1.5.0 S1 Deterministic Wire-Receipt & Honest-Gap Coverage/Staleness Ledger
+	WireReceipt           *WireReceiptResult
+	UntestedSurface       []string
+	EvidenceVersion       int
+	ReportEvidenceVersion int
+	StaleEvidence         bool
 }
 
 // Engine implements N3: Differential Twin Replay (with Positive-Control Verification),
@@ -257,6 +264,29 @@ func (e *Engine) VerifyLockAndRetireBridge(ctx context.Context, item *models.Rem
 	_ = e.store.UpsertRemediation(ctx, item)
 	e.emit("REMEDIATION_UPDATED", item)
 
+	testedSurfaces := []string{"passive_fleet_digest_sweep", "admission_lockout"}
+	if vulnPkgAbsentInSBOM {
+		testedSurfaces = append(testedSurfaces, "sbom_absence_check")
+	}
+	var wireReceipt *WireReceiptResult
+	if hasSignedProbe {
+		testedSurfaces = append(testedSurfaces, "differential_twin_exploit_replay")
+		rawTranscript := fmt.Sprintf("unpatched_status=%s patched_status=%s tested_digest=%s transcript_sha256=%s",
+			twinResp.UnpatchedStatus, twinResp.Status, twinResp.TestedDigest, twinResp.TranscriptSHA256)
+		blob := NewContentAddressedBlob("differential_twin", "identity", []byte(rawTranscript), false)
+		res := VerifyWireReceipt(blob, []string{
+			"unpatched_status=" + twinResp.UnpatchedStatus,
+			"patched_status=" + twinResp.Status,
+		})
+		wireReceipt = &res
+	}
+	cov := EvaluateCoverageAndStaleness(
+		[]string{"differential_twin_exploit_replay", "passive_fleet_digest_sweep", "sbom_absence_check", "admission_lockout"},
+		testedSurfaces,
+		1,
+		1,
+	)
+
 	return &VerificationBundle{
 		TwinTranscriptSHA256:      twinResp.TranscriptSHA256,
 		UnpatchedTwinStatus:       twinResp.UnpatchedStatus,
@@ -268,6 +298,11 @@ func (e *Engine) VerifyLockAndRetireBridge(ctx context.Context, item *models.Rem
 		PodManifest:               podManifest,
 		Lockout:                   *lockout,
 		CloneTwinProving:          item.CloneTwinProving,
+		WireReceipt:               wireReceipt,
+		UntestedSurface:           cov.UntestedSurface,
+		EvidenceVersion:           cov.EvidenceVersion,
+		ReportEvidenceVersion:     cov.ReportEvidenceVersion,
+		StaleEvidence:             cov.StaleEvidence,
 	}, nil
 }
 

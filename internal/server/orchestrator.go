@@ -27,6 +27,7 @@ import (
 	"github.com/cgilbert61/G1-Warrant/internal/agentcp"
 	"github.com/cgilbert61/G1-Warrant/internal/crypto"
 	"github.com/cgilbert61/G1-Warrant/internal/db"
+	"github.com/cgilbert61/G1-Warrant/internal/envseal"
 	"github.com/cgilbert61/G1-Warrant/internal/feeds"
 	"github.com/cgilbert61/G1-Warrant/internal/gate"
 	"github.com/cgilbert61/G1-Warrant/internal/ledger"
@@ -656,12 +657,12 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 	broker := NewSSEBroker()
 
 	var signer crypto.EnvelopeSigner
-	if kmsURL := strings.TrimSpace(os.Getenv("WARRANT_KMS_SIGN_URL")); kmsURL != "" {
+	if kmsURL := strings.TrimSpace(envseal.Getenv("WARRANT_KMS_SIGN_URL")); kmsURL != "" {
 		kmsSigner, kErr := crypto.NewRemoteKMSSigner(
 			kmsURL,
-			os.Getenv("WARRANT_KMS_BEARER_TOKEN"),
-			os.Getenv("WARRANT_KMS_KEY_ID"),
-			os.Getenv("WARRANT_KMS_PUBLIC_KEY_B64"),
+			envseal.Getenv("WARRANT_KMS_BEARER_TOKEN"),
+			envseal.Getenv("WARRANT_KMS_KEY_ID"),
+			envseal.Getenv("WARRANT_KMS_PUBLIC_KEY_B64"),
 		)
 		if kErr != nil {
 			return nil, fmt.Errorf("configure RemoteKMSSigner: %w", kErr)
@@ -685,8 +686,26 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 
 	store.SetWebAuthnConfig(webauthnCfg)
 
+	// Per-column AAD AES-256-GCM DB secret encryption: fail closed at startup if encrypted
+	// rows exist in PostgreSQL without a valid key or with a mismatched key/AAD.
+	secretBox, sbErr := crypto.LoadSecretBoxFromEnv(envseal.Getenv)
+	if sbErr != nil {
+		return nil, fmt.Errorf("configure DB secret encryption key: %w", sbErr)
+	}
+	if secretBox != nil {
+		store.SetSecretBox(secretBox)
+	}
+	if err := store.ValidateEncryptedSecretsAtStartup(ctx); err != nil {
+		return nil, err
+	}
+	if secretBox == nil && !crypto.IsLiveOrKubernetesPosture(envseal.Getenv) {
+		if ephBox, eErr := crypto.NewEphemeralSecretBox(); eErr == nil {
+			store.SetSecretBox(ephBox)
+		}
+	}
+
 	var rotationDSSE *crypto.Envelope
-	if prevSeed := strings.TrimSpace(os.Getenv("WARRANT_PREV_KERNEL_SEED")); prevSeed != "" {
+	if prevSeed := strings.TrimSpace(envseal.Getenv("WARRANT_PREV_KERNEL_SEED")); prevSeed != "" {
 		prevSigner := crypto.NewSeededDevEd25519Signer(prevSeed)
 		if rotEnv, rErr := db.SignKernelKeyRotation(ctx, prevSigner, signer.PublicKey(), signer.BackendMode()); rErr == nil {
 			rotationDSSE = rotEnv
@@ -715,20 +734,20 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 		_ = os.WriteFile(exportPubPath, []byte(pubB64+"\n"), 0644)
 	}
 
-	tetToken := strings.TrimSpace(os.Getenv("WARRANT_TETRAGON_SENSOR_TOKEN"))
+	tetToken := strings.TrimSpace(envseal.Getenv("WARRANT_TETRAGON_SENSOR_TOKEN"))
 	if tetToken == "" {
 		var rnd [16]byte
 		_, _ = rand.Read(rnd[:])
 		tetToken = "g1tet_" + hex.EncodeToString(rnd[:])
 	}
-	tetHMAC := strings.TrimSpace(os.Getenv("WARRANT_TETRAGON_HMAC_SECRET"))
-	adminTok := strings.TrimSpace(os.Getenv("WARRANT_BOOTSTRAP_ADMIN_TOKEN"))
-	opTok := strings.TrimSpace(os.Getenv("WARRANT_OPERATOR_TOKEN"))
-	autoTok := strings.TrimSpace(os.Getenv("WARRANT_AUTOMATION_TOKEN"))
-	inTok := strings.TrimSpace(os.Getenv("WARRANT_INTAKE_TOKEN"))
-	estReadTok := strings.TrimSpace(os.Getenv("WARRANT_ESTATE_READ_TOKEN"))
-	igaTok := strings.TrimSpace(os.Getenv("WARRANT_IGA_TOKEN"))
-	igaHMAC := strings.TrimSpace(os.Getenv("WARRANT_IGA_WEBHOOK_HMAC_SECRET"))
+	tetHMAC := strings.TrimSpace(envseal.Getenv("WARRANT_TETRAGON_HMAC_SECRET"))
+	adminTok := strings.TrimSpace(envseal.Getenv("WARRANT_BOOTSTRAP_ADMIN_TOKEN"))
+	opTok := strings.TrimSpace(envseal.Getenv("WARRANT_OPERATOR_TOKEN"))
+	autoTok := strings.TrimSpace(envseal.Getenv("WARRANT_AUTOMATION_TOKEN"))
+	inTok := strings.TrimSpace(envseal.Getenv("WARRANT_INTAKE_TOKEN"))
+	estReadTok := strings.TrimSpace(envseal.Getenv("WARRANT_ESTATE_READ_TOKEN"))
+	igaTok := strings.TrimSpace(envseal.Getenv("WARRANT_IGA_TOKEN"))
+	igaHMAC := strings.TrimSpace(envseal.Getenv("WARRANT_IGA_WEBHOOK_HMAC_SECRET"))
 
 	n1, err := warrant.NewEngine(ctx, store, pol, webauthnCfg, broker.Broadcast, signer)
 	if err != nil {
@@ -793,11 +812,16 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 			_ = json.Unmarshal(rawCfg, &connOverrides)
 		}
 	}
+	if dbConns, dbErr := store.LoadVendorConnectorConfigs(ctx); dbErr == nil {
+		for k, v := range dbConns {
+			connOverrides[k] = v
+		}
+	}
 	initGetenv := func(k string) string {
 		if v, ok := connOverrides[k]; ok {
 			return v
 		}
-		return os.Getenv(k)
+		return envseal.Getenv(k)
 	}
 
 	n5 := ledger.NewEngine(store, pol, n1, signer, broker.Broadcast)
