@@ -326,14 +326,18 @@ export const View1RacePipeline: React.FC<View1RacePipelineProps> = ({
 
               <div>
                 <label htmlFor="intake-token-input" className="block text-[11px] font-semibold text-slate-700 mb-1">
-                  X-Warrant-Intake-Token
+                  {isLiveFeedMode ? 'X-Warrant-Intake-Token (Required in Live Mode)' : 'X-Warrant-Intake-Token'}
                 </label>
                 <input
                   id="intake-token-input"
                   type="password"
                   value={intakeToken}
                   onChange={(e) => setIntakeToken(e.target.value)}
-                  placeholder="Optional in offline sandbox; required in live/K8s"
+                  placeholder={
+                    isLiveFeedMode
+                      ? 'Required: paste WARRANT_INTAKE_TOKEN from .env'
+                      : 'Optional in offline sandbox; required in live/K8s'
+                  }
                   className="w-full text-xs font-mono border border-slate-300 rounded px-2 py-1.5 bg-white text-slate-900"
                 />
               </div>

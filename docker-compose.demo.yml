@@ -5,3 +5,4 @@ services:
     environment:
       WARRANT_ENABLE_TEST_SMARTCARDS: "true"
       WARRANT_FEED_MODE: "offline"
+      WARRANT_INTAKE_TOKEN: "${WARRANT_INTAKE_TOKEN:-g1-demo-intake-token}"

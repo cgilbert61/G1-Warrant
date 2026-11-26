@@ -2,8 +2,8 @@
 
 init-env:
 	@if [ ! -f .env ] && [ -z "$$POSTGRES_PASSWORD" ]; then \
-		python3 -c "import secrets; pw=secrets.token_hex(24); open('.env','w').write(f'POSTGRES_USER=warrant\nPOSTGRES_DB=warrant\nPOSTGRES_PASSWORD={pw}\nDATABASE_URL=postgres://warrant:{pw}@postgres:5432/warrant?sslmode=disable\nTEST_DATABASE_URL=postgres://warrant:{pw}@postgres:5432/postgres?sslmode=disable\n')"; \
-		echo "[init-env] Generated unique per-installation random credentials in .env"; \
+		python3 -c "import secrets; pw=secrets.token_hex(24); bs=secrets.token_hex(24); op=secrets.token_hex(24); au=secrets.token_hex(24); it=secrets.token_hex(24); ig=secrets.token_hex(24); open('.env','w').write(f'POSTGRES_USER=warrant\nPOSTGRES_DB=warrant\nPOSTGRES_PASSWORD={pw}\nDATABASE_URL=postgres://warrant:{pw}@postgres:5432/warrant?sslmode=disable\nTEST_DATABASE_URL=postgres://warrant:{pw}@postgres:5432/postgres?sslmode=disable\nWARRANT_BOOTSTRAP_ADMIN_TOKEN=bs_{bs}\nWARRANT_OPERATOR_TOKEN=op_{op}\nWARRANT_AUTOMATION_TOKEN=au_{au}\nWARRANT_INTAKE_TOKEN=in_{it}\nWARRANT_IGA_TOKEN=ig_{ig}\n')"; \
+		echo "[init-env] Generated unique per-installation random credentials (including WARRANT_INTAKE_TOKEN) in .env"; \
 	fi
 
 up: init-env

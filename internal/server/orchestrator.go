@@ -484,6 +484,9 @@ func (o *ControlPlaneOrchestrator) VerifyIntakeAuth(r *http.Request) (int, error
 	if o.intakeToken != "" && subtle.ConstantTimeCompare([]byte(tok), []byte(o.intakeToken)) == 1 {
 		return http.StatusOK, nil
 	}
+	if isLiveOrK8s && o.intakeToken == "" {
+		return http.StatusForbidden, fmt.Errorf("INTAKE_TOKEN_NOT_CONFIGURED_ON_SERVER: set WARRANT_INTAKE_TOKEN in .env / server environment when feed mode is live or cluster driver is kubernetes")
+	}
 	if !isLiveOrK8s && o.operatorToken != "" && subtle.ConstantTimeCompare([]byte(tok), []byte(o.operatorToken)) == 1 {
 		return http.StatusOK, nil
 	}
