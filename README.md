@@ -88,8 +88,13 @@ Every distributor implements `DistributorTranslator` (`DispatchOrder`, `PollResu
 
 ## Operator Console Overview
 
-### 1. 5-Stage Autonomous Race Pipeline & Live Fleet Drills
-Real-time visibility across `01 INTAKE & REPRO` → `02 BRIDGED / CONTAINED` → `03 SHADOW & CANARY` → `04 VERIFYING & LOCKING` → `05 ATTESTED & CLOSED`, with instant safety rollbacks, drift re-arm counters, and deterministic fleet drills. See the complete stage-by-stage gate and unparking guide in [`docs/race_pipeline_walkthrough.md`](docs/race_pipeline_walkthrough.md).
+### 0. Zero-Trust SecOps & MFA Login Portal
+Enforces PBKDF2-HMAC-SHA256 authentication paired with RFC 6238 TOTP or Push MFA verification (`HttpOnly; SameSite=Strict` session cookies) before exposing any operator console view, while preserving headless `X-Warrant-Intake-Token` scanner ingestion (`WN-7`).
+
+![G1-Warrant MFA Login Portal Demo](docs/assets/screenshots/G1-Warrant-Login-Portal-Demo.gif)
+
+### 1. 5-Stage Autonomous Race Pipeline, Scanner Intake & Light/Dark Mode
+Real-time visibility across `01 INTAKE & REPRO` → `02 BRIDGED / CONTAINED` → `03 SHADOW & CANARY` → `04 VERIFYING & LOCKING` → `05 ATTESTED & CLOSED`, featuring token-only `WN-7` scanner intake (`SARIF`, `Qualys`, `Tenable`, `Rapid7`), execution trace drawers, high-contrast Light/Dark mode themes, instant safety rollbacks, drift re-arm counters, and deterministic fleet drills. See the complete stage-by-stage gate and unparking guide in [`docs/race_pipeline_walkthrough.md`](docs/race_pipeline_walkthrough.md).
 
 ![G1-Warrant Race Pipeline Demo](docs/assets/screenshots/G1-Warrant-Race-Pipeline-Demo.gif)
 
