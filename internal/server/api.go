@@ -41,6 +41,9 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 	// Real-time SSE Event Stream
 	mux.Handle("GET /api/v1/events/stream", o.Broker)
 
+	// Console MFA Authentication & Sandbox Demo Accounts
+	o.registerConsoleAuthRoutes(mux)
+
 	// Consolidated Bootstrap Snapshot
 	mux.HandleFunc("GET /api/v1/bootstrap", func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()

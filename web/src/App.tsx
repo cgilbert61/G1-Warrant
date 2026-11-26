@@ -20,6 +20,7 @@ import { View5AuditorLedger } from './components/View5AuditorLedger';
 import { AuditorPortal } from './components/AuditorPortal';
 import { LiveFeedsModal } from './components/LiveFeedsModal';
 import { VendorConnectorsModal } from './components/VendorConnectorsModal';
+import { LoginPortal, type ConsoleSessionPrincipal } from './components/LoginPortal';
 import { useTheme } from './lib/theme';
 
 type ViewKey = 'VIEW1_RACE' | 'VIEW2_WARRANTS' | 'VIEW3_SHADOW' | 'VIEW4_CONTAINMENT' | 'VIEW5_AUDITOR';
@@ -29,6 +30,8 @@ export const App: React.FC = () => {
   const { theme, toggleTheme } = useTheme();
 
   const [snapshot, setSnapshot] = useState<BootstrapSnapshot | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [authPrincipal, setAuthPrincipal] = useState<ConsoleSessionPrincipal | null>(null);
   const [activeView, setActiveView] = useState<ViewKey>('VIEW1_RACE');
   const [smartcardBarEnabled, setSmartcardBarEnabled] = useState(true);
   const [showFeedsModal, setShowFeedsModal] = useState(false);
@@ -60,6 +63,31 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     if (isAuditorRoute) return;
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetch('/api/v1/auth/status', { cache: 'no-store' });
+        if (res.ok && active) {
+          const data = await res.json();
+          if (data.authenticated && data.principal) {
+            setAuthPrincipal(data.principal as ConsoleSessionPrincipal);
+          } else {
+            setAuthPrincipal(null);
+          }
+        }
+      } catch {
+        // Keep unauthenticated on error
+      } finally {
+        if (active) setAuthChecked(true);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [isAuditorRoute]);
+
+  useEffect(() => {
+    if (isAuditorRoute || !authPrincipal) return;
     loadBootstrap();
 
     const es = new EventSource('/api/v1/events/stream');
@@ -69,7 +97,7 @@ export const App: React.FC = () => {
       loadBootstrap();
     };
     return () => es.close();
-  }, [isAuditorRoute, loadBootstrap]);
+  }, [isAuditorRoute, authPrincipal, loadBootstrap]);
 
   useEffect(() => {
     const onResize = () => setIsMobileViewport(window.innerWidth < 1024);
@@ -85,6 +113,34 @@ export const App: React.FC = () => {
   if (isAuditorRoute) {
     return <AuditorPortal />;
   }
+
+  if (!authChecked) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-700 font-mono text-xs">
+        VERIFYING G1-WARRANT MFA SESSION...
+      </div>
+    );
+  }
+
+  if (!authPrincipal) {
+    return (
+      <LoginPortal
+        theme={theme}
+        onToggleTheme={toggleTheme}
+        onAuthenticated={(p) => setAuthPrincipal(p)}
+      />
+    );
+  }
+
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/v1/auth/logout', { method: 'POST' });
+    } catch {
+      // Ignore network errors on logout
+    }
+    setAuthPrincipal(null);
+    setSnapshot(null);
+  };
 
   const postRawJSON = async (url: string, rawBody: string, extraHeaders?: Record<string, string>) => {
     const res = await fetch(url, {
@@ -234,6 +290,9 @@ export const App: React.FC = () => {
         onThawFreeze={async (env: DSSEEnvelope) => {
           await postJSON('/api/v1/freeze/thaw', env);
         }}
+        operatorEmail={authPrincipal.email}
+        operatorRole={authPrincipal.role}
+        onLogout={handleLogout}
       />
 
       {/* Primary 5-View Institutional Clearinghouse Navigation */}

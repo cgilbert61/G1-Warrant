@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Shield, AlertOctagon, Inbox, CreditCard, Lock, Unlock, X, Radio, Sun, Moon, PlugZap } from 'lucide-react';
+import { Shield, AlertOctagon, Inbox, CreditCard, Lock, Unlock, X, Radio, Sun, Moon, PlugZap, LogOut } from 'lucide-react';
 import type { DSSEEnvelope, GlobalScoreboard, LiveFeedStatus, Principal, TestSmartcardPersona } from '../types';
 import type { ThemeMode } from '../lib/theme';
 import { formatDurationSeconds } from '../lib/templates';
@@ -23,6 +23,9 @@ interface CommandBarProps {
   onOpenInbox: () => void;
   onTriggerFreeze: (mode: 'FREEZE_HOLD' | 'FREEZE_ROLLBACK', actor: string, reason: string) => Promise<void>;
   onThawFreeze: (env: DSSEEnvelope) => Promise<void>;
+  operatorEmail?: string;
+  operatorRole?: string;
+  onLogout?: () => Promise<void>;
 }
 
 export const CommandBar: React.FC<CommandBarProps> = ({
@@ -43,6 +46,9 @@ export const CommandBar: React.FC<CommandBarProps> = ({
   onOpenInbox,
   onTriggerFreeze,
   onThawFreeze,
+  operatorEmail,
+  operatorRole,
+  onLogout,
 }) => {
   const [holdProgress, setHoldProgress] = useState(0);
   const holdInterval = useRef<number | null>(null);
@@ -277,6 +283,18 @@ export const CommandBar: React.FC<CommandBarProps> = ({
               </>
             )}
           </button>
+
+          {operatorEmail && onLogout && (
+            <button
+              type="button"
+              onClick={onLogout}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 text-xs font-mono font-semibold transition"
+              title={`Signed in as ${operatorEmail} (${operatorRole || 'OPERATOR'}) — Click to Sign Out`}
+            >
+              <LogOut className="w-3.5 h-3.5 text-slate-600" />
+              <span className="max-w-[130px] truncate">{operatorEmail}</span>
+            </button>
+          )}
 
           <button
             type="button"

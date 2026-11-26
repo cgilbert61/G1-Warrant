@@ -186,10 +186,28 @@ WARRANT_BOOTSTRAP_ADMIN_TOKEN="$(openssl rand -hex 24)" docker compose up --buil
 # Open the embedded 5-View G1-Warrant Console (W3C WebAuthn localhost enabled)
 #   -> http://localhost:8080
 
-# Inspect live control-plane posture & 6-chain cryptographic ledger health via the embedded Go CLI
+# Inspect live control-plane posture, 9-chain cryptographic ledger health & preflight checks via the embedded Go CLI
 docker compose exec warrantd /warrant status
 docker compose exec warrantd /warrant ledger verify
+docker compose exec warrantd /warrant preflight
 ```
+
+### Initial Console Login & Sandbox Demo Accounts (`http://localhost:8080`)
+
+Opening **`http://localhost:8080`** presents the **G1-Warrant SecOps Administrative & MFA Portal** (`PBKDF2-HMAC-SHA256` 100,000-round password verification + 6-digit TOTP / Cisco Duo / Okta Verify Push 2FA + `HttpOnly; SameSite=Strict` HMAC-SHA256 session cookie).
+
+In **Evaluation / Sandbox Mode** (default simulator mode — automatically disabled in `WARRANT_CLUSTER_DRIVER=kubernetes` or `WARRANT_FEED_MODE=live`), four demo accounts are pre-seeded and displayed directly on the login screen (with **Fill Form**, **Auto-Fill MFA Token**, and **DEV ADMIN LOGIN** shortcuts):
+
+| Operator Principal (Email) | Role | Passphrase | 6-Digit TOTP |
+| :--- | :--- | :--- | :--- |
+| `ops@g1163rt.ai` *(alias `ops@g1163rt`)* | `AUTHORIZING_OFFICIAL` | `G1WarrantDemo2026!` | `482910` |
+| `sre@g1163rt.ai` | `SERVICE_OWNER` | `G1ServiceOwner2026!` | `319420` |
+| `mac@g1163rt.ai` | `OPERATOR` | `G1Operator2026!` | `123456` |
+| `auditor@g1163rt.ai` | `AUDITOR` *(3PAO Read-Only)* | `G1Auditor2026!` | `654321` |
+
+- **Interactive Push 2FA:** Click **Send Duo Push** or **Verify with Okta** on the login card to test the number-matching challenge flow (automatically disabled when `WARRANT_AIRGAP_STRICT=true`).
+- **3PAO Auditor Vault:** Accessible directly at **`http://localhost:8080/auditor`** using a minted `g1aud_*` auditor token.
+- **Production Operator Provisioning:** In `kubernetes` or `live` mode, sandbox demo accounts and `/api/v1/auth/dev-quick-login` fail closed (`HTTP 403`). Provision production console accounts via `WARRANT_CONSOLE_USERS_FILE` (or `WARRANT_CONSOLE_USERS_JSON`) and set a strong `WARRANT_SESSION_SECRET`.
 
 > **Production Kubernetes Cluster Handoff (`k8s/`):** To point `warrantd` at a live Kubernetes + Cilium cluster instead of `fleet-sim` (`/api/v1/simulate/*` fault-injection drills are automatically disabled in `kubernetes` and `live` feed modes):
 > - `WARRANT_CLUSTER_DRIVER=kubernetes` (uses in-cluster SA mounts or `WARRANT_KUBE_API_URL`), `WARRANT_TETRAGON_SENSOR_TOKEN=<sensor-secret>`, `WARRANT_INTAKE_TOKEN=<scanner-intake-secret>`, and optional `WARRANT_AUTOMATION_TOKEN=<cron-feed-anchor-secret>`

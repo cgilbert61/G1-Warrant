@@ -72,6 +72,7 @@ type ControlPlaneOrchestrator struct {
 	estateReadToken      string
 	igaToken             string
 	igaHMACSecret        string
+	consoleAuth          *consoleAuthManager
 }
 
 func isWeakOrPlaceholderSecret(val string) bool {
