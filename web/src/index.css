@@ -14,6 +14,84 @@
 }
 
 /* ==========================================================================
+   G1 Institutional House Palette (Harmonized with G1-Docket & G1-Manifest)
+   Eliminates saturated candy/neon button & badge fills in favor of restrained
+   slate (#1E293B / #0F172A), crisp white surfaces, and subtle tinted badges.
+   ========================================================================== */
+
+html:not(.dark) body,
+html:not(.dark) #root > div.bg-slate-50 {
+  background-color: #f7f9fb;
+  color: #0f172a;
+}
+
+/* Unify primary action buttons (blue/indigo/emerald -> institutional #1E293B) */
+html:not(.dark) button.bg-blue-700,
+html:not(.dark) button.bg-indigo-700,
+html:not(.dark) button.bg-emerald-700,
+html:not(.dark) button.bg-emerald-600,
+html:not(.dark) a.bg-emerald-700,
+html:not(.dark) a.bg-blue-700 {
+  background-color: #1e293b;
+  border-color: #1e293b;
+  color: #ffffff;
+}
+
+html:not(.dark) button.bg-blue-700:hover:not(:disabled),
+html:not(.dark) button.bg-indigo-700:hover:not(:disabled),
+html:not(.dark) button.bg-emerald-700:hover:not(:disabled),
+html:not(.dark) button.bg-emerald-600:hover:not(:disabled),
+html:not(.dark) a.bg-emerald-700:hover,
+html:not(.dark) a.bg-blue-700:hover {
+  background-color: #0f172a;
+  border-color: #0f172a;
+}
+
+/* Unify destructive action buttons to G1-Docket `.btn-danger` (white + restrained crimson) */
+html:not(.dark) button.bg-red-600,
+html:not(.dark) button.bg-red-700 {
+  background-color: #ffffff;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+}
+
+html:not(.dark) button.bg-red-600:hover:not(:disabled),
+html:not(.dark) button.bg-red-700:hover:not(:disabled) {
+  background-color: #fef2f2;
+  border-color: #dc2626;
+  color: #7f1d1d;
+}
+
+/* Convert solid saturated pill fills (red-600 / amber-500 / rose-100 / indigo-50 / sky-50)
+   to G1-Docket's calm low-saturation `.badge-*` palette */
+html:not(.dark) span.bg-red-600 {
+  background-color: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+}
+
+html:not(.dark) span.bg-amber-500 {
+  background-color: #fffbeb;
+  color: #92400e;
+  border: 1px solid #fde68a;
+}
+
+html:not(.dark) .bg-rose-50,
+html:not(.dark) .bg-rose-100 {
+  background-color: #fef2f2;
+  border-color: #fecaca;
+  color: #991b1b;
+}
+
+html:not(.dark) .bg-indigo-50,
+html:not(.dark) .bg-indigo-100,
+html:not(.dark) .bg-sky-50 {
+  background-color: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #1e293b;
+}
+
+/* ==========================================================================
    G1-Warrant Institutional Dark Mode Palette (`html.dark`)
    WCAG 2.1 Level AA / Section 508 High-Contrast Surface & Semantic Token Map
    ========================================================================== */
@@ -60,14 +138,18 @@ html.dark .fixed.bg-slate-900\/60 {
   backdrop-filter: blur(2px);
 }
 
-/* Primary & active toggle buttons using bg-slate-900 become crisp high-contrast light buttons in dark mode */
-html.dark button.bg-slate-900 {
+/* Primary & active toggle buttons using bg-slate-900 / bg-slate-800 become crisp high-contrast light buttons in dark mode */
+html.dark button.bg-slate-900,
+html.dark button.bg-slate-800,
+html.dark a.bg-slate-800 {
   background-color: #e2e8f0;
   color: #0f172a;
   border-color: #f8fafc;
 }
 
-html.dark button.bg-slate-900:hover:not(:disabled) {
+html.dark button.bg-slate-900:hover:not(:disabled),
+html.dark button.bg-slate-800:hover:not(:disabled),
+html.dark a.bg-slate-800:hover {
   background-color: #ffffff;
   color: #020617;
 }

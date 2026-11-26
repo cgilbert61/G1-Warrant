@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Shield, AlertOctagon, Inbox, CreditCard, Lock, Unlock, X, Radio, Sun, Moon, PlugZap, LogOut } from 'lucide-react';
+import { Shield, AlertOctagon, Inbox, CreditCard, Lock, Unlock, X, Sun, Moon, PlugZap, LogOut } from 'lucide-react';
 import type { DSSEEnvelope, GlobalScoreboard, LiveFeedStatus, Principal, TestSmartcardPersona } from '../types';
 import type { ThemeMode } from '../lib/theme';
 import { formatDurationSeconds } from '../lib/templates';
@@ -132,17 +132,17 @@ export const CommandBar: React.FC<CommandBarProps> = ({
           {!isFrozen ? (
             <div
               role="status"
-              className="inline-flex items-center gap-2 px-3 py-1 rounded border border-emerald-300 bg-emerald-50 text-emerald-950 text-xs font-semibold"
+              className="inline-flex items-center gap-2 px-2.5 py-1 rounded border border-slate-200 bg-slate-50 text-slate-800 text-xs font-medium"
             >
-              <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse" />
-              <span>OPERATIONAL [{scoreboard.active_warrants_count} Active Warrants]</span>
+              <span className="w-2 h-2 rounded-full bg-emerald-600" />
+              <span>OPERATIONAL · {scoreboard.active_warrants_count} Active Warrants</span>
             </div>
           ) : (
             <div
               role="alert"
-              className="inline-flex items-center gap-2 px-3 py-1 rounded border border-red-500 bg-red-600 text-white text-xs font-bold"
+              className="inline-flex items-center gap-2 px-2.5 py-1 rounded border border-red-200 bg-red-50 text-red-900 text-xs font-semibold"
             >
-              <AlertOctagon className="w-4 h-4" />
+              <AlertOctagon className="w-4 h-4 text-red-700" />
               <span>
                 {fs.mode === 'FREEZE_HOLD' ? 'FREEZE: HOLD' : 'FREEZE: ROLLBACK'} · {fs.actor} ·{' '}
                 {new Date(fs.updated_at).toLocaleTimeString()}
@@ -157,14 +157,14 @@ export const CommandBar: React.FC<CommandBarProps> = ({
             <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">30d Fleet Median TTVR</div>
             <div className="text-sm font-mono font-bold text-slate-900 tabular-nums">
               {formatDurationSeconds(scoreboard.fleet_median_ttvr_seconds)}
-              <span className="text-[11px] font-normal text-emerald-700 ml-1.5">(vs 43d manual)</span>
+              <span className="text-[11px] font-normal text-slate-600 ml-1.5">(vs 43d manual)</span>
             </div>
           </div>
           <div className="px-3">
             <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Active Bridges Armed</div>
             <div className="text-sm font-mono font-bold text-slate-900 tabular-nums">
               {scoreboard.active_bridges_armed}{' '}
-              <span className="text-[11px] font-normal text-amber-800">
+              <span className="text-[11px] font-normal text-slate-600">
                 (med {formatDurationSeconds(scoreboard.median_bridge_age_seconds)})
               </span>
             </div>
@@ -187,7 +187,7 @@ export const CommandBar: React.FC<CommandBarProps> = ({
             <div className="text-sm font-mono font-bold text-slate-900 tabular-nums">
               {scoreboard.active_agents_count ?? 0} Active
               {(scoreboard.quarantined_agents_count ?? 0) > 0 && (
-                <span className="text-[11px] font-bold text-red-700 ml-1.5">
+                <span className="text-[11px] font-medium text-slate-600 ml-1.5">
                   ({scoreboard.quarantined_agents_count} Quarantined)
                 </span>
               )}
@@ -195,7 +195,7 @@ export const CommandBar: React.FC<CommandBarProps> = ({
           </div>
         </div>
 
-        {/* Right Tray: Witness Mode + Live Feeds + Smartcard Toggle + Action Inbox Badge + Hold-to-Freeze / Dual-Key Thaw */}
+        {/* Right Tray: Institutional Uniform Controls (Docket & Manifest Style) */}
         <div className="flex items-center gap-2">
           <span
             role="status"
@@ -204,13 +204,9 @@ export const CommandBar: React.FC<CommandBarProps> = ({
                 ? 'Ledger Merkle checkpoints are anchored to an external transparency notary (WARRANT_EXTERNAL_ANCHOR_URL).'
                 : 'Ledger Merkle checkpoints are anchored in-process/locally only (configure WARRANT_EXTERNAL_ANCHOR_URL for external notary anchoring).'
             }
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded border text-[11px] font-mono font-semibold ${
-              scoreboard.witness_mode === 'EXTERNAL_NOTARY'
-                ? 'bg-emerald-50 border-emerald-400 text-emerald-950'
-                : 'bg-amber-50 border-amber-400 text-amber-950'
-            }`}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded border border-slate-200 bg-slate-50 text-slate-700 text-[11px] font-mono font-medium"
           >
-            <Shield className="w-3.5 h-3.5" />
+            <Shield className="w-3.5 h-3.5 text-slate-500" />
             <span>Witness: {scoreboard.witness_mode || 'IN_PROCESS_LOCAL'}</span>
           </span>
 
@@ -218,14 +214,10 @@ export const CommandBar: React.FC<CommandBarProps> = ({
             <button
               type="button"
               onClick={onOpenVendorConnectors}
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded border text-xs font-mono font-semibold transition ${
-                configuredVendorCount > 1
-                  ? 'bg-emerald-50 border-emerald-400 text-emerald-950 hover:bg-emerald-100'
-                  : 'bg-slate-100 border-slate-300 text-slate-700 hover:bg-slate-200'
-              }`}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-mono font-medium transition"
               title="Configure 18 Connected Estate & Patch Vendor Systems (or Attach Demo Estate Mock)"
             >
-              <PlugZap className={`w-3.5 h-3.5 ${configuredVendorCount > 1 ? 'text-emerald-700' : 'text-slate-600'}`} />
+              <PlugZap className="w-3.5 h-3.5 text-slate-500" />
               <span>
                 Vendors: {configuredVendorCount}/{totalVendorCount} Ready
               </span>
@@ -235,14 +227,14 @@ export const CommandBar: React.FC<CommandBarProps> = ({
           <button
             type="button"
             onClick={onOpenLiveFeeds}
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded border text-xs font-mono font-semibold transition ${
-              feedStatus?.config.mode === 'live'
-                ? 'bg-emerald-50 border-emerald-400 text-emerald-950 hover:bg-emerald-100'
-                : 'bg-slate-100 border-slate-300 text-slate-700 hover:bg-slate-200'
-            }`}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-mono font-medium transition"
             title="Configure Optional Live Threat & Scanner Feeds (CISA KEV, Google OSV.dev, Aquasec Trivy)"
           >
-            <Radio className={`w-3.5 h-3.5 ${feedStatus?.config.mode === 'live' ? 'text-emerald-600' : 'text-slate-500'}`} />
+            <span
+              className={`w-2 h-2 rounded-full ${
+                feedStatus?.config.mode === 'live' ? 'bg-emerald-600' : 'bg-slate-400'
+              }`}
+            />
             <span>
               Feeds: {feedStatus?.config.mode === 'live' ? `LIVE (KEV:${feedStatus.cisa_kev_catalog_count})` : 'OFFLINE'}
             </span>
@@ -254,13 +246,13 @@ export const CommandBar: React.FC<CommandBarProps> = ({
             aria-pressed={smartcardBarEnabled}
             className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded border text-xs font-medium transition ${
               smartcardBarEnabled
-                ? 'bg-slate-900 text-white border-slate-900'
-                : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                ? 'bg-slate-800 text-white border-slate-800'
+                : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
             }`}
             title="Toggle Deterministic FIPS/Ed25519 Test Smartcard Bar"
           >
             <CreditCard className="w-3.5 h-3.5" />
-            <span>FIPS Smartcard Bar: {smartcardBarEnabled ? 'ON' : 'OFF'}</span>
+            <span>Smartcards: {smartcardBarEnabled ? 'ON' : 'OFF'}</span>
           </button>
 
           <button
@@ -269,11 +261,11 @@ export const CommandBar: React.FC<CommandBarProps> = ({
             aria-pressed={theme === 'dark'}
             aria-label={theme === 'dark' ? 'Switch Console to Light Mode' : 'Switch Console to Dark Mode'}
             title={theme === 'dark' ? 'Switch Console to Light Mode' : 'Switch Console to Dark Mode'}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-mono font-semibold transition"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-mono font-medium transition"
           >
             {theme === 'dark' ? (
               <>
-                <Sun className="w-3.5 h-3.5 text-amber-400" />
+                <Sun className="w-3.5 h-3.5 text-slate-400" />
                 <span>Light</span>
               </>
             ) : (
@@ -288,10 +280,10 @@ export const CommandBar: React.FC<CommandBarProps> = ({
             <button
               type="button"
               onClick={onLogout}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 text-xs font-mono font-semibold transition"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-mono font-medium transition"
               title={`Signed in as ${operatorEmail} (${operatorRole || 'OPERATOR'}) — Click to Sign Out`}
             >
-              <LogOut className="w-3.5 h-3.5 text-slate-600" />
+              <LogOut className="w-3.5 h-3.5 text-slate-500" />
               <span className="max-w-[130px] truncate">{operatorEmail}</span>
             </button>
           )}
@@ -299,10 +291,10 @@ export const CommandBar: React.FC<CommandBarProps> = ({
           <button
             type="button"
             onClick={onOpenInbox}
-            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded border text-xs font-semibold transition ${
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded border text-xs font-medium transition ${
               scoreboard.awaiting_dual_key_inbox_count > 0
-                ? 'bg-amber-50 border-amber-400 text-amber-950 hover:bg-amber-100'
-                : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'
+                ? 'bg-amber-50 border-amber-200 text-amber-900 hover:bg-amber-100'
+                : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
             }`}
           >
             <Inbox className="w-3.5 h-3.5" />
@@ -327,38 +319,38 @@ export const CommandBar: React.FC<CommandBarProps> = ({
               }}
               onKeyUp={stopHold}
               aria-label="Hold to activate emergency fleet freeze"
-              className="relative overflow-hidden inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded border border-red-700 bg-red-600 hover:bg-red-700 text-white text-xs font-bold tracking-wide select-none"
+              className="relative overflow-hidden inline-flex items-center gap-1.5 px-3 py-1.5 rounded border border-red-200 bg-white hover:bg-red-50 text-red-800 text-xs font-semibold select-none"
             >
               <span
-                className="absolute inset-y-0 left-0 bg-red-950/50 transition-all duration-75"
+                className="absolute inset-y-0 left-0 bg-red-100 transition-all duration-75"
                 style={{ width: `${holdProgress}%` }}
               />
               <Lock className="w-3.5 h-3.5 relative z-10" />
               <span className="relative z-10">
-                {holdProgress > 0 ? `HOLDING ${Math.round(holdProgress)}%` : '[ HOLD TO FREEZE FLEET ]'}
+                {holdProgress > 0 ? `HOLDING ${Math.round(holdProgress)}%` : 'Hold to Freeze'}
               </span>
             </button>
           ) : (
             <button
               type="button"
               onClick={() => setShowThawModal(true)}
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded border border-emerald-700 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border border-slate-800 bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold"
             >
               <Unlock className="w-3.5 h-3.5" />
-              <span>[ THAW FLEET (2-OF-2 REQUIRED) ]</span>
+              <span>Thaw Fleet (2-of-2)</span>
             </button>
           )}
         </div>
       </div>
 
-      {/* Deterministic FIPS/Ed25519 Test Smartcard Bar */}
+      {/* Deterministic FIPS/Ed25519 Test Smartcard Bar (Subtle Slate Institutional Toolbar) */}
       {smartcardBarEnabled && (
-        <div className="bg-slate-900 text-slate-200 border-t border-slate-800 px-4 py-1.5">
+        <div className="bg-slate-50 text-slate-700 border-t border-slate-200 px-4 py-1.5">
           <div className="max-w-[1600px] mx-auto flex flex-wrap items-center justify-between gap-2 text-[11px]">
             <div className="flex items-center gap-2 font-mono">
-              <Shield className="w-3.5 h-3.5 text-emerald-400" />
-              <span className="font-semibold text-white">DETERMINISTIC FIPS/ED25519 TEST SMARTCARD BAR:</span>
-              <span className="text-slate-400">Real client-side RFC 8032 Ed25519 PAE signing + W3C WebAuthn active</span>
+              <Shield className="w-3.5 h-3.5 text-slate-500" />
+              <span className="font-semibold text-slate-800">FIPS / ED25519 SMARTCARD TEST BAR:</span>
+              <span className="text-slate-500">Client-side RFC 8032 Ed25519 PAE + W3C WebAuthn active</span>
             </div>
             <div className="flex flex-wrap items-center gap-2 font-mono">
               {testPersonas
@@ -368,8 +360,8 @@ export const CommandBar: React.FC<CommandBarProps> = ({
                     key={p.key_id}
                     className={`px-2 py-0.5 rounded border ${
                       p.principal_id.includes('mallory') || p.principal_id.includes('carol')
-                        ? 'border-rose-700 bg-rose-950/60 text-rose-200'
-                        : 'border-slate-700 bg-slate-800 text-slate-200'
+                        ? 'border-slate-300 bg-slate-100 text-slate-600'
+                        : 'border-slate-200 bg-white text-slate-800'
                     }`}
                   >
                     {p.badge_label} · fp:{p.key_fingerprint.slice(0, 8)}

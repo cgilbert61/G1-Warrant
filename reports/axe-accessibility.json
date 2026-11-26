@@ -13,8 +13,8 @@
     "compliance": "Section 508 Federal Accessibility",
     "liveEndpointVerified": true
   },
-  "timestamp": "2026-11-23T22:12:41.265087+00:00",
-  "filesAudited": 14,
+  "timestamp": "2026-11-26T22:33:16.803217+00:00",
+  "filesAudited": 15,
   "violations": [],
   "passes": [
     {
@@ -181,6 +181,17 @@
       "tags": [
         "wcag2a",
         "wcag111",
+        "section508"
+      ],
+      "file": "web/src/components/CommandBar.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
         "section508"
       ],
       "file": "web/src/components/CommandBar.tsx"
@@ -586,6 +597,163 @@
         "section508"
       ],
       "file": "web/src/components/LiveFeedsModal.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='warrantLoginEmail'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/LoginPortal.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='warrantLoginPassword'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/LoginPortal.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='warrantLoginMfa'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/LoginPortal.tsx"
+    },
+    {
+      "id": "image-alt",
+      "impact": "critical",
+      "description": "Image '/g1-logo.jpg' provides descriptive alt text",
+      "tags": [
+        "wcag2a",
+        "wcag111",
+        "section508"
+      ],
+      "file": "web/src/components/LoginPortal.tsx"
+    },
+    {
+      "id": "image-alt",
+      "impact": "critical",
+      "description": "Image '/g1-logo.jpg' provides descriptive alt text",
+      "tags": [
+        "wcag2a",
+        "wcag111",
+        "section508"
+      ],
+      "file": "web/src/components/LoginPortal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/LoginPortal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/LoginPortal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/LoginPortal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/LoginPortal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/LoginPortal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/LoginPortal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/LoginPortal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/LoginPortal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/LoginPortal.tsx"
     },
     {
       "id": "label",
@@ -1502,8 +1670,8 @@
     }
   ],
   "summary": {
-    "totalChecks": 131,
-    "passedChecks": 131,
+    "totalChecks": 146,
+    "passedChecks": 146,
     "violationsCount": 0,
     "status": "PASS"
   }

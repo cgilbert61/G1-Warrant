@@ -35,8 +35,8 @@ export function computeRipeningBridgeStyle(armedAtISO: string, slaMinutes: numbe
     return {
       ratio: 0,
       uptimeSec: 0,
-      badgeClass: 'bg-emerald-50 border-emerald-300 text-emerald-900',
-      barClass: 'bg-emerald-600',
+      badgeClass: 'bg-slate-50 border-slate-200 text-slate-700',
+      barClass: 'bg-slate-500',
       label: 'RETIRED AFTER LOCKOUT',
     };
   }
@@ -49,8 +49,8 @@ export function computeRipeningBridgeStyle(armedAtISO: string, slaMinutes: numbe
     return {
       ratio,
       uptimeSec,
-      badgeClass: 'bg-red-100 border-red-500 text-red-950 font-semibold',
-      barClass: 'bg-red-600',
+      badgeClass: 'bg-red-50/70 border-red-200 text-red-900 font-medium',
+      barClass: 'bg-red-700',
       label: status === 'REARMED_DRIFT' ? 'RE-ARMED ON DRIFT' : 'SLA BREACH IMMINENT',
     };
   }
@@ -58,25 +58,25 @@ export function computeRipeningBridgeStyle(armedAtISO: string, slaMinutes: numbe
     return {
       ratio,
       uptimeSec,
-      badgeClass: 'bg-rose-100 border-rose-400 text-rose-950',
-      barClass: 'bg-rose-600',
-      label: 'RIPENING CRIMSON',
+      badgeClass: 'bg-amber-50/70 border-amber-200 text-amber-900',
+      barClass: 'bg-amber-700',
+      label: 'SLA >= 70% ELAPSED',
     };
   }
   if (ratio >= 0.4) {
     return {
       ratio,
       uptimeSec,
-      badgeClass: 'bg-orange-100 border-orange-400 text-orange-950',
-      barClass: 'bg-orange-500',
+      badgeClass: 'bg-slate-50 border-slate-200 text-slate-800',
+      barClass: 'bg-slate-600',
       label: 'AGING CONTAINMENT',
     };
   }
   return {
     ratio,
     uptimeSec,
-    badgeClass: 'bg-amber-50 border-amber-300 text-amber-900',
-    barClass: 'bg-amber-500',
+    badgeClass: 'bg-slate-50 border-slate-200 text-slate-700',
+    barClass: 'bg-slate-500',
     label: 'SHIELD ARMED',
   };
 }

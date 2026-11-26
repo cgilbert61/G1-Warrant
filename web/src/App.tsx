@@ -317,12 +317,12 @@ export const App: React.FC = () => {
                   <span>{item.label}</span>
                   {item.badge !== undefined && (
                     <span
-                      className={`px-1.5 py-0.2 text-[10px] font-mono rounded ${
+                      className={`px-1.5 py-0.2 text-[10px] font-mono rounded border ${
                         item.key === 'VIEW4_CONTAINMENT' && snapshot.drifts.length > 0
-                          ? 'bg-red-600 text-white'
+                          ? 'bg-red-50 border-red-200 text-red-800'
                           : item.key === 'VIEW2_WARRANTS' && pendingExceptionsCount > 0
-                          ? 'bg-amber-500 text-slate-950'
-                          : 'bg-slate-200 text-slate-800'
+                          ? 'bg-amber-50 border-amber-200 text-amber-800'
+                          : 'bg-slate-100 border-slate-200 text-slate-700'
                       }`}
                     >
                       {item.badge}
