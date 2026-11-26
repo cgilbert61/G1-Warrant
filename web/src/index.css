@@ -250,9 +250,37 @@ html.dark input[type='file']::file-selector-button:hover {
 
 /* 6. Semantic Status Surfaces & Text (Emerald, Amber, Orange, Red, Rose, Indigo, Sky) */
 
+/* Bridge SLA Callout Boxes: crisp black text (#020617) in BOTH Light & Dark modes (AAA >= 14:1 contrast) */
+.bridge-sla-box,
+html.dark .bridge-sla-box,
+.bridge-sla-box span,
+html.dark .bridge-sla-box span {
+  color: #020617 !important;
+}
+
+.bridge-sla-critical,
+html.dark .bridge-sla-critical {
+  background-color: #fee2e2 !important;
+  border-color: #f87171 !important;
+}
+
+.bridge-sla-warn,
+html.dark .bridge-sla-warn {
+  background-color: #fef3c7 !important;
+  border-color: #fbbf24 !important;
+}
+
+.bridge-sla-neutral,
+html.dark .bridge-sla-neutral {
+  background-color: #e2e8f0 !important;
+  border-color: #94a3b8 !important;
+}
+
 /* Emerald (Operational / Attested / Verified) */
 html.dark .bg-emerald-50,
 html.dark .bg-emerald-50\/30,
+html.dark .bg-emerald-50\/60,
+html.dark .bg-emerald-50\/70,
 html.dark .bg-emerald-100 {
   background-color: rgba(6, 78, 59, 0.42);
 }
@@ -275,6 +303,7 @@ html.dark .text-emerald-600 {
 /* Amber (Bridged / Warning / Pending Quorum) */
 html.dark .bg-amber-50,
 html.dark .bg-amber-50\/30,
+html.dark .bg-amber-50\/70,
 html.dark .bg-amber-100 {
   background-color: rgba(120, 53, 15, 0.42);
 }
@@ -309,6 +338,7 @@ html.dark .bg-red-50,
 html.dark .bg-red-50\/40,
 html.dark .bg-red-50\/50,
 html.dark .bg-red-50\/60,
+html.dark .bg-red-50\/70,
 html.dark .bg-red-100 {
   background-color: rgba(127, 29, 29, 0.45);
 }

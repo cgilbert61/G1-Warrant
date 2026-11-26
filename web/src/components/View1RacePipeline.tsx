@@ -552,7 +552,7 @@ export const View1RacePipeline: React.FC<View1RacePipelineProps> = ({
                               {formatDurationSeconds(bridgeStyle.uptimeSec)} / {item.bridge_sla_minutes}m
                             </span>
                           </div>
-                          <div className="w-full h-1 bg-white/60 rounded overflow-hidden mt-1">
+                          <div className="w-full h-1.5 bg-slate-900/15 rounded overflow-hidden mt-1">
                             <div
                               className={`h-full ${bridgeStyle.barClass}`}
                               style={{ width: `${Math.min(100, bridgeStyle.ratio * 100)}%` }}

@@ -49,7 +49,7 @@ export function computeRipeningBridgeStyle(armedAtISO: string, slaMinutes: numbe
     return {
       ratio,
       uptimeSec,
-      badgeClass: 'bg-red-50/70 border-red-200 text-red-900 font-medium',
+      badgeClass: 'bridge-sla-box bridge-sla-critical font-semibold',
       barClass: 'bg-red-700',
       label: status === 'REARMED_DRIFT' ? 'RE-ARMED ON DRIFT' : 'SLA BREACH IMMINENT',
     };
@@ -58,7 +58,7 @@ export function computeRipeningBridgeStyle(armedAtISO: string, slaMinutes: numbe
     return {
       ratio,
       uptimeSec,
-      badgeClass: 'bg-amber-50/70 border-amber-200 text-amber-900',
+      badgeClass: 'bridge-sla-box bridge-sla-warn font-semibold',
       barClass: 'bg-amber-700',
       label: 'SLA >= 70% ELAPSED',
     };
@@ -67,16 +67,16 @@ export function computeRipeningBridgeStyle(armedAtISO: string, slaMinutes: numbe
     return {
       ratio,
       uptimeSec,
-      badgeClass: 'bg-slate-50 border-slate-200 text-slate-800',
-      barClass: 'bg-slate-600',
+      badgeClass: 'bridge-sla-box bridge-sla-neutral font-medium',
+      barClass: 'bg-slate-700',
       label: 'AGING CONTAINMENT',
     };
   }
   return {
     ratio,
     uptimeSec,
-    badgeClass: 'bg-slate-50 border-slate-200 text-slate-700',
-    barClass: 'bg-slate-500',
+    badgeClass: 'bridge-sla-box bridge-sla-neutral font-medium',
+    barClass: 'bg-slate-600',
     label: 'SHIELD ARMED',
   };
 }
