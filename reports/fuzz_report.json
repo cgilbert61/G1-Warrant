@@ -1,0 +1,19 @@
+{
+  "project": "G1-Warrant",
+  "generated_at": "2026-11-27T15:15:36Z",
+  "runtime": "go1.26.2 windows/amd64 (native go test -fuzz)",
+  "status": "EXECUTED",
+  "targets_total": 6,
+  "targets_passed": 6,
+  "targets_failed": 0,
+  "total_executions": 1027497,
+  "crashes": 0,
+  "targets": [
+    {"package": "internal/crypto", "name": "FuzzCanonicalizeJSON", "executions": 141394, "corpus": 160, "status": "PASS"},
+    {"package": "internal/crypto", "name": "FuzzDSSEVerifyDualHuman", "executions": 335932, "corpus": 115, "status": "PASS"},
+    {"package": "internal/crypto", "name": "FuzzSecretBoxOpenColumn", "executions": 56107, "corpus": 83, "status": "PASS"},
+    {"package": "internal/extractor", "name": "FuzzParseUntrustedSARIF", "executions": 277499, "corpus": 122, "status": "PASS"},
+    {"package": "internal/extractor", "name": "FuzzParseUntrustedDiff", "executions": 82153, "corpus": 95, "status": "PASS"},
+    {"package": "internal/extractor", "name": "FuzzParseUntrustedSecretFindings", "executions": 134412, "corpus": 153, "status": "PASS"}
+  ]
+}
