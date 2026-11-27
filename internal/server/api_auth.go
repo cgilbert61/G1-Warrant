@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -114,6 +115,15 @@ func newConsoleAuthManager() *consoleAuthManager {
 	if secret != "" {
 		h := sha256.Sum256([]byte(secret))
 		key = h[:]
+	} else if kp := strings.TrimSpace(os.Getenv("WARRANT_KERNEL_KEY_PATH")); kp != "" {
+		sessFile := filepath.Join(filepath.Dir(kp), "console_session.key")
+		if raw, rErr := os.ReadFile(sessFile); rErr == nil && len(raw) == 32 {
+			key = raw
+		} else {
+			key = make([]byte, 32)
+			_, _ = rand.Read(key)
+			_ = os.WriteFile(sessFile, key, 0600)
+		}
 	} else {
 		key = make([]byte, 32)
 		_, _ = rand.Read(key)

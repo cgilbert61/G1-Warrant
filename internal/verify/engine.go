@@ -624,6 +624,7 @@ func (e *Engine) CheckFleetDriftOnce(ctx context.Context) error {
 		return err
 	}
 
+	seenPodDrift := map[string]bool{}
 	for _, lo := range lockouts {
 		if lo.Status == "SUSPENDED_FOR_QUARANTINED_ROLLBACK" {
 			continue
@@ -636,7 +637,12 @@ func (e *Engine) CheckFleetDriftOnce(ctx context.Context) error {
 			if pod.RunningDigest != lo.BannedDigest {
 				continue
 			}
-			driftKey := fmt.Sprintf("%s|%s|%s|%d", lo.LockoutID, pod.PodName, pod.RunningDigest, wl.LastDriftInjectedAtUnixMs)
+			svcPodKey := fmt.Sprintf("%s|%s|%s", lo.ServiceID, pod.PodName, pod.RunningDigest)
+			if seenPodDrift[svcPodKey] {
+				continue
+			}
+			seenPodDrift[svcPodKey] = true
+			driftKey := fmt.Sprintf("%s|%s|%s|%d", lo.ServiceID, pod.PodName, pod.RunningDigest, wl.LastDriftInjectedAtUnixMs)
 			e.mu.Lock()
 			already := e.handledDrifts[driftKey]
 			e.mu.Unlock()
@@ -1005,6 +1011,21 @@ func (e *Engine) ReconcileWorkloadDriftAndReverify(ctx context.Context, bridgeID
 	brg.BlockerReasonCode = "DRIFT_RECONCILED_AND_REVERIFIED"
 	if err := e.store.UpsertBridge(ctx, *brg); err != nil {
 		return nil, nil, err
+	}
+
+	// Also retire any co-rearmed drift bridges on the same service now that 100% of pods on brg.ServiceID are verified clean
+	if allBridges, bErr := e.store.ListBridges(ctx); bErr == nil {
+		for _, other := range allBridges {
+			if other.BridgeID == brg.BridgeID || other.ServiceID != brg.ServiceID || other.Status != "REARMED_DRIFT" {
+				continue
+			}
+			_ = e.shield.RetireBridge(ctx, other.BridgeID)
+			other.Status = "RETIRED"
+			other.RetiredAt = &now
+			other.BlockerReasonCode = "DRIFT_RECONCILED_AND_REVERIFIED"
+			_ = e.store.UpsertBridge(ctx, other)
+			e.emit("BRIDGE_UPDATED", &other)
+		}
 	}
 	_, _ = e.store.ConsolidateDuplicateActiveBridges(ctx)
 
