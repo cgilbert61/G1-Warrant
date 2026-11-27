@@ -97,6 +97,7 @@ func main() {
 		}
 	}
 
+	orch.RecoverAndConsolidateContainmentState(ctx)
 	orch.N1Warrant.StartFreezeListener(ctx)
 	orch.N3Verify.StartDriftWatcher(ctx, 2*time.Second)
 	orch.Feeds.StartBackgroundPoller(ctx)

@@ -308,6 +308,11 @@ func (o *ControlPlaneOrchestrator) BindRemediationToWarrantClass(
 			}
 			return &resp.Remediation, nil
 		}
+		resumed, rErr := o.ResumeRemediationRollout(ctx, item.RemediationID)
+		if rErr != nil {
+			return item, rErr
+		}
+		return resumed, nil
 	}
 	return item, nil
 }
@@ -358,6 +363,13 @@ func (o *ControlPlaneOrchestrator) ExecuteFinderIntakeRemediation(
 
 		remID := "rem-" + uuid.NewString()[:8]
 		now := time.Now().UTC()
+		createdAt := now
+		if prevOpen, pErr := o.Store.FindOpenRemediationByServiceAndCVE(ctx, svc.ServiceID, f.CVEID); pErr == nil && prevOpen != nil {
+			remID = prevOpen.RemediationID
+			if !prevOpen.CreatedAt.IsZero() {
+				createdAt = prevOpen.CreatedAt
+			}
+		}
 		var firstSeenPtr, lastSeenPtr *time.Time
 		if ts, tErr := time.Parse(time.RFC3339, f.FirstSeenAt); tErr == nil {
 			firstSeenPtr = &ts
@@ -392,7 +404,7 @@ func (o *ControlPlaneOrchestrator) ExecuteFinderIntakeRemediation(
 			FirstSeenAt:              firstSeenPtr,
 			LastSeenAt:               lastSeenPtr,
 			DistributorID:            strings.TrimSpace(distributorID),
-			CreatedAt:                now,
+			CreatedAt:                createdAt,
 			UpdatedAt:                now,
 		}
 
@@ -430,7 +442,15 @@ func (o *ControlPlaneOrchestrator) ExecuteFinderIntakeRemediation(
 		})
 
 		// Stage 2: Bridge Before Patch — immediately arm containment bridge across K8s/Cloud/Linux/Windows even for unmapped/unwarranted findings!
+		// Deduplicate active bridges per (service_id, cve_id) so repeated scans reuse and update the active bridge without resetting SLA age.
 		bridgeID := "brg-" + uuid.NewString()[:8]
+		var prevArmedAt time.Time
+		rearmCount := 0
+		if existingBrg, ebErr := o.Store.FindActiveBridgeByServiceAndCVE(ctx, svc.ServiceID, f.CVEID); ebErr == nil && existingBrg != nil {
+			bridgeID = existingBrg.BridgeID
+			prevArmedAt = existingBrg.ArmedAt
+			rearmCount = existingBrg.RearmedCount
+		}
 		blockerReason := "AUTONOMOUS_CANARY_IN_PROGRESS"
 		if f.CVEMappingStatus == models.CVEMappingStatusUnmappedVendor && wErr != nil {
 			blockerReason = "UNMAPPED_FINDING_REQUIRES_CLASS_BINDING"
@@ -455,11 +475,15 @@ func (o *ControlPlaneOrchestrator) ExecuteFinderIntakeRemediation(
 			AllowKubeAPIServerEgress: svc.AllowKubeAPIServerEgress,
 			SLABridgeMinutes:         item.BridgeSLAMIN,
 			BlockerReasonCode:        blockerReason,
+			RearmCount:               rearmCount,
 			DistributorID:            strings.TrimSpace(distributorID),
 			AssetIdentity:            f.AssetIdentity,
 		})
 		if err != nil {
 			return nil, err
+		}
+		if !prevArmedAt.IsZero() {
+			bridge.ArmedAt = prevArmedAt
 		}
 		if err := o.Store.UpsertBridge(ctx, *bridge); err != nil {
 			return nil, err

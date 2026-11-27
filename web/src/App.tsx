@@ -250,7 +250,12 @@ export const App: React.FC = () => {
     {
       key: 'VIEW4_CONTAINMENT',
       label: '4. Bridges & Drift Lockout',
-      badge: snapshot.drifts.length > 0 ? snapshot.drifts.length : undefined,
+      badge: (() => {
+        const unresolved = snapshot.drifts.filter((d) => !d.resolved_at).length;
+        if (unresolved > 0) return unresolved;
+        const activeBrg = snapshot.bridges.filter((b) => b.status !== 'RETIRED').length;
+        return activeBrg > 0 ? activeBrg : undefined;
+      })(),
       icon: <ShieldAlert className="w-4 h-4" />,
     },
     {
@@ -318,7 +323,7 @@ export const App: React.FC = () => {
                   {item.badge !== undefined && (
                     <span
                       className={`px-1.5 py-0.2 text-[10px] font-mono rounded border ${
-                        item.key === 'VIEW4_CONTAINMENT' && snapshot.drifts.length > 0
+                        item.key === 'VIEW4_CONTAINMENT' && snapshot.drifts.some((d) => !d.resolved_at)
                           ? 'bg-red-50 border-red-200 text-red-800'
                           : item.key === 'VIEW2_WARRANTS' && pendingExceptionsCount > 0
                           ? 'bg-amber-50 border-amber-200 text-amber-800'
@@ -603,6 +608,23 @@ export const App: React.FC = () => {
                 { reason_code: reason }
               );
             }}
+            onReconcileDrift={async (bridgeId) => {
+              await postActionJSON(
+                `/api/v1/bridges/${encodeURIComponent(bridgeId)}/reconcile-drift`,
+                {},
+                'RECONCILE_CONTAINMENT',
+                { reason_code: `RECONCILE_DRIFT:${bridgeId}` }
+              );
+            }}
+            onRetryRollout={async (remediationId) => {
+              await postActionJSON(
+                `/api/v1/remediations/${encodeURIComponent(remediationId)}/retry-rollout`,
+                {},
+                'RECONCILE_CONTAINMENT',
+                { remediation_id: remediationId }
+              );
+            }}
+            onOpenWarrantDesk={() => setActiveView('VIEW2_WARRANTS')}
           />
         )}
 

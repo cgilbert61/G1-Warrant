@@ -200,13 +200,13 @@ export const View1RacePipeline: React.FC<View1RacePipelineProps> = ({
 
             <span
               className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded border text-xs font-mono font-medium ${
-                driftItems.length > 0 || drifts.length > 0
+                driftItems.length > 0 || drifts.some((d) => !d.resolved_at)
                   ? 'bg-red-50 border-red-200 text-red-900'
                   : 'bg-slate-50 border-slate-200 text-slate-600'
               }`}
             >
               <AlertTriangle className="w-3.5 h-3.5" />
-              Drift Re-Arms: {drifts.length}
+              Drift Re-Arms: {drifts.filter((d) => !d.resolved_at).length}
             </span>
 
             <span

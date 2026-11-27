@@ -141,6 +141,12 @@ export function formatBridgeBlockerReason(b: ContainmentBridge): string {
       'WN-8 Partial Fleet Landing — Bridge Held Active Until Reboot-Waiting / Pending Assets Converge',
     DISTRIBUTOR_DISPATCH_ONLY_BRIDGE_HELD:
       'WN-8 Dispatch-Only Distributor — Bridge Held Active Until Out-of-Band Per-Asset Verification',
+    DRIFT_RECONCILED_AND_REVERIFIED:
+      'Retired Following Rogue Pod Eviction & N3 Clean-Digest Re-Verification',
+    RETIRED_BY_SUPERSEDING_ATTESTED_CLOSURE:
+      'Retired — Superseded by Verified Attested Closure on Workload',
+    SUPERSEDED_DUPLICATE_CONTAINMENT_BRIDGE:
+      'Retired — Consolidated into Canonical Active Workload Containment Bridge',
   };
   return map[b.blocker_reason_code] || b.blocker_reason_code;
 }

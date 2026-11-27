@@ -639,13 +639,34 @@ func (e *Engine) CheckFleetDriftOnce(ctx context.Context) error {
 			driftKey := fmt.Sprintf("%s|%s|%s|%d", lo.LockoutID, pod.PodName, pod.RunningDigest, wl.LastDriftInjectedAtUnixMs)
 			e.mu.Lock()
 			already := e.handledDrifts[driftKey]
-			if !already {
-				e.handledDrifts[driftKey] = true
-			}
 			e.mu.Unlock()
 			if already {
 				continue
 			}
+
+			rem, rErr := e.store.GetRemediation(ctx, lo.RemediationID)
+			if rErr != nil {
+				continue
+			}
+
+			// Persisted DB deduplication guard across warrantd container restarts:
+			// If PostgreSQL already recorded an unresolved DriftIncident for this exact (lockout, pod, digest)
+			// at or after LastDriftInjectedAtUnixMs AND the workload's containment bridge is already armed,
+			// mark handled in memory and skip duplicate re-arm counting.
+			if persisted, pErr := e.store.HasUnresolvedDriftIncidentSince(ctx, lo.LockoutID, pod.PodName, pod.RunningDigest, wl.LastDriftInjectedAtUnixMs); pErr == nil && persisted {
+				if rem.BridgeID != "" {
+					if existingBrg, bErr := e.store.GetBridge(ctx, rem.BridgeID); bErr == nil && existingBrg != nil && existingBrg.Status != "RETIRED" {
+						e.mu.Lock()
+						e.handledDrifts[driftKey] = true
+						e.mu.Unlock()
+						continue
+					}
+				}
+			}
+
+			e.mu.Lock()
+			e.handledDrifts[driftKey] = true
+			e.mu.Unlock()
 
 			now := time.Now().UTC()
 			latencyMs := int64(45)
@@ -658,10 +679,6 @@ func (e *Engine) CheckFleetDriftOnce(ctx context.Context) error {
 				}
 			}
 
-			rem, rErr := e.store.GetRemediation(ctx, lo.RemediationID)
-			if rErr != nil {
-				continue
-			}
 			svc, _ := e.store.GetEstateService(ctx, lo.ServiceID)
 			ns := "default"
 			if svc != nil && svc.Namespace != "" {
@@ -670,8 +687,17 @@ func (e *Engine) CheckFleetDriftOnce(ctx context.Context) error {
 
 			bridgeID := rem.BridgeID
 			rearmCount := 1
+			var prevArmedAt time.Time
+			if bridgeID == "" {
+				if activeSame, fErr := e.store.FindActiveBridgeByServiceAndCVE(ctx, lo.ServiceID, lo.CVEID); fErr == nil && activeSame != nil {
+					bridgeID = activeSame.BridgeID
+				}
+			}
 			if existing, bErr := e.store.GetBridge(ctx, bridgeID); bErr == nil {
 				rearmCount = existing.RearmedCount + 1
+				if existing.Status != "RETIRED" {
+					prevArmedAt = existing.ArmedAt
+				}
 			}
 			if bridgeID == "" {
 				bridgeID = "brg-drift-" + uuid.NewString()[:8]
@@ -692,6 +718,9 @@ func (e *Engine) CheckFleetDriftOnce(ctx context.Context) error {
 			})
 			if err != nil {
 				continue
+			}
+			if !prevArmedAt.IsZero() {
+				rearmedBridge.ArmedAt = prevArmedAt
 			}
 			_ = e.store.UpsertBridge(ctx, *rearmedBridge)
 
@@ -879,6 +908,147 @@ func (e *Engine) HandleTetragonDriftEvent(ctx context.Context, ev models.Tetrago
 	e.emit("BRIDGE_REARMED", rearmedBridge)
 	e.emit("REMEDIATION_UPDATED", rem)
 	return &inc, nil
+}
+
+// ReconcileWorkloadDriftAndReverify cordons & recycles any rogue/drifted pods on bridge.ServiceID back to the
+// verified clean image digest, verifies 100% live pod compliance against enforced Admission Lockouts, marks open
+// DriftIncidents resolved, and retires the re-armed containment bridge.
+func (e *Engine) ReconcileWorkloadDriftAndReverify(ctx context.Context, bridgeID, actor string) (*models.ContainmentBridge, *models.RemediationItem, error) {
+	brg, err := e.store.GetBridge(ctx, strings.TrimSpace(bridgeID))
+	if err != nil {
+		return nil, nil, err
+	}
+	svc, err := e.store.GetEstateService(ctx, brg.ServiceID)
+	if err != nil {
+		return nil, nil, err
+	}
+	rem, _ := e.store.GetRemediation(ctx, brg.RemediationID)
+
+	bannedDigests := map[string]bool{}
+	cleanDigest := ""
+	if lockouts, lErr := e.store.ListLockouts(ctx); lErr == nil {
+		for _, lo := range lockouts {
+			if lo.ServiceID == brg.ServiceID && lo.Status != "SUSPENDED_FOR_QUARANTINED_ROLLBACK" {
+				if lo.BannedDigest != "" {
+					bannedDigests[lo.BannedDigest] = true
+				}
+				if cleanDigest == "" && lo.PatchedDigest != "" {
+					cleanDigest = lo.PatchedDigest
+				}
+			}
+		}
+	}
+	if rem != nil && rem.PatchedDigest != "" && !bannedDigests[rem.PatchedDigest] {
+		cleanDigest = rem.PatchedDigest
+	}
+	if cleanDigest == "" {
+		cleanDigest = svc.CurrentDigest
+	}
+	if bannedDigests[cleanDigest] {
+		return nil, nil, fmt.Errorf("DRIFT_RECONCILE_NO_CLEAN_DIGEST: candidate clean digest %s is permanently banned", cleanDigest)
+	}
+
+	wl, err := e.deploy.InspectLiveWorkload(ctx, brg.ServiceID)
+	if err != nil {
+		return nil, nil, err
+	}
+	recycledCount := 0
+	for _, pod := range wl.Pods {
+		if bannedDigests[pod.RunningDigest] || (cleanDigest != "" && pod.RunningDigest != cleanDigest) || len(pod.FilesystemMutatedPaths) > 0 || len(pod.UntrackedProcesses) > 0 {
+			if _, cErr := e.deploy.CordonAndRecyclePod(ctx, brg.ServiceID, pod.PodName, cleanDigest); cErr != nil {
+				return nil, nil, fmt.Errorf("CORDON_AND_RECYCLE_FAILED (%s): %w", pod.PodName, cErr)
+			}
+			recycledCount++
+		}
+	}
+	if recycledCount == 0 && wl.LastDriftInjectedAtUnixMs > 0 {
+		_, _ = e.deploy.CordonAndRecyclePod(ctx, brg.ServiceID, "", cleanDigest)
+	}
+
+	// Re-sweep live pods and fail closed if any pod still violates the clean digest or admission lockouts
+	wlVerify, err := e.deploy.InspectLiveWorkload(ctx, brg.ServiceID)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, pod := range wlVerify.Pods {
+		if bannedDigests[pod.RunningDigest] || (cleanDigest != "" && pod.RunningDigest != cleanDigest) {
+			return nil, nil, fmt.Errorf("DRIFT_REVERIFY_FAILED: pod %s still reports %s (expected %s)", pod.PodName, pod.RunningDigest, cleanDigest)
+		}
+	}
+
+	now := time.Now().UTC()
+	_, _ = e.store.ResolveDriftIncidentsForService(ctx, brg.ServiceID, now)
+
+	// Clear in-memory drift keys for this service so any future drift event will be caught immediately
+	e.mu.Lock()
+	for k := range e.handledDrifts {
+		if strings.Contains(k, brg.ServiceID) {
+			delete(e.handledDrifts, k)
+		}
+	}
+	e.mu.Unlock()
+
+	if err := e.shield.RetireBridge(ctx, brg.BridgeID); err != nil {
+		return nil, nil, err
+	}
+	brg.Status = "RETIRED"
+	brg.RetiredAt = &now
+	brg.BlockerReasonCode = "DRIFT_RECONCILED_AND_REVERIFIED"
+	if err := e.store.UpsertBridge(ctx, *brg); err != nil {
+		return nil, nil, err
+	}
+	_, _ = e.store.ConsolidateDuplicateActiveBridges(ctx)
+
+	// Restore any DRIFT_VIOLATION remediations on this service whose pods now match cleanDigest
+	attestations, _ := e.store.ListAttestations(ctx)
+	attestedByRem := map[string]bool{}
+	for _, att := range attestations {
+		attestedByRem[att.RemediationID] = true
+	}
+	if allRems, aErr := e.store.ListRemediations(ctx); aErr == nil {
+		for i := range allRems {
+			r := &allRems[i]
+			if r.ServiceID != brg.ServiceID || (r.StatusHealth != models.HealthDriftViolation && r.RemediationID != brg.RemediationID) {
+				continue
+			}
+			r.PodSweepMatched = len(wlVerify.Pods)
+			r.PodSweepTotal = len(wlVerify.Pods)
+			r.BlockerCode = ""
+			if attestedByRem[r.RemediationID] || r.RemediationKind == models.RemediationKindInPodDrift {
+				r.Stage = models.StageAttestedClosed
+				r.StatusHealth = models.HealthNormal
+				if r.ClosedAt == nil {
+					r.ClosedAt = &now
+				}
+			} else {
+				r.StatusHealth = models.HealthNormal
+			}
+			_ = e.store.UpsertRemediation(ctx, r)
+			if rem != nil && r.RemediationID == rem.RemediationID {
+				cp := *r
+				rem = &cp
+			}
+			e.emit("REMEDIATION_UPDATED", r)
+		}
+	}
+
+	if rem != nil {
+		_ = e.recordTrace(ctx, rem.RemediationID, "N3", "DRIFT_ROGUE_POD_EVICTED_AND_REVERIFIED", "PASS", firstActor(actor, "operator"), crypto.SHA256Hex([]byte(cleanDigest)), map[string]string{
+			"bridge_id":      brg.BridgeID,
+			"recycled_pods":  fmt.Sprintf("%d", recycledCount),
+			"verified_pods":  fmt.Sprintf("%d/%d", len(wlVerify.Pods), len(wlVerify.Pods)),
+			"clean_digest":   cleanDigest,
+		})
+	}
+	e.emit("BRIDGE_UPDATED", brg)
+	return brg, rem, nil
+}
+
+func firstActor(a, fallback string) string {
+	if strings.TrimSpace(a) != "" {
+		return strings.TrimSpace(a)
+	}
+	return fallback
 }
 
 func (e *Engine) recordTrace(ctx context.Context, remID, eng, step, outcome, actor, hash string, fields map[string]string) error {

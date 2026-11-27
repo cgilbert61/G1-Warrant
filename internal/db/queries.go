@@ -676,6 +676,7 @@ func (s *Store) UpsertBridge(ctx context.Context, b models.ContainmentBridge) er
 			armed_at, retired_at, rearmed_count
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
 		ON CONFLICT (bridge_id) DO UPDATE SET
+			remediation_id = EXCLUDED.remediation_id,
 			substrate_family = EXCLUDED.substrate_family,
 			containment_mode = EXCLUDED.containment_mode,
 			rulepack_id = EXCLUDED.rulepack_id,
@@ -683,6 +684,9 @@ func (s *Store) UpsertBridge(ctx context.Context, b models.ContainmentBridge) er
 			allowed_egress_peers = EXCLUDED.allowed_egress_peers,
 			status = EXCLUDED.status,
 			blocker_reason_code = EXCLUDED.blocker_reason_code,
+			cilium_manifest_yaml = EXCLUDED.cilium_manifest_yaml,
+			k8s_netpol_yaml = EXCLUDED.k8s_netpol_yaml,
+			envoy_filter_json = EXCLUDED.envoy_filter_json,
 			native_shield_manifest = EXCLUDED.native_shield_manifest,
 			native_retire_spec = EXCLUDED.native_retire_spec,
 			retired_at = EXCLUDED.retired_at,
@@ -855,6 +859,161 @@ func (s *Store) ListDriftIncidents(ctx context.Context) ([]models.DriftIncident,
 		out = append(out, inc)
 	}
 	return out, rows.Err()
+}
+
+// FindActiveBridgeByServiceAndCVE returns an already-active (ARMED or REARMED_DRIFT) containment bridge
+// for (service_id, cve_id) so repeated vulnerability scans reuse and update the active shield rather than stacking duplicates.
+func (s *Store) FindActiveBridgeByServiceAndCVE(ctx context.Context, serviceID, cveID string) (*models.ContainmentBridge, error) {
+	bridges, err := s.ListBridges(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, b := range bridges {
+		if b.Status == "RETIRED" {
+			continue
+		}
+		if b.ServiceID == serviceID && strings.EqualFold(strings.TrimSpace(b.CVEID), strings.TrimSpace(cveID)) {
+			cp := b
+			return &cp, nil
+		}
+	}
+	return nil, fmt.Errorf("no active bridge for %s/%s", serviceID, cveID)
+}
+
+// FindOpenRemediationByServiceAndCVE returns an existing open (non-ATTESTED_CLOSED) RemediationItem for (service_id, cve_id)
+// provided it does not have a pending Four-Eyes ceiling exception.
+func (s *Store) FindOpenRemediationByServiceAndCVE(ctx context.Context, serviceID, cveID string) (*models.RemediationItem, error) {
+	var remID string
+	err := s.pool.QueryRow(ctx, `
+		SELECT r.remediation_id
+		FROM remediation_items r
+		WHERE r.service_id = $1
+		  AND UPPER(r.cve_id) = UPPER($2)
+		  AND r.stage <> 'ATTESTED_CLOSED'
+		  AND NOT EXISTS (
+		      SELECT 1 FROM ceiling_exceptions e
+		      WHERE e.remediation_id = r.remediation_id AND e.status = 'PENDING_DUAL_KEY'
+		  )
+		ORDER BY r.updated_at DESC
+		LIMIT 1
+	`, serviceID, strings.TrimSpace(cveID)).Scan(&remID)
+	if err != nil {
+		return nil, err
+	}
+	return s.GetRemediation(ctx, remID)
+}
+
+// ConsolidateDuplicateActiveBridges deduplicates stacked active containment bridges per (service_id, UPPER(cve_id))
+// and retires orphaned ARMED canary bridges whose (service_id, UPPER(cve_id)) has already reached ATTESTED_CLOSED.
+func (s *Store) ConsolidateDuplicateActiveBridges(ctx context.Context) (int, error) {
+	now := time.Now().UTC()
+	retiredTotal := 0
+
+	// 1. Retire orphaned ARMED bridges where the same (service_id, cve_id) has already attested & closed
+	//    and no active drift violation is holding the workload.
+	tag1, err := s.pool.Exec(ctx, `
+		UPDATE containment_bridges b
+		SET status = 'RETIRED',
+		    retired_at = $1,
+		    blocker_reason_code = 'RETIRED_BY_SUPERSEDING_ATTESTED_CLOSURE'
+		WHERE b.status = 'ARMED'
+		  AND EXISTS (
+		      SELECT 1 FROM remediation_items r
+		      WHERE r.service_id = b.service_id
+		        AND UPPER(r.cve_id) = UPPER(b.cve_id)
+		        AND r.stage = 'ATTESTED_CLOSED'
+		  )
+		  AND NOT EXISTS (
+		      SELECT 1 FROM remediation_items r2
+		      WHERE r2.bridge_id = b.bridge_id
+		        AND r2.status_health IN ('DRIFT_VIOLATION', 'QUARANTINED_ROLLBACK', 'EXCEPTION_ROUTED')
+		  )
+	`, now)
+	if err == nil {
+		retiredTotal += int(tag1.RowsAffected())
+	}
+
+	// 2. For any (service_id, UPPER(cve_id)) still having >1 active bridge, keep the canonical one
+	//    (preferring REARMED_DRIFT first, then earliest armed_at to preserve true SLA age) and retire duplicates.
+	bridges, err := s.ListBridges(ctx)
+	if err != nil {
+		return retiredTotal, err
+	}
+	keptByKey := map[string]models.ContainmentBridge{}
+	for _, b := range bridges {
+		if b.Status == "RETIRED" {
+			continue
+		}
+		key := b.ServiceID + "|" + strings.ToUpper(strings.TrimSpace(b.CVEID))
+		kept, seen := keptByKey[key]
+		if !seen {
+			keptByKey[key] = b
+			continue
+		}
+		// ListBridges orders REARMED_DRIFT first, then armed_at ASC, so `kept` is already the canonical winner.
+		_, uErr := s.pool.Exec(ctx, `
+			UPDATE containment_bridges
+			SET status = 'RETIRED', retired_at = $2, blocker_reason_code = 'SUPERSEDED_DUPLICATE_CONTAINMENT_BRIDGE'
+			WHERE bridge_id = $1
+		`, b.BridgeID, now)
+		if uErr == nil {
+			retiredTotal++
+			_, _ = s.pool.Exec(ctx, `
+				UPDATE remediation_items SET bridge_id = $1 WHERE bridge_id = $2 AND stage <> 'ATTESTED_CLOSED'
+			`, kept.BridgeID, b.BridgeID)
+		}
+	}
+	return retiredTotal, nil
+}
+
+// HasUnresolvedDriftIncidentSince checks whether PostgreSQL already has an unresolved drift_incidents row
+// for (lockout_id, rogue_pod_name, detected_digest) covering the current drift injection timestamp,
+// preventing warrantd container restarts from re-counting an already-contained rogue pod.
+func (s *Store) HasUnresolvedDriftIncidentSince(ctx context.Context, lockoutID, roguePodName, detectedDigest string, injectedUnixMs int64) (bool, error) {
+	var exists bool
+	if injectedUnixMs > 0 {
+		cutoff := time.UnixMilli(injectedUnixMs - 2000).UTC()
+		err := s.pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM drift_incidents
+				WHERE lockout_id = $1
+				  AND rogue_pod_name = $2
+				  AND detected_digest = $3
+				  AND resolved_at IS NULL
+				  AND detected_at >= $4
+			)
+		`, lockoutID, roguePodName, detectedDigest, cutoff).Scan(&exists)
+		return exists, err
+	}
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM drift_incidents
+			WHERE lockout_id = $1
+			  AND rogue_pod_name = $2
+			  AND detected_digest = $3
+			  AND resolved_at IS NULL
+		)
+	`, lockoutID, roguePodName, detectedDigest).Scan(&exists)
+	return exists, err
+}
+
+// ResolveDriftIncidentsForService marks all open drift_incidents on service_id as resolved after rogue pods
+// are cordoned, recycled to a verified clean digest, and re-verified by N3.
+func (s *Store) ResolveDriftIncidentsForService(ctx context.Context, serviceID string, resolvedAt time.Time) (int64, error) {
+	if resolvedAt.IsZero() {
+		resolvedAt = time.Now().UTC()
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE drift_incidents
+		SET resolved_at = $2,
+		    pod_cordoned = TRUE,
+		    pod_recycled = TRUE
+		WHERE service_id = $1 AND resolved_at IS NULL
+	`, serviceID, resolvedAt)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }
 
 // UpsertException persists a Four-Eyes Ceiling Exception record.

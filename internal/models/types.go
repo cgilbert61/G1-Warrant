@@ -368,6 +368,7 @@ const (
 	GovActionRecertifyAgentIdentity       = "RECERTIFY_AGENT_IDENTITY"
 	GovActionRevokeAgentIdentity          = "REVOKE_AGENT_IDENTITY"
 	GovActionEmitIGAEvent                 = "EMIT_IGA_EVENT"
+	GovActionReconcileContainment         = "RECONCILE_CONTAINMENT"
 )
 
 // PrincipalGovernancePayload is the RFC 8785 JCS payload inside a Principal Governance DSSEv1 envelope

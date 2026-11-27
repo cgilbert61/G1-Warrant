@@ -983,6 +983,13 @@ func (o *ControlPlaneOrchestrator) ExecuteSARIFRemediationWithOptions(
 
 		remID := "rem-" + uuid.NewString()[:8]
 		now := time.Now().UTC()
+		createdAt := now
+		if prevOpen, pErr := o.Store.FindOpenRemediationByServiceAndCVE(ctx, svc.ServiceID, f.CVEID); pErr == nil && prevOpen != nil {
+			remID = prevOpen.RemediationID
+			if !prevOpen.CreatedAt.IsZero() {
+				createdAt = prevOpen.CreatedAt
+			}
+		}
 		item := models.RemediationItem{
 			RemediationID:         remID,
 			RemediationKind:       models.RemediationKindImagePatch,
@@ -1001,7 +1008,7 @@ func (o *ControlPlaneOrchestrator) ExecuteSARIFRemediationWithOptions(
 			StatusHealth:          models.HealthNormal,
 			PodSweepTotal:         svc.Replicas,
 			BridgeSLAMIN:          60,
-			CreatedAt:             now,
+			CreatedAt:             createdAt,
 			UpdatedAt:             now,
 		}
 
@@ -1038,7 +1045,15 @@ func (o *ControlPlaneOrchestrator) ExecuteSARIFRemediationWithOptions(
 		})
 
 		// Stage 2: Bridge Before Patch — deploy CiliumNetworkPolicy + K8s NetPol + Envoy mTLS containment bridge immediately
+		// Deduplicate active bridges per (service_id, cve_id) without resetting true SLA ripening age.
 		bridgeID := "brg-" + uuid.NewString()[:8]
+		var prevArmedAt time.Time
+		rearmCount := 0
+		if existingBrg, ebErr := o.Store.FindActiveBridgeByServiceAndCVE(ctx, svc.ServiceID, f.CVEID); ebErr == nil && existingBrg != nil {
+			bridgeID = existingBrg.BridgeID
+			prevArmedAt = existingBrg.ArmedAt
+			rearmCount = existingBrg.RearmedCount
+		}
 		blockerReason := "AUTONOMOUS_CANARY_IN_PROGRESS"
 		if patchProfile == "UPSTREAM_VENDOR_PENDING" {
 			blockerReason = "AWAITING_UPSTREAM_VENDOR_PATCH"
@@ -1059,9 +1074,13 @@ func (o *ControlPlaneOrchestrator) ExecuteSARIFRemediationWithOptions(
 			AllowKubeAPIServerEgress: svc.AllowKubeAPIServerEgress,
 			SLABridgeMinutes:         item.BridgeSLAMIN,
 			BlockerReasonCode:        blockerReason,
+			RearmCount:               rearmCount,
 		})
 		if err != nil {
 			return nil, err
+		}
+		if !prevArmedAt.IsZero() {
+			bridge.ArmedAt = prevArmedAt
 		}
 		if err := o.Store.UpsertBridge(ctx, *bridge); err != nil {
 			return nil, err
@@ -1506,4 +1525,174 @@ func (o *ControlPlaneOrchestrator) ExecuteSecretRotationRemediation(ctx context.
 		results = append(results, item)
 	}
 	return results, nil
+}
+
+// ResumeRemediationRollout resumes or retries an interrupted/stranded SHADOW_CANARY or newly-warranted BRIDGED remediation,
+// driving Clone-Twin Proving -> N2 Canary / WN-8 Distributor -> N3 Verification & Bridge Retirement -> N5 OSCAL 1.1.2 Minting.
+func (o *ControlPlaneOrchestrator) ResumeRemediationRollout(ctx context.Context, remediationID string) (*models.RemediationItem, error) {
+	rem, err := o.Store.GetRemediation(ctx, strings.TrimSpace(remediationID))
+	if err != nil {
+		return nil, err
+	}
+	if rem.Stage == models.StageAttestedClosed {
+		_, _ = o.Store.ConsolidateDuplicateActiveBridges(ctx)
+		return rem, nil
+	}
+	if rem.BlockerCode == "AWAITING_UPSTREAM_VENDOR_PATCH" {
+		return nil, fmt.Errorf("UPSTREAM_VENDOR_PATCH_PENDING: %s has no upstream patch artifact yet; containment shield remains active", rem.CVEID)
+	}
+	svc, err := o.Store.GetEstateService(ctx, rem.ServiceID)
+	if err != nil {
+		return nil, err
+	}
+
+	s1ID, s2ID := "UNBOUND", "UNBOUND"
+	if rem.WarrantID == "" || rem.ClassBindingStatus == models.ClassBindingStatusUnbound {
+		f := models.ExtractedFinding{
+			CVEID:             rem.CVEID,
+			CWEID:             rem.CWEID,
+			IsKEV:             rem.IsKEV,
+			CVSSScore:         rem.CVSSScore,
+			TargetServiceID:   svc.ServiceID,
+			FinderVendor:      rem.FinderVendor,
+			VendorDetectionID: rem.VendorDetectionID,
+			CVEMappingStatus:  rem.CVEMappingStatus,
+			AssetIdentity:     rem.AssetIdentity,
+		}
+		var matched *models.WarrantRecord
+		var wErr error
+		if rem.FinderVendor != "" || rem.CVEMappingStatus == models.CVEMappingStatusUnmappedVendor {
+			matched, wErr = o.Store.FindMatchingWarrantForFinding(ctx, svc.ServiceID, f)
+		} else {
+			matched, wErr = o.Store.FindMatchingWarrant(ctx, svc.ServiceID, rem.CVSSScore, rem.CWEID)
+		}
+		if wErr != nil || matched == nil {
+			return nil, fmt.Errorf("NO_ACTIVE_WARRANT_FAIL_CLOSED: bind or mint a 2-of-2 Standing Warrant covering %s (%s) first", svc.ServiceID, rem.CVEID)
+		}
+		rem.WarrantID = matched.WarrantID
+		rem.ClassBindingStatus = models.ClassBindingStatusBound
+		rem.BridgeSLAMIN = matched.SLABridgeMinutes
+		s1ID = matched.Slot1PrincipalID
+		s2ID = matched.Slot2PrincipalID
+	} else if wRec, wErr := o.N1Warrant.ReverifyWarrantForExecution(ctx, rem.WarrantID, svc.ServiceID, rem.CVSSScore, svc.Replicas, rem.RemediationKind, rem.CWEID); wErr == nil && wRec != nil {
+		s1ID = wRec.Slot1PrincipalID
+		s2ID = wRec.Slot2PrincipalID
+	} else if wErr != nil {
+		return nil, fmt.Errorf("WARRANT_REVERIFY_FAILED: %w", wErr)
+	}
+
+	rem.BlockerCode = ""
+	rem.StatusHealth = models.HealthBridged
+	_ = o.Store.UpsertRemediation(ctx, rem)
+
+	if strings.TrimSpace(rem.DistributorID) != "" {
+		resp, dErr := o.ExecuteGovernedDistributorDispatch(ctx, DistributorDispatchAPIRequest{
+			RemediationID: rem.RemediationID,
+			DistributorID: strings.TrimSpace(rem.DistributorID),
+		})
+		if dErr != nil {
+			return rem, dErr
+		}
+		_, _ = o.Store.ConsolidateDuplicateActiveBridges(ctx)
+		return &resp.Remediation, nil
+	}
+
+	if hasProv, _ := o.N3Verify.DeriveVerifiedArtifactProvenance(ctx, rem); !hasProv {
+		signedArt, rErr := o.FixProvider.ResolveSignedPatch(ctx, models.ExtractedFinding{
+			CVEID:            rem.CVEID,
+			CWEID:            rem.CWEID,
+			CVSSScore:        rem.CVSSScore,
+			TargetServiceID:  svc.ServiceID,
+			VulnerableDigest: rem.VulnerableDigest,
+			PatchedDigest:    rem.PatchedDigest,
+			VulnerableSymbol: rem.VulnerableSymbol,
+			ExploitVector:    rem.ExploitVector,
+		}, "STATELESS_CLEAN")
+		if rErr != nil {
+			return rem, rErr
+		}
+		if vErr := o.FixProvider.VerifyProvenance(*signedArt); vErr != nil {
+			return rem, vErr
+		}
+		rem.PatchedDigest = signedArt.PatchedDigest
+		_ = o.Deploy.RegisterImageProfile(ctx, serverCleanImageProfile(svc, rem.PatchedDigest))
+		_ = o.Store.AppendTrace(ctx, models.TraceEvent{
+			TraceID:       "trc-" + uuid.NewString()[:8],
+			RemediationID: rem.RemediationID,
+			Engine:        "N4",
+			StepCode:      "ARTIFACT_PROVENANCE_VERIFIED",
+			Outcome:       "PASS",
+			ActorOrToken:  signedArt.PublisherKeyID,
+			EvidenceHash:  crypto.SHA256Hex([]byte(signedArt.ProvenanceSigB64)),
+			Fields: map[string]string{
+				"patched_digest": signedArt.PatchedDigest,
+				"publisher_id":   signedArt.PublisherID,
+			},
+			OccurredAt: time.Now().UTC(),
+		})
+		if pm, dErr := o.N4AgentCP.ExtractDiffGoverned(ctx, rem.WarrantID, rem.RemediationID, svc.ServiceID, s1ID, s2ID, signedArt.PatchedDigest, signedArt.UnifiedDiff); dErr == nil {
+			rem.PatchMetadata = pm
+		}
+	}
+
+	patchMeta := rem.PatchMetadata
+	if patchMeta == nil {
+		patchMeta = &models.ExtractedPatchMetadata{
+			PatchedDigest:         rem.PatchedDigest,
+			APIBackwardCompatible: true,
+			StatelessEligible:     true,
+		}
+	}
+
+	if _, pErr := o.N3Verify.RunCloneTwinProving(ctx, rem, svc, nil, patchMeta); pErr != nil {
+		return rem, pErr
+	}
+	if err := o.N2Gate.EvaluateAndRollout(ctx, rem, svc, patchMeta, false); err != nil {
+		return rem, err
+	}
+	verBundle, err := o.N3Verify.VerifyLockAndRetireBridge(ctx, rem, svc)
+	if err != nil {
+		return rem, err
+	}
+	if _, err := o.N5Ledger.MintOSCALAttestation(ctx, rem, svc, verBundle); err != nil {
+		return rem, err
+	}
+	_, _ = o.Store.ConsolidateDuplicateActiveBridges(ctx)
+	o.Broker.Broadcast("REMEDIATION_UPDATED", rem)
+	return rem, nil
+}
+
+// RecoverAndConsolidateContainmentState runs on warrantd startup to deduplicate stacked active containment bridges
+// and automatically resume any canary rollouts that were interrupted mid-flight by a previous container restart.
+func (o *ControlPlaneOrchestrator) RecoverAndConsolidateContainmentState(ctx context.Context) {
+	if consolidated, err := o.Store.ConsolidateDuplicateActiveBridges(ctx); err == nil && consolidated > 0 {
+		log.Printf("[N3 HYGIENE] Consolidated %d duplicate/superseded containment bridge(s)", consolidated)
+	}
+	bridges, bErr := o.Store.ListBridges(ctx)
+	if bErr != nil {
+		return
+	}
+	seenRem := map[string]bool{}
+	for _, b := range bridges {
+		if b.Status != "ARMED" || b.RemediationID == "" || seenRem[b.RemediationID] {
+			continue
+		}
+		if b.BlockerReasonCode != "AUTONOMOUS_CANARY_IN_PROGRESS" {
+			continue
+		}
+		rem, rErr := o.Store.GetRemediation(ctx, b.RemediationID)
+		if rErr != nil || rem == nil || rem.Stage == models.StageAttestedClosed {
+			continue
+		}
+		if rem.StatusHealth == models.HealthExceptionRouted || rem.StatusHealth == models.HealthQuarantinedRollback || rem.StatusHealth == models.HealthDriftViolation {
+			continue
+		}
+		seenRem[b.RemediationID] = true
+		if _, err := o.ResumeRemediationRollout(ctx, b.RemediationID); err != nil {
+			log.Printf("[N3 RECOVERY] Stranded canary rollout %s (%s/%s) held safely in containment: %v", b.RemediationID, b.ServiceID, b.CVEID, err)
+		} else {
+			log.Printf("[N3 RECOVERY] Completed stranded canary rollout %s (%s/%s) and retired bridge %s", b.RemediationID, b.ServiceID, b.CVEID, b.BridgeID)
+		}
+	}
+	_, _ = o.Store.ConsolidateDuplicateActiveBridges(ctx)
 }

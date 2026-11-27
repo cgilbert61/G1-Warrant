@@ -712,6 +712,55 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 		writeAPIJSON(w, http.StatusOK, rem)
 	})
 
+	// POST /api/v1/bridges/{bridge_id}/reconcile-drift cordons & recycles rogue drifted pods back to the verified clean
+	// digest, re-verifies 100% live pod compliance against enforced Admission Lockouts, resolves open DriftIncidents,
+	// and retires the re-armed containment bridge.
+	mux.HandleFunc("POST /api/v1/bridges/{bridge_id}/reconcile-drift", func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		bridgeID := strings.TrimSpace(r.PathValue("bridge_id"))
+		rawBody, err := readBoundedBody(w, r, 1<<20)
+		if err != nil {
+			writeAPIError(w, statusForBodyReadError(err), err)
+			return
+		}
+		actor, _, code, authErr := o.VerifyOperatorOrSinglePrincipalAuth(ctx, r, models.GovActionReconcileContainment, rawBody)
+		if authErr != nil {
+			writeAPIError(w, code, authErr)
+			return
+		}
+		brg, rem, err := o.N3Verify.ReconcileWorkloadDriftAndReverify(ctx, bridgeID, actor)
+		if err != nil {
+			writeAPIError(w, http.StatusUnprocessableEntity, err)
+			return
+		}
+		writeAPIJSON(w, http.StatusOK, map[string]any{
+			"bridge":      brg,
+			"remediation": rem,
+		})
+	})
+
+	// POST /api/v1/remediations/{id}/retry-rollout resumes or retries a stranded SHADOW_CANARY or newly-warranted
+	// BRIDGED remediation item through Clone-Twin Proving, Canary/Distributor rollout, N3 verification, and OSCAL closure.
+	mux.HandleFunc("POST /api/v1/remediations/{id}/retry-rollout", func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		remID := strings.TrimSpace(r.PathValue("id"))
+		rawBody, err := readBoundedBody(w, r, 1<<20)
+		if err != nil {
+			writeAPIError(w, statusForBodyReadError(err), err)
+			return
+		}
+		if _, _, code, authErr := o.VerifyOperatorOrSinglePrincipalAuth(ctx, r, models.GovActionReconcileContainment, rawBody); authErr != nil {
+			writeAPIError(w, code, authErr)
+			return
+		}
+		rem, err := o.ResumeRemediationRollout(ctx, remID)
+		if err != nil {
+			writeAPIError(w, http.StatusUnprocessableEntity, err)
+			return
+		}
+		writeAPIJSON(w, http.StatusOK, rem)
+	})
+
 	mux.HandleFunc("POST /api/v1/intake/sarif", func(w http.ResponseWriter, r *http.Request) {
 		if code, authErr := o.VerifyIntakeAuth(r); authErr != nil {
 			writeAPIError(w, code, authErr)
