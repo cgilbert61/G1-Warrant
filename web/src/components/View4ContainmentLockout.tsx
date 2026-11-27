@@ -214,6 +214,8 @@ export const View4ContainmentLockout: React.FC<View4ContainmentLockoutProps> = (
                   const isUnbound =
                     b.blocker_reason_code === 'UNMAPPED_FINDING_REQUIRES_CLASS_BINDING' ||
                     b.blocker_reason_code === 'NO_VALID_STANDING_WARRANT_FAIL_CLOSED';
+                  const isFourEyesPending =
+                    b.blocker_reason_code === 'FOUR_EYES_EXCEPTION_PENDING';
                   const isRetryableRollout =
                     b.blocker_reason_code === 'AUTONOMOUS_CANARY_IN_PROGRESS' ||
                     b.blocker_reason_code === 'CONTAINED_AWAITING_DISTRIBUTOR_DISPATCH' ||
@@ -294,6 +296,14 @@ export const View4ContainmentLockout: React.FC<View4ContainmentLockoutProps> = (
                               </button>
                             )}
                           </div>
+                        ) : isFourEyesPending && onOpenWarrantDesk ? (
+                          <button
+                            type="button"
+                            onClick={onOpenWarrantDesk}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-amber-300 bg-amber-50 hover:bg-amber-100 font-mono text-[11px] font-semibold text-amber-950"
+                          >
+                            <FileSignature className="w-3.5 h-3.5" /> Approve Dual-Key
+                          </button>
                         ) : isRetryableRollout && onRetryRollout && b.remediation_id ? (
                           <button
                             type="button"

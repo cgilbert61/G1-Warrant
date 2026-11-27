@@ -1648,6 +1648,13 @@ func (o *ControlPlaneOrchestrator) ResumeRemediationRollout(ctx context.Context,
 		return rem, pErr
 	}
 	if err := o.N2Gate.EvaluateAndRollout(ctx, rem, svc, patchMeta, false); err != nil {
+		if strings.Contains(err.Error(), "ROUTED_TO_FOUR_EYES") && rem.BridgeID != "" {
+			if brg, bErr := o.Store.GetBridge(ctx, rem.BridgeID); bErr == nil && brg != nil && brg.Status != "RETIRED" {
+				brg.BlockerReasonCode = "FOUR_EYES_EXCEPTION_PENDING"
+				_ = o.Store.UpsertBridge(ctx, *brg)
+				o.Broker.Broadcast("BRIDGE_ARMED", brg)
+			}
+		}
 		return rem, err
 	}
 	verBundle, err := o.N3Verify.VerifyLockAndRetireBridge(ctx, rem, svc)
@@ -1662,12 +1669,76 @@ func (o *ControlPlaneOrchestrator) ResumeRemediationRollout(ctx context.Context,
 	return rem, nil
 }
 
-// RecoverAndConsolidateContainmentState runs on warrantd startup to deduplicate stacked active containment bridges
+// VerifyContainmentReconcileAuth authenticates View 4 containment reconciliation actions
+// (reconcile-drift & retry-rollout — neither of which mints a Standing Warrant or bypasses 2-of-2 gates):
+//   - Rejects Estate Loader read tokens, automation tokens, auditor tokens, and Tetragon sensor tokens (HTTP 403).
+//   - Accepts a request-scoped 1-of-2 DSSE/WebAuthn signature, an MFA-authenticated Console operator session
+//     (non-AUDITOR role), or X-Warrant-Operator-Token in offline simulator mode.
+func (o *ControlPlaneOrchestrator) VerifyContainmentReconcileAuth(
+	ctx context.Context,
+	r *http.Request,
+	rawBody []byte,
+) (string, int, error) {
+	if code, sepErr := o.RejectEstateReadCredentialOnMutation(r); sepErr != nil {
+		return "", code, sepErr
+	}
+	if actor, _, attemptedDSSE, code, err := o.verifyRequestScopedDSSE(ctx, r, models.GovActionReconcileContainment, rawBody); attemptedDSSE {
+		return actor, code, err
+	}
+	autoHdr := strings.TrimSpace(r.Header.Get("X-Warrant-Automation-Token"))
+	opHdr := strings.TrimSpace(r.Header.Get("X-Warrant-Operator-Token"))
+	bearer := ""
+	if auth := strings.TrimSpace(r.Header.Get("Authorization")); strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+		bearer = strings.TrimSpace(auth[7:])
+	}
+	tok := firstNonEmptyStr(opHdr, autoHdr, bearer)
+	if autoHdr != "" || (o.automationToken != "" && tok != "" && subtle.ConstantTimeCompare([]byte(tok), []byte(o.automationToken)) == 1) {
+		return "", http.StatusForbidden, fmt.Errorf("AUTOMATION_TOKEN_FORBIDDEN_ON_RECONCILE_ROUTE")
+	}
+	if strings.HasPrefix(tok, "g1aud_") || strings.HasPrefix(tok, "g1tet_") {
+		return "", http.StatusForbidden, fmt.Errorf("INVALID_OPERATOR_CREDENTIAL")
+	}
+	if sess, ok := o.ensureConsoleAuth().currentPrincipal(r); ok && sess != nil {
+		if strings.EqualFold(sess.Role, "AUDITOR") {
+			return "", http.StatusForbidden, fmt.Errorf("AUDITOR_SESSION_READ_ONLY")
+		}
+		return sess.Email, http.StatusOK, nil
+	}
+	actor, _, code, err := o.VerifyOperatorOrSinglePrincipalAuth(ctx, r, models.GovActionReconcileContainment, rawBody)
+	return actor, code, err
+}
+
+// RecoverAndConsolidateContainmentState runs on warrantd startup to deduplicate stacked active containment bridges,
+// re-align ephemeral simulator baselines with persisted estate_services.current_digest (when no active drift holds the service),
 // and automatically resume any canary rollouts that were interrupted mid-flight by a previous container restart.
 func (o *ControlPlaneOrchestrator) RecoverAndConsolidateContainmentState(ctx context.Context) {
 	if consolidated, err := o.Store.ConsolidateDuplicateActiveBridges(ctx); err == nil && consolidated > 0 {
 		log.Printf("[N3 HYGIENE] Consolidated %d duplicate/superseded containment bridge(s)", consolidated)
 	}
+
+	// Sync ephemeral fleet-sim pod baselines to persisted estate_services.current_digest on container restart
+	// for services that have no unresolved drift violation, preventing fleet-sim restarts from mimicking rollbacks.
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("WARRANT_CLUSTER_DRIVER")), "kubernetes") {
+		unresolvedBySvc := map[string]bool{}
+		if drifts, dErr := o.Store.ListDriftIncidents(ctx); dErr == nil {
+			for _, d := range drifts {
+				if d.ResolvedAt == nil {
+					unresolvedBySvc[d.ServiceID] = true
+				}
+			}
+		}
+		if svcs, sErr := o.Store.ListEstateServices(ctx); sErr == nil {
+			for _, s := range svcs {
+				if s.CurrentDigest == "" || unresolvedBySvc[s.ServiceID] {
+					continue
+				}
+				if wl, wErr := o.Deploy.InspectLiveWorkload(ctx, s.ServiceID); wErr == nil && wl != nil && wl.BaselineDigest != s.CurrentDigest {
+					_, _ = o.Deploy.CordonAndRecyclePod(ctx, s.ServiceID, "", s.CurrentDigest)
+				}
+			}
+		}
+	}
+
 	bridges, bErr := o.Store.ListBridges(ctx)
 	if bErr != nil {
 		return
@@ -1684,7 +1755,12 @@ func (o *ControlPlaneOrchestrator) RecoverAndConsolidateContainmentState(ctx con
 		if rErr != nil || rem == nil || rem.Stage == models.StageAttestedClosed {
 			continue
 		}
-		if rem.StatusHealth == models.HealthExceptionRouted || rem.StatusHealth == models.HealthQuarantinedRollback || rem.StatusHealth == models.HealthDriftViolation {
+		if rem.StatusHealth == models.HealthExceptionRouted {
+			b.BlockerReasonCode = "FOUR_EYES_EXCEPTION_PENDING"
+			_ = o.Store.UpsertBridge(ctx, b)
+			continue
+		}
+		if rem.StatusHealth == models.HealthQuarantinedRollback || rem.StatusHealth == models.HealthDriftViolation {
 			continue
 		}
 		seenRem[b.RemediationID] = true

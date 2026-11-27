@@ -925,26 +925,35 @@ func (e *Engine) ReconcileWorkloadDriftAndReverify(ctx context.Context, bridgeID
 	rem, _ := e.store.GetRemediation(ctx, brg.RemediationID)
 
 	bannedDigests := map[string]bool{}
-	cleanDigest := ""
+	var lockoutsForSvc []models.AdmissionLockout
 	if lockouts, lErr := e.store.ListLockouts(ctx); lErr == nil {
 		for _, lo := range lockouts {
 			if lo.ServiceID == brg.ServiceID && lo.Status != "SUSPENDED_FOR_QUARANTINED_ROLLBACK" {
+				lockoutsForSvc = append(lockoutsForSvc, lo)
 				if lo.BannedDigest != "" {
 					bannedDigests[lo.BannedDigest] = true
-				}
-				if cleanDigest == "" && lo.PatchedDigest != "" {
-					cleanDigest = lo.PatchedDigest
 				}
 			}
 		}
 	}
-	if rem != nil && rem.PatchedDigest != "" && !bannedDigests[rem.PatchedDigest] {
+
+	// Prefer the estate service's current verified digest if unbanned, then remediation's patched digest, then newest unbanned lockout patched digest.
+	cleanDigest := ""
+	if svc.CurrentDigest != "" && !bannedDigests[svc.CurrentDigest] {
+		cleanDigest = svc.CurrentDigest
+	}
+	if cleanDigest == "" && rem != nil && rem.PatchedDigest != "" && !bannedDigests[rem.PatchedDigest] {
 		cleanDigest = rem.PatchedDigest
 	}
 	if cleanDigest == "" {
-		cleanDigest = svc.CurrentDigest
+		for _, lo := range lockoutsForSvc {
+			if lo.PatchedDigest != "" && !bannedDigests[lo.PatchedDigest] {
+				cleanDigest = lo.PatchedDigest
+				break
+			}
+		}
 	}
-	if bannedDigests[cleanDigest] {
+	if cleanDigest == "" || bannedDigests[cleanDigest] {
 		return nil, nil, fmt.Errorf("DRIFT_RECONCILE_NO_CLEAN_DIGEST: candidate clean digest %s is permanently banned", cleanDigest)
 	}
 

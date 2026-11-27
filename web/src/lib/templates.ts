@@ -147,6 +147,8 @@ export function formatBridgeBlockerReason(b: ContainmentBridge): string {
       'Retired — Superseded by Verified Attested Closure on Workload',
     SUPERSEDED_DUPLICATE_CONTAINMENT_BRIDGE:
       'Retired — Consolidated into Canonical Active Workload Containment Bridge',
+    FOUR_EYES_EXCEPTION_PENDING:
+      'Stateful DDL / Ceiling Exception Routed — Contained Pending 2-of-2 Dual-Key Approval in Warrant Desk',
   };
   return map[b.blocker_reason_code] || b.blocker_reason_code;
 }

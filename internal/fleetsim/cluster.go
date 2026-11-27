@@ -862,6 +862,8 @@ func (cs *ClusterSimulator) Handler() http.Handler {
 		cleanDigest := req.CleanDigest
 		if cleanDigest == "" {
 			cleanDigest = wl.BaselineDigest
+		} else {
+			wl.BaselineDigest = cleanDigest
 		}
 		recycledPod := ""
 		now := time.Now().UTC()
@@ -880,7 +882,9 @@ func (cs *ClusterSimulator) Handler() http.Handler {
 					Cordoned:               false,
 					StartedAt:              now,
 				}
-				break
+				if req.PodName != "" {
+					break
+				}
 			}
 		}
 		wl.LastDriftInjectedAtUnixMs = 0

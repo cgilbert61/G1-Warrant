@@ -723,7 +723,7 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			writeAPIError(w, statusForBodyReadError(err), err)
 			return
 		}
-		actor, _, code, authErr := o.VerifyOperatorOrSinglePrincipalAuth(ctx, r, models.GovActionReconcileContainment, rawBody)
+		actor, code, authErr := o.VerifyContainmentReconcileAuth(ctx, r, rawBody)
 		if authErr != nil {
 			writeAPIError(w, code, authErr)
 			return
@@ -749,7 +749,7 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			writeAPIError(w, statusForBodyReadError(err), err)
 			return
 		}
-		if _, _, code, authErr := o.VerifyOperatorOrSinglePrincipalAuth(ctx, r, models.GovActionReconcileContainment, rawBody); authErr != nil {
+		if _, code, authErr := o.VerifyContainmentReconcileAuth(ctx, r, rawBody); authErr != nil {
 			writeAPIError(w, code, authErr)
 			return
 		}
