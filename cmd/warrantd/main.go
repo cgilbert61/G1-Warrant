@@ -101,6 +101,9 @@ func main() {
 	orch.N1Warrant.StartFreezeListener(ctx)
 	orch.N3Verify.StartDriftWatcher(ctx, 2*time.Second)
 	orch.Feeds.StartBackgroundPoller(ctx)
+	if orch.SIEMShipper != nil {
+		orch.SIEMShipper.StartBackgroundLoop(ctx, 2*time.Second)
+	}
 
 	srv := &http.Server{
 		Addr:              listenAddr,

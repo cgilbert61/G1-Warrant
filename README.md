@@ -84,6 +84,26 @@ Every distributor implements `DistributorTranslator` (`DispatchOrder`, `PollResu
 | **Multi-Platform Patch** | **14. Ivanti Neurons** (`ivanti-neurons`) | Native staged rings | Per-device deployment telemetry · Ivanti rollback package bundle |
 | **Multi-Platform Patch** | **15. Automox** (`automox`) | Warrant-sequenced (`5% → 25% → 100%`) | Per-device policy execution event · Remediation worklet revert |
 
+### Outbound Ordered SIEM Shipping (`13` Named SIEM Senders — `3` `live-tested`, `10` `fixture-tested`, `0` `not built`)
+
+Every SIEM destination is configured in the Warrant Console UI (`SIEM: X Active` in the top Command Bar → `SIEMDestinationsModal`, backed by WORM hash-chained `siem_config_audit` and monotonic per-stream PostgreSQL cursors `siem_stream_cursors`), accepting **credential reference URIs only** (`env://`, `file://`, `k8s-secret://`, `aws-sm://`, `azure-kv://`, `gcp-sm://`, `none://` — raw secrets are rejected at the UI, API, and DB `CHECK` constraint layers) and requiring **zero dual-key ceremony and zero additional device step**. Batching preserves strict ledger sequence order (`seq_no`) and queues/retries failed deliveries without record loss. Full Part A record inventory and live proof evidence are documented in [`docs/siem_integration_and_proof_report.md`](docs/siem_integration_and_proof_report.md) and [`reports/siem-live-proof-transcript.txt`](reports/siem-live-proof-transcript.txt).
+
+| SIEM Target (`siem_vendor`) | Native Ingestion Endpoint & Format | Auth via `credential_ref` | Honest Verification Status |
+| :--- | :--- | :--- | :--- |
+| **1. Splunk Enterprise Security** (`splunk_es`) | HEC `/services/collector/event` (`SPLUNK_HEC_JSON`) | `Authorization: Splunk <token>` | **`live-tested`** (`splunk/splunk:latest` HEC + SPL Search: `605/605` visible, `0` field loss) |
+| **2. Microsoft Sentinel** (`microsoft_sentinel`) | Azure Monitor DCE/DCR `?api-version=2023-01-01` (`SENTINEL_DCE_JSON`) | Entra OAuth2 (`monitor.azure.com/.default`) / `Bearer` | **`fixture-tested`** (`TestInvariant24`) |
+| **3. IBM QRadar** (`ibm_qradar`) | Syslog TCP/TLS/UDP RFC 5424 `LEEF:2.0` / `CEF:0` | Collector / mTLS (`none://`) | **`fixture-tested`** (`TestInvariant24`) |
+| **4. Google Chronicle Security Operations** (`google_secops`) | `/v2/udmEvents:batchCreate` (`CHRONICLE_UDM_JSON`) & Unstructured v2 | `Bearer` or `X-goog-api-key` | **`fixture-tested`** (`TestInvariant24`) |
+| **5. CrowdStrike Falcon LogScale / Next-Gen SIEM** (`crowdstrike_logscale`) | HEC `/api/v1/ingest/hec` (`LOGSCALE_HEC_JSON`) | `Authorization: Bearer <token>` | **`fixture-tested`** (`TestInvariant24`) |
+| **6. Elastic Security** (`elastic_security`) | `/_bulk` `application/x-ndjson` (`ELASTIC_BULK_ECS_JSON` ECS `8.11.0`) | `ApiKey` / `Bearer` / `Basic` / `none://` | **`live-tested`** (`elasticsearch:8.15.3` `_bulk` + `_search`: `604/604` visible, `0` field loss) |
+| **7. Palo Alto Cortex XSIAM** (`cortex_xsiam`) | `/logs/v1/event` (`XSIAM_NDJSON`, optional `gzip`) | `Authorization: <raw_api_key>` *(no `Bearer` prefix)* | **`fixture-tested`** (`TestInvariant24`) |
+| **8. Exabeam** (`exabeam`) | Site Collector Syslog `CEF:0` or Cloud Webhook `HTTPS_JSON_BATCH` | `none://` or `Bearer` | **`fixture-tested`** (`TestInvariant24`) |
+| **9. LogRhythm** (`logrhythm`) | System Monitor Syslog TCP/TLS/UDP `SYSLOG_RFC5424_CEF` | Collector / mTLS (`none://`) | **`fixture-tested`** (`TestInvariant24`) |
+| **10. Sumo Logic** (`sumo_logic`) | Hosted HTTP `/receiver/v1/http/<token>` (`SUMO_HTTP_JSON` + `X-Sumo-*`) | Receiver token / `Bearer` | **`fixture-tested`** (`TestInvariant24`) |
+| **11. Fortinet FortiSIEM** (`fortisiem`) | Collector Syslog TCP/TLS/UDP `SYSLOG_RFC5424_CEF` | Collector / mTLS (`none://`) | **`fixture-tested`** (`TestInvariant24`) |
+| **12. OpenText ArcSight** (`arcsight`) | SmartConnector Native `CEF:0` over Syslog RFC 5424 | Collector / mTLS (`none://`) | **`fixture-tested`** (`TestInvariant24`) |
+| **13. Generic Fallback** (`generic_fallback`) | Syslog TCP/TLS/UDP (`SYSLOG_RFC5424_CEF` / `SYSLOG_RFC5424_JSON`) or `HTTPS_JSON_BATCH` | `none://` or `Bearer` | **`live-tested`** (`rsyslogd` TCP `5514` CEF: `606/606` logged + `TestInvariant24` JSON) |
+
 ---
 
 ## Operator Console Overview

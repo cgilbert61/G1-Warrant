@@ -969,6 +969,10 @@ func (s *Store) VerifyAllLedgerChains(ctx context.Context, externalWitnesses ...
 	if err != nil {
 		return nil, err
 	}
+	siemAuditStatus, err := s.verifySIEMConfigAuditChain(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var witnessSlice []models.LedgerCheckpoint
 	if len(externalWitnesses) > 0 {
 		witnessSlice = externalWitnesses[0]
@@ -1008,7 +1012,7 @@ func (s *Store) VerifyAllLedgerChains(ctx context.Context, externalWitnesses ...
 	allValid := wStatus.Valid && aStatus.Valid && attStatus.Valid &&
 		pStatus.Valid && revStatus.Valid && kStatus.Valid &&
 		cfStatus.Valid && aiStatus.Valid && aleStatus.Valid &&
-		estStatus.Valid && anchorOK && lineageOK
+		estStatus.Valid && siemAuditStatus.Valid && anchorOK && lineageOK
 	return &models.LedgerVerificationReport{
 		AllValid:                allValid,
 		ExternalAnchorVerified:  anchorOK,
@@ -1019,6 +1023,7 @@ func (s *Store) VerifyAllLedgerChains(ctx context.Context, externalWitnesses ...
 		Tables:                  []models.ChainTableStatus{wStatus, aStatus, attStatus, pStatus, revStatus, kStatus},
 		AgentAuthorityTables:    []models.ChainTableStatus{cfStatus, aiStatus, aleStatus},
 		EstateEvidenceTables:    []models.ChainTableStatus{estStatus},
+		SIEMConfigAuditTables:   []models.ChainTableStatus{siemAuditStatus},
 	}, nil
 }
 

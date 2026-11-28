@@ -1151,6 +1151,7 @@ type LedgerVerificationReport struct {
 	Tables                  []ChainTableStatus `json:"tables"`
 	AgentAuthorityTables    []ChainTableStatus `json:"agent_authority_tables,omitempty"`
 	EstateEvidenceTables    []ChainTableStatus `json:"estate_evidence_tables,omitempty"`
+	SIEMConfigAuditTables   []ChainTableStatus `json:"siem_config_audit_tables,omitempty"`
 }
 
 // LedgerCheckpoint represents a periodic DSSE-signed Merkle Root receipt shipped to an

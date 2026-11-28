@@ -20,6 +20,8 @@ import { View5AuditorLedger } from './components/View5AuditorLedger';
 import { AuditorPortal } from './components/AuditorPortal';
 import { LiveFeedsModal } from './components/LiveFeedsModal';
 import { VendorConnectorsModal } from './components/VendorConnectorsModal';
+import { SIEMDestinationsModal } from './components/SIEMDestinationsModal';
+import { SIEMViewStatusStrip } from './components/SIEMViewStatusStrip';
 import { LoginPortal, type ConsoleSessionPrincipal } from './components/LoginPortal';
 import { useTheme } from './lib/theme';
 
@@ -36,6 +38,8 @@ export const App: React.FC = () => {
   const [smartcardBarEnabled, setSmartcardBarEnabled] = useState(true);
   const [showFeedsModal, setShowFeedsModal] = useState(false);
   const [showConnectorsModal, setShowConnectorsModal] = useState(false);
+  const [showSIEMModal, setShowSIEMModal] = useState(false);
+  const [flushingSIEMId, setFlushingSIEMId] = useState<string | null>(null);
   const [preferredProposeSource, setPreferredProposeSource] = useState('');
   const [isMobileViewport, setIsMobileViewport] = useState(() => window.innerWidth < 1024);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -282,6 +286,9 @@ export const App: React.FC = () => {
         onOpenVendorConnectors={() => setShowConnectorsModal(true)}
         configuredVendorCount={(snapshot.vendor_connectors || []).filter((c) => c.read_configured).length}
         totalVendorCount={(snapshot.vendor_connectors || []).length || 18}
+        onOpenSIEMDestinations={() => setShowSIEMModal(true)}
+        activeSIEMCount={(snapshot.siem_destinations || []).filter((d) => d.enabled).length}
+        failedSIEMCount={(snapshot.siem_destinations || []).filter((d) => Boolean(d.last_error) || d.failed_count > 0).length}
         isMobileViewport={isMobileViewport}
         onOpenInbox={() => setActiveView('VIEW2_WARRANTS')}
         onTriggerFreeze={async (mode, actor, reason) => {
@@ -349,6 +356,27 @@ export const App: React.FC = () => {
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-[1600px] w-full mx-auto p-4">
+        <SIEMViewStatusStrip
+          activeView={activeView}
+          destinations={snapshot.siem_destinations || []}
+          flushingId={flushingSIEMId}
+          onOpenConfigureModal={() => setShowSIEMModal(true)}
+          onFlushDestination={async (destinationId) => {
+            setFlushingSIEMId(destinationId);
+            try {
+              await fetch(`/api/v1/siem/destinations/${encodeURIComponent(destinationId)}/flush`, {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: '{}',
+              });
+              await loadBootstrap();
+            } finally {
+              setFlushingSIEMId(null);
+            }
+          }}
+        />
+
         {activeView === 'VIEW1_RACE' && (
           <View1RacePipeline
             remediations={snapshot.remediations}
@@ -660,6 +688,16 @@ export const App: React.FC = () => {
             setShowConnectorsModal(false);
             setActiveView('VIEW2_WARRANTS');
           }}
+        />
+      )}
+
+      {showSIEMModal && (
+        <SIEMDestinationsModal
+          vendors={snapshot.siem_vendors || []}
+          destinations={snapshot.siem_destinations || []}
+          auditRecords={snapshot.siem_config_audit || []}
+          onClose={() => setShowSIEMModal(false)}
+          onRefresh={loadBootstrap}
         />
       )}
 

@@ -24,6 +24,7 @@ import (
 	"github.com/cgilbert61/G1-Warrant/internal/adapters/distributors"
 	"github.com/cgilbert61/G1-Warrant/internal/adapters/estatereader"
 	"github.com/cgilbert61/G1-Warrant/internal/adapters/shields"
+	"github.com/cgilbert61/G1-Warrant/internal/adapters/siem"
 	"github.com/cgilbert61/G1-Warrant/internal/adapters/vmtwins"
 	"github.com/cgilbert61/G1-Warrant/internal/agentcp"
 	"github.com/cgilbert61/G1-Warrant/internal/crypto"
@@ -56,6 +57,7 @@ type ControlPlaneOrchestrator struct {
 	Twin                adapters.TwinRunner
 	Distributors         *adapters.DistributorRegistry
 	EstateReaders        *estatereader.Registry
+	SIEMShipper          *siem.Shipper
 	Broker               *SSEBroker
 	WebAuthnCfg          crypto.WebAuthnConfig
 	fleetURL             string
@@ -866,6 +868,7 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 	}
 	n3.SetEstateReaders(estateReg)
 	store.SetBootstrapSealAnchorFunc(n5.CreateCheckpoint)
+	siemShipper := siem.NewShipper(store, siem.NewRegistry(), broker.Broadcast)
 
 	if warn := ExternalAnchorStartupWarning(os.Getenv); warn != "" {
 		log.Printf("%s", warn)
@@ -890,6 +893,7 @@ func NewOrchestrator(ctx context.Context, store *db.Store, extractorURL, fleetUR
 		Twin:                 twin,
 		Distributors:         distReg,
 		EstateReaders:        estateReg,
+		SIEMShipper:          siemShipper,
 		Broker:               broker,
 		WebAuthnCfg:          webauthnCfg,
 		fleetURL:             strings.TrimRight(strings.TrimSpace(fleetURL), "/"),

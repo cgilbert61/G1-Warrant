@@ -89,6 +89,7 @@ services:
       WARRANT_KEV_POLL_INTERVAL: "${WARRANT_KEV_POLL_INTERVAL:-1h}"
       WARRANT_OSV_API_URL: "${WARRANT_OSV_API_URL:-https://api.osv.dev/v1/querybatch}"
       WARRANT_TRIVY_ENABLED: "${WARRANT_TRIVY_ENABLED:-false}"
+      SPLUNK_HEC_TOKEN: "${SPLUNK_HEC_TOKEN:-}"
     ports:
       - "127.0.0.1:8080:8080"
     volumes:

@@ -13,8 +13,8 @@
     "compliance": "Section 508 Federal Accessibility",
     "liveEndpointVerified": true
   },
-  "timestamp": "2026-11-27T18:24:22.655079+00:00",
-  "filesAudited": 15,
+  "timestamp": "2026-11-27T23:58:45.432455+00:00",
+  "filesAudited": 17,
   "violations": [],
   "passes": [
     {
@@ -181,6 +181,17 @@
       "tags": [
         "wcag2a",
         "wcag111",
+        "section508"
+      ],
+      "file": "web/src/components/CommandBar.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
         "section508"
       ],
       "file": "web/src/components/CommandBar.tsx"
@@ -754,6 +765,303 @@
         "section508"
       ],
       "file": "web/src/components/LoginPortal.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <select id='siem-vendor-select'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/SIEMDestinationsModal.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='siem-display-name'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/SIEMDestinationsModal.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='siem-endpoint-input'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/SIEMDestinationsModal.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='siem-credref-input'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/SIEMDestinationsModal.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <select id='siem-format-select'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/SIEMDestinationsModal.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='siem-batch-size'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/SIEMDestinationsModal.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='siem-schedule-seconds'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/SIEMDestinationsModal.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='JSX_EXPR'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/SIEMDestinationsModal.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='wrapped'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/SIEMDestinationsModal.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='wrapped'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/SIEMDestinationsModal.tsx"
+    },
+    {
+      "id": "label",
+      "impact": "critical",
+      "description": "Form control <input id='wrapped'> has programmatic label association",
+      "tags": [
+        "wcag2a",
+        "wcag131",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/SIEMDestinationsModal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/SIEMDestinationsModal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/SIEMDestinationsModal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/SIEMDestinationsModal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/SIEMDestinationsModal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/SIEMDestinationsModal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/SIEMDestinationsModal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/SIEMDestinationsModal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/SIEMDestinationsModal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/SIEMDestinationsModal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/SIEMDestinationsModal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/SIEMDestinationsModal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/SIEMDestinationsModal.tsx"
+    },
+    {
+      "id": "aria-dialog-name",
+      "impact": "serious",
+      "description": "Modal dialog declares aria-modal and aria-labelledby/aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/SIEMDestinationsModal.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/SIEMViewStatusStrip.tsx"
+    },
+    {
+      "id": "button-name",
+      "impact": "critical",
+      "description": "Interactive <button> provides discernible accessible text or aria-label",
+      "tags": [
+        "wcag2a",
+        "wcag412",
+        "section508"
+      ],
+      "file": "web/src/components/SIEMViewStatusStrip.tsx"
     },
     {
       "id": "label",
@@ -1791,8 +2099,8 @@
     }
   ],
   "summary": {
-    "totalChecks": 157,
-    "passedChecks": 157,
+    "totalChecks": 184,
+    "passedChecks": 184,
     "violationsCount": 0,
     "status": "PASS"
   }

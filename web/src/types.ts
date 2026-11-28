@@ -625,6 +625,9 @@ export interface BootstrapSnapshot {
   distributors?: DistributorDescriptor[];
   estate_sources?: EstateSourceDescriptor[];
   vendor_connectors?: VendorConnectorConfigStatus[];
+  siem_vendors?: SIEMVendorDescriptor[];
+  siem_destinations?: SIEMDestination[];
+  siem_config_audit?: SIEMConfigAuditRecord[];
   deployment_orders?: DeploymentOrder[];
   deployment_results?: DeploymentResult[];
   asset_aliases?: AssetIdentityAlias[];
@@ -836,4 +839,57 @@ export interface EstateProposalResponse {
   proposed_estate_snapshot_sha256: string;
   recommended_drift_policy: 'RECORD_ONLY' | 'FAIL_CLOSED';
   recommended_drift_tolerance_pct: number;
+}
+
+export interface SIEMVendorDescriptor {
+  vendor_id: string;
+  display_name: string;
+  default_format: string;
+  supported_formats: string[];
+  endpoint_hint: string;
+  auth_description: string;
+  option_keys?: string[];
+  proof_status: 'LIVE_TESTED' | 'FIXTURE_TESTED';
+}
+
+export interface SIEMDestination {
+  destination_id: string;
+  display_name: string;
+  siem_vendor: string;
+  endpoint: string;
+  credential_ref: string;
+  format: string;
+  vendor_options?: Record<string, string>;
+  record_types: string[];
+  batch_size: number;
+  schedule_seconds: number;
+  enabled: boolean;
+  console_views: string[];
+  sent_count: number;
+  queued_count: number;
+  failed_count: number;
+  retry_count: number;
+  last_sent_at?: string;
+  last_error?: string;
+  last_error_at?: string;
+  last_transport_status?: string;
+  next_attempt_at?: string;
+  created_by?: string;
+  updated_by?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SIEMConfigAuditRecord {
+  seq_no: number;
+  audit_id: string;
+  destination_id: string;
+  siem_vendor: string;
+  action: string;
+  actor: string;
+  config_snapshot: SIEMDestination;
+  config_sha256: string;
+  prev_hash: string;
+  entry_hash: string;
+  occurred_at: string;
 }

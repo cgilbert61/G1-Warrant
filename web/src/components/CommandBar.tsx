@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Shield, AlertOctagon, Inbox, CreditCard, Lock, Unlock, X, Sun, Moon, PlugZap, LogOut } from 'lucide-react';
+import { Shield, AlertOctagon, Inbox, CreditCard, Lock, Unlock, X, Sun, Moon, PlugZap, LogOut, Radio } from 'lucide-react';
 import type { DSSEEnvelope, GlobalScoreboard, LiveFeedStatus, Principal, TestSmartcardPersona } from '../types';
 import type { ThemeMode } from '../lib/theme';
 import { formatDurationSeconds } from '../lib/templates';
@@ -19,6 +19,9 @@ interface CommandBarProps {
   onOpenVendorConnectors?: () => void;
   configuredVendorCount?: number;
   totalVendorCount?: number;
+  onOpenSIEMDestinations?: () => void;
+  activeSIEMCount?: number;
+  failedSIEMCount?: number;
   isMobileViewport: boolean;
   onOpenInbox: () => void;
   onTriggerFreeze: (mode: 'FREEZE_HOLD' | 'FREEZE_ROLLBACK', actor: string, reason: string) => Promise<void>;
@@ -42,6 +45,9 @@ export const CommandBar: React.FC<CommandBarProps> = ({
   onOpenVendorConnectors,
   configuredVendorCount = 0,
   totalVendorCount = 18,
+  onOpenSIEMDestinations,
+  activeSIEMCount = 0,
+  failedSIEMCount = 0,
   isMobileViewport,
   onOpenInbox,
   onTriggerFreeze,
@@ -220,6 +226,35 @@ export const CommandBar: React.FC<CommandBarProps> = ({
               <PlugZap className="w-3.5 h-3.5 text-slate-500" />
               <span>
                 Vendors: {configuredVendorCount}/{totalVendorCount} Ready
+              </span>
+            </button>
+          )}
+
+          {onOpenSIEMDestinations && (
+            <button
+              type="button"
+              onClick={onOpenSIEMDestinations}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded border text-xs font-mono font-medium transition ${
+                failedSIEMCount > 0
+                  ? 'border-red-300 bg-red-50 hover:bg-red-100 text-red-900'
+                  : activeSIEMCount > 0
+                  ? 'border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-900'
+                  : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
+              }`}
+              title="Configure 13 Named SIEM Destinations, Credential References, Record Filters & Delivery Views (Zero Dual-Key)"
+            >
+              <Radio
+                className={`w-3.5 h-3.5 ${
+                  failedSIEMCount > 0
+                    ? 'text-red-700'
+                    : activeSIEMCount > 0
+                    ? 'text-emerald-700'
+                    : 'text-slate-500'
+                }`}
+              />
+              <span>
+                SIEM: {activeSIEMCount} Active
+                {failedSIEMCount > 0 ? ` (${failedSIEMCount} Err)` : ''}
               </span>
             </button>
           )}

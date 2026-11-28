@@ -1,0 +1,51 @@
+================================================================================
+G1-WARRANT — LIVE 3-SIEM END-TO-END PROOF RUN TRANSCRIPT
+Timestamp (UTC): 2026-11-27T23:56:32.155509+00:00
+Configured exclusively via Warrant UI/HTTP API (/api/v1/siem/destinations)
+================================================================================
+
+[AUTH] Logged into Warrant Console as ops@g1163rt.ai (role=AUTHORIZING_OFFICIAL) — zero dual-key / zero WebAuthn step
+[CHECK 1] GET /api/v1/siem/vendors -> HTTP 200 (13 registered SIEM senders)
+[CHECK 2] Raw secret rejection -> HTTP 400: RAW_SECRET_FORBIDDEN_CREDENTIAL_REF_REQUIRED: whitespace/control characters forbidden in credential_ref
+
+--------------------------------------------------------------------------------
+LIVE SIEM #1: Elastic Security (Elasticsearch 8.15.3 — _bulk ECS 8.11 NDJSON)
+--------------------------------------------------------------------------------
+[ELASTIC] Created destination_id=siem-elastic_security-a253e5 via POST /api/v1/siem/destinations
+[ELASTIC] Drained in 1 flush call(s): sent_count=604, queued_count=0, failed_count=0, status=HTTP_200_ELASTIC_BULK_OK
+[ELASTIC] Warrant sent_count=604 | Elasticsearch _count=604
+[ELASTIC] Visible by record_type: {"AUTH_CLASS_SIGNING": 5, "INGEST_EVENT": 100, "SHIELD_EVENT": 255, "SIEM_CONFIG_AUDIT": 5, "SIGNED_CLOSURE": 6, "TWIN_PROOF_VERDICT": 14, "WORM_LEDGER": 219}
+[ELASTIC] Visible by stream_name: {"agent_action_ledger": 169, "agent_identities": 9, "agent_lifecycle_events": 4, "attestation_records": 6, "ceiling_exceptions_resolved": 1, "commissioning_functions": 3, "containment_bridges": 31, "drift_incidents": 224, "estate_read_evidence": 3, "feed_sync_runs": 69, "ingest_traces": 31, "kernel_public_keys": 1, "ledger_checkpoints": 24, "principals": 6, "siem_config_audit": 5, "twin_proof_traces": 14, "warrant_envelopes": 4}
+[ELASTIC] Sample indexed doc verifiable fields: record_type=SIGNED_CLOSURE, record_id=att-35721479, entry_hash=7a1bee720a3c8a2114cc3b5601a51fc5ed0efe8bfa60e76753dc9b1fea58c169, raw_record_sha256=6fbfa893099531db1e0e7862fa255e68c59f3d5b356a309f24126380411dd4ef, canonical_json_keys=32
+[ELASTIC] Field loss: ZERO (100% of raw_record, canonical JSON, hashes, and DSSE envelopes preserved)
+
+--------------------------------------------------------------------------------
+LIVE SIEM #2: Splunk Enterprise (HEC /services/collector/event + SPL Search)
+--------------------------------------------------------------------------------
+[SPLUNK-HEC-PROBE] https://127.0.0.1:18088/services/collector/health -> HTTP 200 ({"text":"HEC is healthy","code":17})
+[SPLUNK] Created destination_id=siem-splunk_es-dcd9b9 with credential_ref=env://SPLUNK_HEC_TOKEN (resolved via Linux envseal in-memory store)
+[SPLUNK] Drained in 1 flush call(s): sent_count=605, queued_count=0, failed_count=0, status=HTTP_200_HEC_OK
+[SPLUNK] Warrant sent_count=605 | Splunk SPL stats count=605
+[SPLUNK] Visible by record_type via SPL: {"AUTH_CLASS_SIGNING": 5, "INGEST_EVENT": 100, "SHIELD_EVENT": 254, "SIEM_CONFIG_AUDIT": 6, "TWIN_PROOF_VERDICT": 14, "WORM_LEDGER": 211}
+[SPLUNK] Sample indexed AUTH_CLASS_SIGNING _raw verified: record_id=wrt-y9vr123, ledger_seq_no=4, entry_hash=5ee6fa98b9f81285216fc6feacac7377203661b072fdc6f52a288d8ecd61c754, raw_record_sha256=2dcbdbb5e172738de5f1660a7bd516eec0d692880f572629dca3b9c52349fd30, dsse_envelope_intact=True
+[SPLUNK] Field loss: ZERO (100% of raw_record, DSSE signatures, seq_no, prev_hash, entry_hash preserved)
+
+--------------------------------------------------------------------------------
+LIVE SIEM #3: Generic Fallback (rsyslogd TCP 5514 — SYSLOG_RFC5424_CEF)
+--------------------------------------------------------------------------------
+[RSYSLOG-CEF] Created destination_id=siem-generic_fallback-1d8169 -> tcp://g1-proof-rsyslog:5514
+[RSYSLOG-CEF] Drained in 1 flush call(s): sent_count=606, queued_count=0, failed_count=0, status=SYSLOG_TCP_OK(24)
+[RSYSLOG-CEF] Warrant sent_count=606 | rsyslogd /var/log/warrant-cef.log CEF lines=606
+[RSYSLOG-CEF] Sample CEF:0 frame:
+  2026-11-21T02:15:29.605Z g1-warrant-control-plane G1Warrant CEF:0|G1163RT|G1-Warrant|1.5.0|SIGNED_CLOSURE|G1-Warrant SIGNED_CLOSURE [attestation_records] id=att-35721479 seq=1|5|rt=1795227329605 externalId=att-35721479 cat=attestation_records app=fedramp-audit-ingestor cn1Label=ledgerSeqNo cn1=1 cn2Label=cursorSeq cn2=1 cs1Label=warrantId...
+[RSYSLOG-CEF] Field loss accounting: CEF:0 flat key=value extension preserves cursorSeq, ledgerSeqNo, serviceId, cveId, warrantId, remediationId, prevHash, entryHash, signatureSummary, and rawRecordSha256; deeply nested JSON arrays (e.g. oscal_poam_json / full dsse_envelope JSON object) are omitted in flat CEF:0 (use SYSLOG_RFC5424_JSON or HTTPS_JSON_BATCH for 0-field-loss JSON).
+
+[WORM-AUDIT] GET /api/v1/siem/audit -> 7 hash-chained siem_config_audit entries
+[WORM-AUDIT] Head seq_no=#7 action=CREATE_DESTINATION prev_hash=b0003874869a57fc... entry_hash=d9e236c48df8f369...
+[CLEANUP] DELETE /api/v1/siem/destinations/siem-elastic_security-a253e5 -> HTTP 200 (sealed in WORM siem_config_audit)
+[CLEANUP] DELETE /api/v1/siem/destinations/siem-splunk_es-dcd9b9 -> HTTP 200 (sealed in WORM siem_config_audit)
+[CLEANUP] DELETE /api/v1/siem/destinations/siem-generic_fallback-1d8169 -> HTTP 200 (sealed in WORM siem_config_audit)
+
+================================================================================
+ALL 3 LIVE SIEM PROOF RUNS SUCCEEDED (100% RECORD DELIVERY & VERIFICATION)
+================================================================================

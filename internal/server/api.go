@@ -82,6 +82,12 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			estateSources = o.EstateReaders.ListDescriptors()
 		}
 		estateEvidence, _ := o.Store.ListEstateReadEvidence(ctx, "", "")
+		siemDestinations, _ := o.Store.ListSIEMDestinations(ctx)
+		siemAudit, _ := o.Store.ListSIEMConfigAudit(ctx)
+		var siemVendors []models.SIEMVendorDescriptor
+		if o.SIEMShipper != nil {
+			siemVendors = o.SIEMShipper.Registry().Catalog()
+		}
 		auditorTokens, _ := o.Store.ListAuditorTokens(ctx)
 		checkpoints, _ := o.Store.ListLedgerCheckpoints(ctx)
 		feedStatus, _ := o.Store.GetLiveFeedStatus(ctx)
@@ -122,6 +128,9 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 			"estate_sources":            estateSources,
 			"vendor_connectors":         o.ListVendorConnectorStatuses(ctx),
 			"estate_evidence":           estateEvidence,
+			"siem_vendors":              siemVendors,
+			"siem_destinations":         siemDestinations,
+			"siem_config_audit":         siemAudit,
 			"deployment_orders":         distOrders,
 			"deployment_results":        distResults,
 			"asset_aliases":             assetAliases,
@@ -1344,6 +1353,7 @@ func (o *ControlPlaneOrchestrator) BuildHTTPHandler() http.Handler {
 
 	o.registerFinderAndDistributorRoutes(mux)
 	o.registerEstateLoaderRoutes(mux)
+	o.registerSIEMRoutes(mux)
 
 	// Scoped External Auditor Surface (Read-Only, Bearer Token Required)
 	mux.HandleFunc("GET /api/v1/auditor/vault", func(w http.ResponseWriter, r *http.Request) {

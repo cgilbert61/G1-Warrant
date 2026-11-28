@@ -1,12 +1,12 @@
 {
   "project": "G1-Warrant",
-  "generated_at": "2026-11-27T15:15:36Z",
+  "generated_at": "2026-11-28T00:01:11Z",
   "runtime": "go1.26.2 windows/amd64 (native go test -fuzz)",
   "status": "EXECUTED",
-  "targets_total": 6,
-  "targets_passed": 6,
+  "targets_total": 8,
+  "targets_passed": 8,
   "targets_failed": 0,
-  "total_executions": 1027497,
+  "total_executions": 1225752,
   "crashes": 0,
   "targets": [
     {"package": "internal/crypto", "name": "FuzzCanonicalizeJSON", "executions": 141394, "corpus": 160, "status": "PASS"},
@@ -14,6 +14,8 @@
     {"package": "internal/crypto", "name": "FuzzSecretBoxOpenColumn", "executions": 56107, "corpus": 83, "status": "PASS"},
     {"package": "internal/extractor", "name": "FuzzParseUntrustedSARIF", "executions": 277499, "corpus": 122, "status": "PASS"},
     {"package": "internal/extractor", "name": "FuzzParseUntrustedDiff", "executions": 82153, "corpus": 95, "status": "PASS"},
-    {"package": "internal/extractor", "name": "FuzzParseUntrustedSecretFindings", "executions": 134412, "corpus": 153, "status": "PASS"}
+    {"package": "internal/extractor", "name": "FuzzParseUntrustedSecretFindings", "executions": 134412, "corpus": 153, "status": "PASS"},
+    {"package": "internal/adapters/siem", "name": "FuzzParseCredentialRef", "executions": 196125, "corpus": 101, "status": "PASS"},
+    {"package": "internal/adapters/siem", "name": "FuzzSIEMFormattersNoInjection", "executions": 2130, "corpus": 6, "status": "PASS"}
   ]
 }
