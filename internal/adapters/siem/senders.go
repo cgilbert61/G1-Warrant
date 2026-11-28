@@ -5,6 +5,8 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -73,7 +75,49 @@ func (r *Registry) Catalog() []models.SIEMVendorDescriptor {
 	return out
 }
 
-func httpClientForDest(dest models.SIEMDestination) *http.Client {
+func buildTLSConfigForDest(dest models.SIEMDestination) (*tls.Config, error) {
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+
+	if caB64 := strings.TrimSpace(dest.VendorOptions["ca_cert_b64"]); caB64 != "" {
+		pemBytes, dErr := base64.StdEncoding.DecodeString(caB64)
+		if dErr != nil {
+			return nil, fmt.Errorf("INVALID_CA_CERT_B64: base64 decode failed: %w", dErr)
+		}
+		if strings.Contains(strings.ToUpper(string(pemBytes)), "PRIVATE KEY") {
+			return nil, fmt.Errorf("RAW_SECRET_FORBIDDEN: ca_cert_b64 must contain only public X.509 CERTIFICATE PEM blocks")
+		}
+		if !pool.AppendCertsFromPEM(pemBytes) {
+			return nil, fmt.Errorf("INVALID_CA_CERT_B64: no valid X.509 PEM certificate found")
+		}
+	}
+
+	if caPEM := strings.TrimSpace(dest.VendorOptions["ca_cert_pem"]); caPEM != "" {
+		if strings.Contains(strings.ToUpper(caPEM), "PRIVATE KEY") {
+			return nil, fmt.Errorf("RAW_SECRET_FORBIDDEN: ca_cert_pem must contain only public X.509 CERTIFICATE PEM blocks")
+		}
+		if !pool.AppendCertsFromPEM([]byte(caPEM)) {
+			return nil, fmt.Errorf("INVALID_CA_CERT_PEM: no valid X.509 PEM certificate found")
+		}
+	}
+
+	cfg := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    pool,
+	}
+	if sni := strings.TrimSpace(dest.VendorOptions["tls_server_name"]); sni != "" {
+		cfg.ServerName = sni
+	}
+	return cfg, nil
+}
+
+func httpClientForDest(dest models.SIEMDestination) (*http.Client, error) {
+	tlsCfg, err := buildTLSConfigForDest(dest)
+	if err != nil {
+		return nil, err
+	}
 	tr := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
@@ -81,16 +125,12 @@ func httpClientForDest(dest models.SIEMDestination) *http.Client {
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		TLSHandshakeTimeout: 8 * time.Second,
-	}
-	if strings.EqualFold(dest.VendorOptions["tls_skip_verify"], "true") {
-		tr.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true} //nolint:gosec // explicit opt-in for local self-signed dev SIEMs
-	} else {
-		tr.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		TLSClientConfig:     tlsCfg,
 	}
 	return &http.Client{
 		Timeout:   15 * time.Second,
 		Transport: tr,
-	}
+	}, nil
 }
 
 func doHTTPPost(
@@ -127,7 +167,11 @@ func doHTTPPost(
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := httpClientForDest(dest).Do(req)
+	cli, cErr := httpClientForDest(dest)
+	if cErr != nil {
+		return 0, nil, cErr
+	}
+	resp, err := cli.Do(req)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -155,9 +199,9 @@ func sendSyslogFrames(ctx context.Context, dest models.SIEMDestination, frames [
 	case "udp":
 		conn, err = dialer.DialContext(ctx, "udp", u.Host)
 	case "tls", "tcp+tls":
-		tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
-		if strings.EqualFold(dest.VendorOptions["tls_skip_verify"], "true") {
-			tlsCfg.InsecureSkipVerify = true //nolint:gosec
+		tlsCfg, tErr := buildTLSConfigForDest(dest)
+		if tErr != nil {
+			return "TLS_CONFIG_ERROR", tErr
 		}
 		tlsDialer := &tls.Dialer{NetDialer: dialer, Config: tlsCfg}
 		conn, err = tlsDialer.DialContext(ctx, "tcp", u.Host)
@@ -225,7 +269,7 @@ func (s *splunkHECSender) Descriptor() models.SIEMVendorDescriptor {
 		SupportedFormats: []string{models.SIEMFormatSplunkHECJSON},
 		EndpointHint:     "https://splunk.corp.example:8088/services/collector/event",
 		AuthDescription:  "Authorization: Splunk <HEC-Token> via credential_ref (e.g. env://SPLUNK_HEC_TOKEN)",
-		OptionKeys:       []string{"index", "sourcetype", "tls_skip_verify"},
+		OptionKeys:       []string{"index", "sourcetype", "ca_cert_b64", "tls_server_name"},
 		ProofStatus:      "LIVE_TESTED",
 	}
 }
@@ -345,7 +389,7 @@ func (s *ibmQRadarSender) Descriptor() models.SIEMVendorDescriptor {
 		SupportedFormats: []string{models.SIEMFormatQRadarLEEF20, models.SIEMFormatQRadarCEF},
 		EndpointHint:     "tcp://qradar-collector.corp.example:514",
 		AuthDescription:  "Syslog TCP/TLS/UDP (none:// or TLS client/receiver config)",
-		OptionKeys:       []string{"framing", "hostname", "tls_skip_verify"},
+		OptionKeys:       []string{"framing", "hostname", "ca_cert_b64", "tls_server_name"},
 		ProofStatus:      "FIXTURE_TESTED",
 	}
 }
@@ -446,7 +490,7 @@ func (s *crowdStrikeLogScaleSender) Descriptor() models.SIEMVendorDescriptor {
 		SupportedFormats: []string{models.SIEMFormatLogScaleHECJSON},
 		EndpointHint:     "https://cloud.community.humio.com/api/v1/ingest/hec",
 		AuthDescription:  "Authorization: Bearer <Ingest-Token> via credential_ref",
-		OptionKeys:       []string{"sourcetype", "tls_skip_verify"},
+		OptionKeys:       []string{"sourcetype", "ca_cert_b64", "tls_server_name"},
 		ProofStatus:      "FIXTURE_TESTED",
 	}
 }
@@ -483,7 +527,7 @@ func (s *elasticSecuritySender) Descriptor() models.SIEMVendorDescriptor {
 		SupportedFormats: []string{models.SIEMFormatElasticBulkECSJSON},
 		EndpointHint:     "http://elasticsearch:9200/_bulk",
 		AuthDescription:  "Authorization: ApiKey / Bearer / Basic via credential_ref (or none:// on local dev cluster)",
-		OptionKeys:       []string{"index_name", "auth_scheme", "tls_skip_verify"},
+		OptionKeys:       []string{"index_name", "auth_scheme", "ca_cert_b64", "tls_server_name"},
 		ProofStatus:      "LIVE_TESTED",
 	}
 }
@@ -529,7 +573,7 @@ func (s *cortexXSIAMSender) Descriptor() models.SIEMVendorDescriptor {
 		SupportedFormats: []string{models.SIEMFormatXSIAMNDJSON},
 		EndpointHint:     "https://api-<tenant>.xdr.us.paloaltonetworks.com/logs/v1/event",
 		AuthDescription:  "Authorization: <API_KEY> (no Bearer prefix) via credential_ref; NDJSON (+ optional gzip)",
-		OptionKeys:       []string{"gzip", "tls_skip_verify"},
+		OptionKeys:       []string{"gzip", "ca_cert_b64", "tls_server_name"},
 		ProofStatus:      "FIXTURE_TESTED",
 	}
 }
@@ -566,7 +610,7 @@ func (s *exabeamSender) Descriptor() models.SIEMVendorDescriptor {
 		SupportedFormats: []string{models.SIEMFormatSyslogRFC5424CEF, models.SIEMFormatHTTPSJSONBatch},
 		EndpointHint:     "tcp://exabeam-site-collector.corp.example:514 (or https://api.us-west.exabeam.cloud/ingest)",
 		AuthDescription:  "Syslog TCP/TLS CEF to Site Collector or Authorization: Bearer <key> to Cloud Webhook",
-		OptionKeys:       []string{"framing", "hostname", "tls_skip_verify"},
+		OptionKeys:       []string{"framing", "hostname", "ca_cert_b64", "tls_server_name"},
 		ProofStatus:      "FIXTURE_TESTED",
 	}
 }
@@ -609,7 +653,7 @@ func (s *logRhythmSender) Descriptor() models.SIEMVendorDescriptor {
 		SupportedFormats: []string{models.SIEMFormatSyslogRFC5424CEF},
 		EndpointHint:     "tcp://logrhythm-agent.corp.example:514",
 		AuthDescription:  "Syslog TCP/TLS/UDP CEF to LogRhythm System Monitor",
-		OptionKeys:       []string{"framing", "hostname", "tls_skip_verify"},
+		OptionKeys:       []string{"framing", "hostname", "ca_cert_b64", "tls_server_name"},
 		ProofStatus:      "FIXTURE_TESTED",
 	}
 }
@@ -687,7 +731,7 @@ func (s *fortiSIEMSender) Descriptor() models.SIEMVendorDescriptor {
 		SupportedFormats: []string{models.SIEMFormatSyslogRFC5424CEF},
 		EndpointHint:     "tcp://fortisiem-collector.corp.example:514",
 		AuthDescription:  "Syslog TCP/TLS/UDP CEF to FortiSIEM Collector",
-		OptionKeys:       []string{"framing", "hostname", "tls_skip_verify"},
+		OptionKeys:       []string{"framing", "hostname", "ca_cert_b64", "tls_server_name"},
 		ProofStatus:      "FIXTURE_TESTED",
 	}
 }
@@ -714,7 +758,7 @@ func (s *arcSightSender) Descriptor() models.SIEMVendorDescriptor {
 		SupportedFormats: []string{models.SIEMFormatSyslogRFC5424CEF},
 		EndpointHint:     "tcp://arcsight-smartconnector.corp.example:514",
 		AuthDescription:  "Native CEF:0 over Syslog TCP/TLS/UDP to ArcSight SmartConnector",
-		OptionKeys:       []string{"framing", "hostname", "tls_skip_verify"},
+		OptionKeys:       []string{"framing", "hostname", "ca_cert_b64", "tls_server_name"},
 		ProofStatus:      "FIXTURE_TESTED",
 	}
 }
@@ -745,7 +789,7 @@ func (s *genericFallbackSender) Descriptor() models.SIEMVendorDescriptor {
 		},
 		EndpointHint:    "tcp://syslog-receiver:5514 (or https://siem-webhook.example/ingest)",
 		AuthDescription: "Syslog TCP/TLS/UDP (none://) or HTTPS Bearer token via credential_ref",
-		OptionKeys:      []string{"framing", "hostname", "tls_skip_verify"},
+		OptionKeys:      []string{"framing", "hostname", "ca_cert_b64", "tls_server_name"},
 		ProofStatus:     "LIVE_TESTED",
 	}
 }

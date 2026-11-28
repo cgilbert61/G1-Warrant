@@ -313,17 +313,26 @@ def main() -> int:
         log.log("--------------------------------------------------------------------------------")
         hec_scheme = detect_splunk_hec_scheme(log)
         splunk_sourcetype = f"g1:warrant:proof:{int(time.time())}"
+        splunk_opts: dict[str, str] = {
+            "index": "main",
+            "sourcetype": splunk_sourcetype,
+        }
+        if hec_scheme == "https":
+            ca_proc = subprocess.run(
+                ["docker", "exec", "g1-proof-splunk", "cat", "/opt/splunk/etc/auth/cacert.pem"],
+                capture_output=True,
+                check=True,
+            )
+            splunk_opts["ca_cert_b64"] = base64.b64encode(ca_proc.stdout).decode("ascii")
+            splunk_opts["tls_server_name"] = "SplunkServerDefaultCert"
+
         st_sp, sp_dest = call("POST", "/api/v1/siem/destinations", {
             "display_name": "Live Proof — Splunk Enterprise HEC",
             "siem_vendor": "splunk_es",
             "endpoint": f"{hec_scheme}://g1-proof-splunk:8088/services/collector/event",
             "credential_ref": "env://SPLUNK_HEC_TOKEN",
             "format": "SPLUNK_HEC_JSON",
-            "vendor_options": {
-                "index": "main",
-                "sourcetype": splunk_sourcetype,
-                "tls_skip_verify": "true",
-            },
+            "vendor_options": splunk_opts,
             "record_types": ALL_RECORD_TYPES,
             "batch_size": 100,
             "schedule_seconds": 3600,

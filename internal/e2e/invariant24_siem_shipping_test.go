@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -645,6 +647,65 @@ func TestInvariant24_SIEMAll13SendersOrderedRetryWORMConfigAndZeroDualKey(t *tes
 	if delSt != http.StatusOK {
 		t.Fatalf("DELETE destination failed: %d %s", delSt, string(delRb))
 	}
+
+	// 5b. Verify strict X.509 TLS certificate verification (fail-closed without pinned CA; succeeds with ca_cert_b64).
+	tlsSIEM := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"Success","code":0}`))
+	}))
+	defer tlsSIEM.Close()
+
+	stTLS, rbTLS := doOperatorJSON(http.MethodPost, "/api/v1/siem/destinations", map[string]any{
+		"display_name":     "Strict TLS X509 Pinning Test",
+		"siem_vendor":      models.SIEMVendorSplunkES,
+		"endpoint":         tlsSIEM.URL + "/services/collector/event",
+		"credential_ref":   "env://INV24_SIEM_SECRET",
+		"format":           models.SIEMFormatSplunkHECJSON,
+		"record_types":     []string{models.SIEMRecordWORMLedger},
+		"batch_size":       50,
+		"schedule_seconds": 3600,
+		"enabled":          true,
+		"console_views":    []string{"VIEW5_AUDITOR"},
+	})
+	if stTLS != http.StatusCreated {
+		t.Fatalf("create TLS dest: %d %s", stTLS, string(rbTLS))
+	}
+	var tlsWrap struct {
+		Destination models.SIEMDestination `json:"destination"`
+	}
+	_ = json.Unmarshal(rbTLS, &tlsWrap)
+	tlsDest := tlsWrap.Destination
+
+	// Must fail closed against untrusted self-signed cert when ca_cert_b64 is not pinned!
+	badTLSCode, badTLSBody := doOperatorJSON(http.MethodPost, "/api/v1/siem/destinations/"+tlsDest.DestinationID+"/flush", map[string]any{})
+	if badTLSCode != http.StatusUnprocessableEntity || !bytes.Contains(badTLSBody, []byte("x509")) {
+		t.Fatalf("expected fail-closed x509 error on unpinned TLS cert, got HTTP %d (%s)", badTLSCode, string(badTLSBody))
+	}
+
+	// Pin public X.509 certificate via ca_cert_b64 and verify verified-TLS delivery succeeds!
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: tlsSIEM.Certificate().Raw})
+	updSt, updRb := doOperatorJSON(http.MethodPut, "/api/v1/siem/destinations/"+tlsDest.DestinationID, map[string]any{
+		"destination_id":   tlsDest.DestinationID,
+		"display_name":     tlsDest.DisplayName,
+		"siem_vendor":      tlsDest.SIEMVendor,
+		"endpoint":         tlsDest.Endpoint,
+		"credential_ref":   tlsDest.CredentialRef,
+		"format":           tlsDest.Format,
+		"vendor_options":   map[string]string{"ca_cert_b64": base64.StdEncoding.EncodeToString(certPEM)},
+		"record_types":     tlsDest.RecordTypes,
+		"batch_size":       50,
+		"schedule_seconds": 3600,
+		"enabled":          true,
+		"console_views":    tlsDest.ConsoleViews,
+	})
+	if updSt != http.StatusOK {
+		t.Fatalf("update TLS dest ca_cert_b64 failed: %d %s", updSt, string(updRb))
+	}
+	okTLSCode, okTLSBody := doOperatorJSON(http.MethodPost, "/api/v1/siem/destinations/"+tlsDest.DestinationID+"/flush", map[string]any{})
+	if okTLSCode != http.StatusOK {
+		t.Fatalf("expected verified TLS flush HTTP 200 after pinning ca_cert_b64, got %d (%s)", okTLSCode, string(okTLSBody))
+	}
+	_, _ = doOperatorJSON(http.MethodDelete, "/api/v1/siem/destinations/"+tlsDest.DestinationID, nil)
 
 	// 6. Verify PostgreSQL WORM trigger blocks UPDATE and DELETE on siem_config_audit, and VerifyAllLedgerChains passes!
 	rawConn, err := pgx.Connect(ctx, replaceDBName(adminDSN, dbName))
