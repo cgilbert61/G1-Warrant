@@ -39,6 +39,20 @@ Per **Item 1** of the G1-Warrant SIEM Work Order, Warrant's codebase, SQL schema
 - **Credential Reference Only (`internal/adapters/siem/credref.go`):** Both the React UI (`SIEMDestinationsModal.tsx`), the HTTP API (`rejectRawSecretFieldsInSIEMPayload` + `ParseAndValidateCredentialRef`), and PostgreSQL (`CHECK` constraint on `siem_destinations.credential_ref`) accept **only** secret reference URIs (`env://VAR`, `file:///run/secrets/...`, `k8s-secret://...`, `aws-sm://...`, `azure-kv://...`, `gcp-sm://...`, or `none://`). Raw tokens, `Bearer`/`Splunk` headers, and PEM blocks are rejected (`HTTP 400`). `env://` references resolve directly from Warrant's `/proc/self/environ`-scrubbed `envseal` memory vault.
 - **Zero Dual-Key & Zero Extra Device Step (`VerifySIEMConfigAuth`):** Creating, editing, toggling, flushing, and deleting SIEM destinations require only the active Warrant Console operator session (no `2-of-2` dual key and no extra hardware WebAuthn prompt). Every SIEM configuration change is sealed into WORM hash-chained table `siem_config_audit` (`trg_worm_siem_config_audit`) and verified by `VerifyAllLedgerChains`.
 
+### Console UI Downstream SIEM Configuration & Per-View Telemetry Screenshots
+
+#### 1. Per-View Ordered Shipping Status Strip & Command Bar (`SIEM: X Active`)
+![G1-Warrant SIEM Per-View Shipping Status Strip](assets/screenshots/G1-Warrant-SIEM-View-Status-Strip.png)
+
+#### 2. Configured SIEM Destinations Modal (Flush, On/Off Toggle, Edit, Delete)
+![G1-Warrant Configured SIEM Destinations](assets/screenshots/G1-Warrant-SIEM-Destinations-List.png)
+
+#### 3. Add / Edit SIEM Destination Form (`credential_ref` URI Only, Verified TLS `ca_cert_b64`, Record & View Routing)
+![G1-Warrant SIEM Configurator Form](assets/screenshots/G1-Warrant-SIEM-Configurator-Form.png)
+
+#### 4. Hash-Chained WORM Configuration Audit Trail (`siem_config_audit`)
+![G1-Warrant SIEM WORM Config Audit Trail](assets/screenshots/G1-Warrant-SIEM-WORM-Audit.png)
+
 ### 2. Per-SIEM Sender Specification & Honest Proof Status Matrix
 
 | # | SIEM Target (`siem_vendor`) | Vendor Ingestion Endpoint & Wire Format | Authentication (`credential_ref`) | Cryptographic & Field Preservation | Proof Status |

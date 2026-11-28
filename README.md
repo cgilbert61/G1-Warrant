@@ -104,6 +104,8 @@ Every SIEM destination is configured in the Warrant Console UI (`SIEM: X Active`
 | **12. OpenText ArcSight** (`arcsight`) | SmartConnector Native `CEF:0` over Syslog RFC 5424 | Collector / mTLS (`none://`) | **`fixture-tested`** (`TestInvariant24`) |
 | **13. Generic Fallback** (`generic_fallback`) | Syslog TCP/TLS/UDP (`SYSLOG_RFC5424_CEF` / `SYSLOG_RFC5424_JSON`) or `HTTPS_JSON_BATCH` | `none://` or `Bearer` | **`live-tested`** (`rsyslogd` TCP `5514` CEF: `606/606` logged + `TestInvariant24` JSON) |
 
+![G1-Warrant Downstream SIEM Shipping Demo](docs/assets/screenshots/G1-Warrant-SIEM-Shipping-Demo.gif)
+
 ---
 
 ## Operator Console Overview
@@ -137,6 +139,11 @@ Enforces sub-second **"Contain in Seconds Everywhere"** quarantine across **6 su
 Seals every verified closure into a DSSE-signed **NIST OSCAL `1.1.2` POA&M** bundle with one-click JSON export and client-side in-browser `RFC 8785 JCS` + `Ed25519` cryptographic verification alongside the hash-chained Governed Agent Ledger.
 
 ![G1-Warrant Vault and Agent Ledger Demo](docs/assets/screenshots/G1-Warrant-Vault-Ledger-Demo.gif)
+
+### 6. Downstream SIEM Configurator, Per-View Delivery Strip & WORM Config Audit
+Configures all 13 named SIEM targets directly in the Console UI (`credential_ref` URIs only, verified TLS `RootCAs` pinning via `ca_cert_b64`, per-record-family filters, batching & schedule, On/Off toggles, and operator-selected Console view placement) with **zero dual-key ceremony**, surfacing live `Sent` / `Queued` / `Failed` counters in each chosen view and sealing every configuration change into WORM table `siem_config_audit`.
+
+![G1-Warrant SIEM Downstream Configurator](docs/assets/screenshots/G1-Warrant-SIEM-Configurator-Form.png)
 
 ---
 
